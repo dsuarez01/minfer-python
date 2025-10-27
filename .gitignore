@@ -1,0 +1,8 @@
+.venv
+.vscode
+
+# (setup script specific to my cluster)
+run_setup.sh
+
+# directory models downloaded to
+gguf
