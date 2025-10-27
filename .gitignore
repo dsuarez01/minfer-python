@@ -1,8 +1,26 @@
-.venv
 .vscode
 
-# (setup script specific to my cluster)
+# (setup scripts specific to my cluster)
+download.sh
 run_setup.sh
 
 # directory models downloaded to
 gguf
+
+# python-specific
+.venv
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+*.so
+
+.Python
+build/
+dist/
+*.egg-info/
+
+.pytest_cache/
+
+.ruff_cache/
