@@ -105,11 +105,11 @@ class GGUFReaderWrapper:
         if expected != actual:
             raise ValueError(f"Tensor count mismatch: expected {expected} tensors, got {actual}")
 
-    def get_field_req(self, name: str) -> ReaderField:
+    def get_field_req(self, name: str) -> Any:
         field = self.reader.get_field(name)
         if field is None:
             raise ValueError(f"Req. field '{name}' not found")
-        return field
+        return field.contents()
 
     def get_field_noreq(self, name: str) -> ReaderField | None:
         return self.reader.get_field(name)
