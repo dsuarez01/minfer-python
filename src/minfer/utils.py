@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 from dataclasses import dataclass
+from typing import Any
 
 from gguf import ReaderField, ReaderTensor, GGUFReader, LlamaFileType, GGMLQuantizationType
 
@@ -19,15 +20,21 @@ PATTERN = re.compile(
     r"\.gguf$"
 )
 
-# since ReaderTensor is immutable
+# use this dataclass since ReaderTensor is immutable IntEnum (see gguf-py)
 @dataclass
 class TensorData:
     name: str
-    tensor_type: GGMLQuantizationType
+    type: GGMLQuantizationType
     shape: tuple
     n_elements: int
     n_bytes: int
     data: torch.Tensor
+    parent: nn.Module | None
+
+    def register(self, parent: nn.Module):
+        self.parent = parent
+        parent.register_buffer(self.name, self.data)
+        return self
 
 class GGUFReaderWrapper:
     """ Wrapper handles model sharding, and maps tensors by name instead of storing in list """
@@ -78,15 +85,16 @@ class GGUFReaderWrapper:
         self.reader = readers[0]
         self._tensor_dict = {}
         
-        for reader in readers:
-            for tensor in reader.tensors:
-                self._tensor_dict[tensor.name] = TensorData(
-                    name=tensor.name,
-                    tensor_type=tensor.tensor_type,
-                    shape=tuple(tensor.shape),
-                    n_elements=tensor.n_elements,
-                    n_bytes=tensor.n_bytes,
-                    data=torch.from_numpy(tensor.data)
+        for r in readers:
+            for t in r.tensors:
+                self._tensor_dict[t.name] = TensorData(
+                    name=t.name,
+                    type=t.tensor_type,
+                    shape=tuple(t.shape),
+                    n_elements=t.n_elements,
+                    n_bytes=t.n_bytes,
+                    data=torch.from_numpy(t.data),
+                    parent=None,
                 )
 
         # quick check: tensor count matches expected
@@ -135,8 +143,9 @@ class Params:
     backend: str
     batch_size: int
     max_seq_len: int
+    act_dtype: torch.dtype
 
-    def __init__(self, reader: GGUFReaderWrapper, params: dict):
+    def __init__(self, reader: GGUFReaderWrapper, run_params: dict):
         
         self.arch = reader.get_field_req("general.architecture").contents()
         self.dtype = LlamaFileType(reader.get_field_req("general.file_type").contents())
@@ -168,9 +177,25 @@ class Params:
         self.n_act_exps = n_act_exps_field.contents() if n_act_exps_field else 0
 
         # runtime params: will eventually include temp, seed, etc.
-        self.backend = params["backend"]
-        self.batch_size = params["batch_size"]
-        self.max_seq_len = params["max_seq_len"]
+        self.backend = run_params["backend"]
+        self.batch_size = run_params["batch_size"]
+        self.max_seq_len = run_params["max_seq_len"]
+        self.act_dtype = getattr(torch, run_params["act_dtype"])
+        
+        # data + expert parallelism
+        self.world_size = run_params["world_size"]
+        self.rank = run_params["rank"]
+        self.local_rank = run_params["local_rank"]
+        self.dp_size = run_params["dp_size"]
+        self.ep_size = run_params["ep_size"]
+        
+        assert self.batch_size % self.dp_size == 0, "dp size must divide batch sz"
+        assert self.dp_size <= self.batch_size, "dp size exceeds batch sz"
+
+        assert self.n_exps % self.ep_size == 0, "ep size must divide # experts"
+        assert self.ep_size <= self.n_exps, "ep size exceeds # experts"
+        
+        assert self.dp_size * self.ep_size == self.world_size, "dp and ep sizes must split world size exactly"
 
         if self.max_seq_len > self.ctx_len:
             print(
@@ -186,28 +211,77 @@ class BufPool(nn.Module):
         super().__init__()
         
         # general act bufs
-        self.register_buffer("x", torch.zeros(params.batch_size, params.max_seq_len, params.hidden_dim))
-        self.register_buffer("xb", torch.zeros(params.batch_size, params.max_seq_len, params.hidden_dim))
-        self.register_buffer("xb2", torch.zeros(params.batch_size, params.max_seq_len, params.hidden_dim))
+        self.register_buffer("x", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.hidden_dim), dtype=params.act_dtype))
+        self.register_buffer("xb", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.hidden_dim), dtype=params.act_dtype))
+        self.register_buffer("xb2", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.hidden_dim), dtype=params.act_dtype))
         
         # attn
-        self.register_buffer("q", torch.zeros(params.batch_size, params.n_heads, params.max_seq_len, params.head_dim))
-        self.register_buffer("k", torch.zeros(params.batch_size, params.n_kv_heads, params.max_seq_len, params.head_dim))
-        self.register_buffer("v", torch.zeros(params.batch_size, params.n_kv_heads, params.max_seq_len, params.head_dim))
+        self.register_buffer("q", torch.zeros((params.batch_size // params.dp_size, params.n_heads, params.max_seq_len, params.head_dim), dtype=params.act_dtype))
+        self.register_buffer("k", torch.zeros((params.batch_size // params.dp_size, params.n_kv_heads, params.max_seq_len, params.head_dim), dtype=params.act_dtype))
+        self.register_buffer("v", torch.zeros((params.batch_size // params.dp_size, params.n_kv_heads, params.max_seq_len, params.head_dim), dtype=params.act_dtype))
         
-        self.register_buffer("att_scores", torch.zeros(params.batch_size, params.n_heads, params.max_seq_len, params.max_seq_len))
+        self.register_buffer("att_scores", torch.zeros((params.batch_size // params.dp_size, params.n_heads, params.max_seq_len, params.max_seq_len), dtype=params.act_dtype))
 
-        if params.n_heads * params.head_dim != params.hidden_dim: # applies to some models like qwen
-            self.register_buffer("att_out", torch.zeros(params.batch_size, params.max_seq_len, params.n_heads, params.head_dim))
+        if params.n_heads*params.head_dim != params.hidden_dim: # applies to some models like qwen
+            self.register_buffer("att_out", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.n_heads, params.head_dim), dtype=params.act_dtype))
 
         # moe routing
-        self.register_buffer("moe_scores", torch.zeros(params.batch_size, params.max_seq_len, params.n_exps))
-        self.register_buffer("act_exps", torch.zeros(params.batch_size, params.max_seq_len, params.n_act_exps))
-        self.register_buffer("act_exps_ws", torch.zeros(params.batch_size, params.max_seq_len, params.n_act_exps))
+        self.register_buffer("moe_scores", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.n_exps), dtype=params.act_dtype))
+        self.register_buffer("act_exps", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.n_act_exps), dtype=torch.uint8))
+        self.register_buffer("act_exps_ws", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.n_act_exps), dtype=params.act_dtype))
 
-        # ffn
-        self.register_buffer("hb", torch.zeros(params.batch_size, params.max_seq_len, params.mlp_dim))
-        self.register_buffer("hb2", torch.zeros(params.batch_size, params.max_seq_len, params.mlp_dim))
+        # experts
+        self.register_buffer("hb", torch.zeros((params.batch_size // params.dp_size * params.max_seq_len * params.n_act_exps // params.ep_size, params.mlp_dim), dtype=params.act_dtype))
+        self.register_buffer("hb2", torch.zeros((params.batch_size // params.dp_size * params.max_seq_len * params.n_act_exps // params.ep_size, params.mlp_dim), dtype=params.act_dtype))
 
         # logits
-        self.register_buffer("logits", torch.zeros(params.batch_size, params.max_seq_len, params.vocab_size))
+        self.register_buffer("logits", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.vocab_size), dtype=params.act_dtype))
+
+@dataclass
+class QuantConfig:
+    block_size: int
+    bits: int
+    packed_bytes: int
+    scale_bytes: int
+    has_zp: bool
+    lut_vals: list
+
+class LUT(nn.Module):
+    """ Lookup tables for dequant, one per device """
+    
+    CFG = {
+        GGMLQuantizationType.Q4_0: QuantConfig(32, 4, 16, 2, True, list(range(-8, 8))),
+        GGMLQuantizationType.Q4_1: QuantConfig(32, 4, 16, 4, True, list(range(-8, 8))),
+        GGMLQuantizationType.Q5_0: QuantConfig(32, 5, 20, 2, True, list(range(-16, 16))),
+        GGMLQuantizationType.Q5_1: QuantConfig(32, 5, 20, 4, True, list(range(-16, 16))),
+        GGMLQuantizationType.Q8_0: QuantConfig(32, 8, 32, 2, True, list(range(-128, 128))),
+        GGMLQuantizationType.Q8_1: QuantConfig(32, 8, 32, 4, True, list(range(-128, 128))),
+        GGMLQuantizationType.Q2_K: QuantConfig(256, 2, 64, 8, True, [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5]),
+        GGMLQuantizationType.Q3_K: QuantConfig(256, 3, 96, 8, True, [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5]),
+        GGMLQuantizationType.Q4_K: QuantConfig(32, 4, 16, 6, True, list(range(-8, 8))),
+        GGMLQuantizationType.Q5_K: QuantConfig(32, 5, 20, 6, True, list(range(-16, 16))),
+        GGMLQuantizationType.Q6_K: QuantConfig(32, 6, 24, 6, True, list(range(-32, 32))),
+        GGMLQuantizationType.Q8_K: QuantConfig(32, 8, 32, 6, True, list(range(-128, 128))),
+        GGMLQuantizationType.IQ2_XXS: QuantConfig(256, 2, 64, 8, True, [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5]),
+        GGMLQuantizationType.IQ2_XS: QuantConfig(256, 2, 64, 8, True, [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5]),
+        GGMLQuantizationType.IQ3_XXS: QuantConfig(256, 3, 96, 8, True, [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5]),
+        GGMLQuantizationType.IQ1_S: QuantConfig(256, 1, 32, 8, True, [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5]),
+        GGMLQuantizationType.IQ4_NL: QuantConfig(32, 4, 16, 6, True, list(range(-8, 8))),
+        GGMLQuantizationType.IQ3_S: QuantConfig(64, 3, 24, 2, False, [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5]),
+        GGMLQuantizationType.IQ2_S: QuantConfig(64, 2, 16, 2, False, [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5]),
+        GGMLQuantizationType.IQ4_XS: QuantConfig(32, 4, 16, 6, True, list(range(-8, 8))),
+        GGMLQuantizationType.IQ1_M: QuantConfig(64, 1, 8, 4, True, [-4.0, -3.0, -2.0, -1.0, 1.0, 2.0, 3.0, 4.0]),
+        GGMLQuantizationType.TQ1_0: QuantConfig(32, 4, 16, 6, True, list(range(-8, 8))),
+        GGMLQuantizationType.TQ2_0: QuantConfig(32, 4, 16, 6, True, list(range(-8, 8))),
+        # GGMLQuantizationType.MXFP4: QuantConfig(32, 4, 16, 0, False, [0]), TODO: add this in once gguf comes out with official pypi release supporting MXFP4
+    }
+    
+    def __init__(self, act_dtype: torch.dtype):
+        super().__init__()
+        
+        for qtype, cfg in self.CFG.items():
+            lut_tensor = torch.tensor(cfg.lut_vals, dtype=act_dtype)
+            self.register_buffer(qtype.name, lut_tensor)
+
+    def get(self, qtype: GGMLQuantizationType) -> torch.Tensor:
+        return getattr(self, qtype.name)
