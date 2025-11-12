@@ -1,7 +1,7 @@
+from __future__ import annotations
 import re
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Any
 
 from gguf import ReaderField, ReaderTensor, GGUFReader, LlamaFileType, GGMLQuantizationType
 
@@ -31,7 +31,11 @@ class TensorData:
     data: torch.Tensor
     parent: nn.Module | None
 
-    def register(self, parent: nn.Module):
+    def register(self, parent: nn.Module | None = None) -> TensorData:
+        if parent is None:
+            if self.parent is None:
+                raise ValueError("No parent module provided")
+            parent = self.parent
         self.parent = parent
         parent.register_buffer(self.name, self.data)
         return self
@@ -105,7 +109,7 @@ class GGUFReaderWrapper:
         if expected != actual:
             raise ValueError(f"Tensor count mismatch: expected {expected} tensors, got {actual}")
 
-    def get_field_req(self, name: str) -> Any:
+    def get_field_req(self, name: str) -> ReaderField:
         field = self.reader.get_field(name)
         if field is None:
             raise ValueError(f"Req. field '{name}' not found")
@@ -115,13 +119,13 @@ class GGUFReaderWrapper:
         return self.reader.get_field(name)
     
     def get_tensor_req(self, name: str) -> TensorData:
-        tensor = self._tensor_dict.get(name, None)
+        tensor = self._tensor_dict.pop(name, None)
         if tensor is None:
             raise ValueError(f"Req. tensor '{name}' not found")
         return tensor
 
     def get_tensor_noreq(self, name: str) -> TensorData | None:
-        return self._tensor_dict.get(name, None)
+        return self._tensor_dict.pop(name, None)
 
 class Params:
 
@@ -144,6 +148,12 @@ class Params:
     batch_size: int
     max_seq_len: int
     act_dtype: torch.dtype
+    world_size: int
+    rank: int
+    local_rank: int
+    dp_size: int
+    ep_size: int
+    exp_idxing: str
 
     def __init__(self, reader: GGUFReaderWrapper, run_params: dict):
         
@@ -152,9 +162,9 @@ class Params:
         self.block_cnt = reader.get_field_req(f"{self.arch}.block_count").contents()
         
         vocab_field = reader.get_field_noreq(f"{self.arch}.vocab_size")
-        tokens_field = reader.get_field_req("tokenizer.ggml.tokens")
+        tokens = reader.get_field_req("tokenizer.ggml.tokens")
         
-        self.vocab_size = vocab_field.contents() if vocab_field else len(tokens_field.data)
+        self.vocab_size = vocab_field.contents() if vocab_field else len(tokens.data)
         self.ctx_len = reader.get_field_req(f"{self.arch}.context_length").contents()
 
         # all the relevant parameters from the config are set here
@@ -180,6 +190,7 @@ class Params:
         self.backend = run_params["backend"]
         self.batch_size = run_params["batch_size"]
         self.max_seq_len = run_params["max_seq_len"]
+        assert run_params["act_dtype"] in ["float32", "float16"], "Only supported activation dtypes are float32 and float16"
         self.act_dtype = getattr(torch, run_params["act_dtype"])
         
         # data + expert parallelism
@@ -188,6 +199,7 @@ class Params:
         self.local_rank = run_params["local_rank"]
         self.dp_size = run_params["dp_size"]
         self.ep_size = run_params["ep_size"]
+        self.exp_idxing = run_params["exp_idxing"]
         
         assert self.batch_size % self.dp_size == 0, "dp size must divide batch sz"
         assert self.dp_size <= self.batch_size, "dp size exceeds batch sz"

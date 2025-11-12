@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "torch >= 2.7.0",
-    "triton >= 3.3.0",
+    "triton >= 3.3.0 ; sys_platform == 'linux'",
     "gguf >= 0.16.0",
     "ninja >= 1.11.1.4",
 ]
