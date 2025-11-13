@@ -1,20 +1,43 @@
 #include <torch/extension.h>
 
 // TODO: complete
-void embed() {}
-void rmsnorm() {}
-void matmul() {}
-void qkv() {}
-void flash_attn() {}
-void moe_scores() {}
-void moe_experts() {}
+void _dequant() {
+    TORCH_CHECK(false, "_dequant not implemented");
+}
+
+void rmsnorm() {
+    TORCH_CHECK(false, "rmsnorm not implemented");
+}
+void rope() {
+    TORCH_CHECK(false, "rope not implemented");
+}
+void matmul() {
+    TORCH_CHECK(false, "matmul not implemented");
+}
+void embed() {
+    TORCH_CHECK(false, "embed not implemented");
+}
+void qkv() {
+    TORCH_CHECK(false, "qkv not implemented");
+}
+void flash_attn() {
+    TORCH_CHECK(false, "flash_attn not implemented");
+}
+void moe_scoring() {
+    TORCH_CHECK(false, "moe_scoring not implemented");
+}
+void ffn() {
+    TORCH_CHECK(false, "ffn not implemented");
+}
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("embed", &embed);
+    m.def("_dequant", &_dequant);
     m.def("rmsnorm", &rmsnorm);
+    m.def("rope", &rope);
     m.def("matmul", &matmul);
+    m.def("embed", &embed);
     m.def("qkv", &qkv);
     m.def("flash_attn", &flash_attn);
-    m.def("moe_scores", &moe_scores);
-    m.def("moe_experts", &moe_experts);
+    m.def("moe_scoring", &moe_scoring);
+    m.def("ffn", &ffn);
 }

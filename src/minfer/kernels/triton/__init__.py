@@ -1,3 +1,3 @@
-from .kernels import embed, rmsnorm, matmul, qkv, flash_attn, moe_scores, moe_experts
+from .kernels import rmsnorm, rope, matmul, embed, qkv, flash_attn, moe_scoring, ffn
 
-__all__ = ["embed", "rmsnorm", "matmul", "qkv", "flash_attn", "moe_scores", "moe_experts"]
+__all__ = ["rmsnorm", "rope", "matmul", "embed", "qkv", "flash_attn", "moe_scoring", "ffn"]

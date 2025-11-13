@@ -6,7 +6,7 @@ from gguf import GGMLQuantizationType
 def _dequant(
     quant_ptr, out_ptr, lut_ptr,
     M: tl.constexpr, N: tl.constexpr,
-    block_sz: tl.constexpr, n_bits: tl.constexpr,
+    block_size: tl.constexpr, n_bits: tl.constexpr,
     packed_sz: tl.constexpr, scale_sz: tl.constexpr,
     has_zp: tl.constexpr, out_dtype: tl.constexpr,
     BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
@@ -17,14 +17,14 @@ def _dequant(
     offs_n = pid_n*BLOCK_N + tl.arange(0, BLOCK_N)
     mask = (offs_m<M)[:, None] & (offs_n<N)[None, :]
     
-    blk_row = offs_m // block_sz
-    blk_col = offs_n // block_sz
-    n_blocks_row = (N+block_sz-1) // block_sz
+    blk_row = offs_m // block_size
+    blk_col = offs_n // block_size
+    n_blocks_row = (N+block_size-1) // block_size
     blk_idx = blk_row*n_blocks_row + blk_col
     
-    elem_row = offs_m%block_sz
-    elem_col = offs_n%block_sz
-    elem_idx = elem_row*block_sz + elem_col
+    elem_row = offs_m%block_size
+    elem_col = offs_n%block_size
+    elem_idx = elem_row*block_size + elem_col
     
     byte_offs = elem_idx*n_bits // 8
     bit_offs = (elem_idx*n_bits) % 8
@@ -44,35 +44,35 @@ def _dequant(
     tl.store(out_ptr+out_offs, val, mask=mask)
 
 # TODO: complete
-@triton.jit
-def _softmax(
-    in_ptr,
-    out_ptr,
-    pid,
-    dim: tl.constexpr,
-    BLOCK_SZ: tl.constexpr,
-):
+# @triton.jit
+# def _softmax(
+#     in_ptr,
+#     out_ptr,
+#     pid,
+#     dim: tl.constexpr,
+#     BLOCK_SIZE: tl.constexpr,
+# ):
     
-    x_max = float("-inf")
-    for i in range(0, dim, BLOCK_SZ):
-        offs = i + tl.arange(0, BLOCK_SZ)
-        x = tl.load(in_ptr + pid*dim + offs, mask=offs<dim)
-        x_max = tl.maximum(x_max, tl.max(x))
+#     x_max = float("-inf")
+#     for i in range(0, dim, BLOCK_SIZE):
+#         offs = i + tl.arange(0, BLOCK_SIZE)
+#         x = tl.load(in_ptr + pid*dim + offs, mask=offs<dim)
+#         x_max = tl.maximum(x_max, tl.max(x))
 
-    exp_sum = 0.0
-    for i in range(0, dim, BLOCK_SZ):
-        offs = i + tl.arange(0, BLOCK_SZ)
-        mask = offs < dim
-        x = tl.load(in_ptr + pid*dim + offs, mask=mask)
-        x_exp = tl.exp(x-x_max)
-        exp_sum += tl.sum(x_exp)
-        tl.store(out_ptr + pid*dim + offs, x_exp, mask=mask)
+#     exp_sum = 0.0
+#     for i in range(0, dim, BLOCK_SIZE):
+#         offs = i + tl.arange(0, BLOCK_SIZE)
+#         mask = offs < dim
+#         x = tl.load(in_ptr + pid*dim + offs, mask=mask)
+#         x_exp = tl.exp(x-x_max)
+#         exp_sum += tl.sum(x_exp)
+#         tl.store(out_ptr + pid*dim + offs, x_exp, mask=mask)
     
-    scale = 1.0 / exp_sum
-    for i in range(0, dim, BLOCK_SZ):
-        offs = i + tl.arange(0, BLOCK_SZ)
-        x_exp = tl.load(out_ptr + pid*dim + offs, mask=offs<dim)
-        tl.store(out_ptr + pid*dim + offs, x_exp*scale, mask=offs<dim)
+#     scale = 1.0 / exp_sum
+#     for i in range(0, dim, BLOCK_SIZE):
+#         offs = i + tl.arange(0, BLOCK_SIZE)
+#         x_exp = tl.load(out_ptr + pid*dim + offs, mask=offs<dim)
+#         tl.store(out_ptr + pid*dim + offs, x_exp*scale, mask=offs<dim)
 
 # attn norm weights always stored in F32
 @triton.jit
@@ -82,61 +82,35 @@ def rmsnorm(
     w_ptr,
     dim: tl.constexpr,
     eps: tl.constexpr,
-    BLOCK_SZ: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
 ):
     pid = tl.program_id(0)
 
     sum_sq = 0.0
-    for i in range(0, dim, BLOCK_SZ):
-        offs = i + tl.arange(0, BLOCK_SZ)
+    for i in range(0, dim, BLOCK_SIZE):
+        offs = i + tl.arange(0, BLOCK_SIZE)
         x = tl.load(in_ptr + pid*dim + offs, mask=offs<dim) # essentially: load head?
         sum_sq += tl.sum(x*x)
     
     scale = tl.rsqrt(eps+sum_sq/dim)
 
-    for i in range(0, dim, BLOCK_SZ):
-        offs = i + tl.arange(0, BLOCK_SZ)
+    for i in range(0, dim, BLOCK_SIZE):
+        offs = i + tl.arange(0, BLOCK_SIZE)
         mask = offs < dim
         x = tl.load(in_ptr + pid*dim + offs, mask=mask)
         w = tl.load(w_ptr + pid*dim + offs, mask=mask)
         tl.store(out_ptr + pid*dim + offs, x*w*scale, mask=mask)
 
-# TODO: complete
 @triton.jit
-def embed(
-    token_ids_ptr, quant_ptr, out_ptr, lut_ptr,
-    batch_sz: tl.constexpr, seq_len: tl.constexpr, hidden_dim: tl.constexpr,
-    block_sz: tl.constexpr, n_bits: tl.constexpr,
-    packed_sz: tl.constexpr, scale_sz: tl.constexpr,
-    has_zp: tl.constexpr, out_dtype: tl.constexpr,
-):
-    """ (batch_sz*seq_len, ceil(hidden_dim/64)) """
-    pid_token = tl.program_id(0)
-    
-    batch_idx = pid_token // seq_len
-    seq_idx = pid_token % seq_len
-    token_id = tl.load(token_ids_ptr + batch_idx*seq_len + seq_idx)
-    
-    n_blocks_row = (hidden_dim+block_sz-1) // block_sz
-    block_stride = packed_sz+scale_sz
-    row_offs = token_id*n_blocks_row*block_stride
-    out_offs = (batch_idx*seq_len + seq_idx)*hidden_dim
-    
-    _dequant(
-        quant_ptr+row_offs, out_ptr+out_offs, lut_ptr,
-        M=1, N=hidden_dim,
-        block_sz=block_sz, n_bits=n_bits,
-        packed_sz=packed_sz, scale_sz=scale_sz,
-        has_zp=has_zp, out_dtype=out_dtype,
-        BLOCK_M=1, BLOCK_N=64
-    )
+def rope():
+    pass
 
 @triton.jit
 def matmul(
     act_ptr, quant_ptr, out_ptr, lut_ptr,
     batch_sz: tl.constexpr, seq_len: tl.constexpr,
     d_in: tl.constexpr, d_out: tl.constexpr,
-    block_sz: tl.constexpr, n_bits: tl.constexpr,
+    block_size: tl.constexpr, n_bits: tl.constexpr,
     packed_sz: tl.constexpr, scale_sz: tl.constexpr,
     has_zp: tl.constexpr, out_dtype: tl.constexpr,
     TILE_SZ: tl.constexpr,
@@ -148,14 +122,14 @@ def matmul(
     
     weight_row = tile_out*TILE_SZ
     # weight_col = tile_in*TILE_SZ
-    n_blocks_row = (d_in+block_sz-1) // block_sz
+    n_blocks_row = (d_in+block_size-1) // block_size
     block_stride = packed_sz+scale_sz
     weight_offs = weight_row*n_blocks_row*block_stride
     
     _dequant(
         quant_ptr+weight_offs, weight_tile, lut_ptr,
         M=TILE_SZ, N=TILE_SZ,
-        block_sz=block_sz, n_bits=n_bits,
+        block_size=block_size, n_bits=n_bits,
         packed_sz=packed_sz, scale_sz=scale_sz,
         has_zp=has_zp, out_dtype=out_dtype,
         BLOCK_M=TILE_SZ, BLOCK_N=TILE_SZ
@@ -172,6 +146,36 @@ def matmul(
     out_mask = (offs_batch < batch_sz*seq_len)[:, None] & (offs_out<d_out)[None, :]
     tl.atomic_add(out_ptr + offs_batch[:, None]*d_out + offs_out[None, :], result, mask=out_mask)
 
+# TODO: complete
+@triton.jit
+def embed(
+    token_ids_ptr, quant_ptr, out_ptr, lut_ptr,
+    batch_sz: tl.constexpr, seq_len: tl.constexpr, hidden_dim: tl.constexpr,
+    block_size: tl.constexpr, n_bits: tl.constexpr,
+    packed_sz: tl.constexpr, scale_sz: tl.constexpr,
+    has_zp: tl.constexpr, out_dtype: tl.constexpr,
+):
+    """ (batch_sz*seq_len, ceil(hidden_dim/64)) """
+    pid_token = tl.program_id(0)
+    
+    batch_idx = pid_token // seq_len
+    seq_idx = pid_token % seq_len
+    token_id = tl.load(token_ids_ptr + batch_idx*seq_len + seq_idx)
+    
+    n_blocks_row = (hidden_dim+block_size-1) // block_size
+    block_stride = packed_sz+scale_sz
+    row_offs = token_id*n_blocks_row*block_stride
+    out_offs = (batch_idx*seq_len + seq_idx)*hidden_dim
+    
+    _dequant(
+        quant_ptr+row_offs, out_ptr+out_offs, lut_ptr,
+        M=1, N=hidden_dim,
+        block_size=block_size, n_bits=n_bits,
+        packed_sz=packed_sz, scale_sz=scale_sz,
+        has_zp=has_zp, out_dtype=out_dtype,
+        BLOCK_M=1, BLOCK_N=64
+    )
+
 @triton.jit
 def qkv(
     in_ptr, 
@@ -180,14 +184,13 @@ def qkv(
     fused_qk: tl.constexpr,
     q_dim: tl.constexpr, kv_dim: tl.constexpr,
 ):
-    
     pass
 
 def flash_attn():
     pass
 
-def moe_scores():
+def moe_scoring():
     pass
 
-def moe_experts():
+def ffn():
     pass

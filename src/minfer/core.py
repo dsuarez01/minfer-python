@@ -63,15 +63,19 @@ class Model(nn.Module):
     # @torch.compile(mode="reduce-overhead") TODO: unsure if this is useful for us
     def forward(self, tokens: torch.Tensor, pos: int) -> None:
         # embed
+        self.kerns.embed()
         # blocks
-        # rmsnorm (optional?)
+        for i in range(self.params.block_cnt):
+            self.blocks.forward()
+        # rmsnorm
+        self.kerns.rmsnorm()
         # lm head
-        pass
+        self.kerns.matmul()
+        return
 
 class Transformer(nn.Module):
     block_idx: int
     is_moe: bool
-    fused_qk: bool
     model: Model
     
     def __init__(self, block_idx: int, reader: GGUFReaderWrapper, params: Params, model: Model) -> None:
@@ -107,48 +111,34 @@ class Transformer(nn.Module):
         # attn
         ## norms
         self.attn_norm = reader.get_tensor_req(f"blk.{block_idx}.attn_norm.weight").register(parent=self)
+        assert self.attn_norm.type == GGMLQuantizationType.F32
         q_norm_td = reader.get_tensor_noreq(f"blk.{block_idx}.attn_q_norm.weight")
-        if q_norm_td: self.q_norm_td = q_norm_td.register(parent=self)
-
         k_norm_td = reader.get_tensor_noreq(f"blk.{block_idx}.attn_k_norm.weight")
-        if k_norm_td: self.k_norm_td = k_norm_td.register(parent=self)
+        assert (q_norm_td is None) == (k_norm_td is None) # both either present or absent
+        if q_norm_td and k_norm_td: 
+            assert q_norm_td.type == GGMLQuantizationType.F32
+            assert k_norm_td.type == GGMLQuantizationType.F32
+            self.q_norm_td = q_norm_td.register(parent=self)
+            self.k_norm_td = k_norm_td.register(parent=self)
 
         ## projs
-        q_td = reader.get_tensor_req(f"blk.{block_idx}.attn_q.weight")
-        k_td = reader.get_tensor_req(f"blk.{block_idx}.attn_k.weight")
-
-        if q_td.type == k_td.type:
-            self.fused_qk = True
-            qk_data = torch.cat([q_td.data, k_td.data], dim=0) # this should catch if q_td.shape[1] != k_td.shape[1]
-            self.attn_qk_td = TensorData(
-                name=f"blk.{block_idx}.attn_qk.weight",
-                type=q_td.type,
-                shape=(q_td.shape[0]+k_td.shape[0], q_td.shape[1]),  # double d_out
-                n_elements=q_td.n_elements+k_td.n_elements,
-                n_bytes=q_td.n_bytes+k_td.n_bytes,
-                data=qk_data,
-                parent=self,
-            ).register()
-        else:
-            self.fused_qk = False
-            self.q_td = q_td.register(parent=self)
-            self.k_td = k_td.register(parent=self)
-
+        self.q_td = reader.get_tensor_req(f"blk.{block_idx}.attn_q.weight").register(parent=self)
+        self.k_td = reader.get_tensor_req(f"blk.{block_idx}.attn_k.weight").register(parent=self)
         self.v_td = reader.get_tensor_req(f"blk.{block_idx}.attn_v.weight").register(parent=self)
         self.attn_output = reader.get_tensor_req(f"blk.{block_idx}.attn_output.weight").register(parent=self)
         
         # moe (EP and DP)
         self.is_moe = True # figure out how to deal with dense models later
         self.ffn_norm = reader.get_tensor_req(f"blk.{block_idx}.ffn_norm.weight").register(parent=self)
+        assert self.ffn_norm.type == GGMLQuantizationType.F32
         self.ffn_gate_inp = reader.get_tensor_req(f"blk.{block_idx}.ffn_gate_inp.weight").register(parent=self)
 
-        ep_rank = params.rank % params.ep_size
         if params.exp_idxing == "contiguous":
             exps_per_rank = params.n_exps // params.ep_size
-            start = ep_rank * exps_per_rank
+            start = params.ep_rank * exps_per_rank
             self.exp_ids = list(range(start, start+exps_per_rank))
         elif params.exp_idxing == "interleaved":
-            self.exp_ids = list(range(ep_rank, params.n_exps, params.ep_size))
+            self.exp_ids = list(range(params.ep_rank, params.n_exps, params.ep_size))
 
         ffn_gate_exps = reader.get_tensor_req(f"blk.{block_idx}.ffn_gate_exps.weight")
         self.ffn_gate = TensorData(
@@ -208,15 +198,26 @@ class Transformer(nn.Module):
     def luts(self) -> LUT:
         return self.model.luts
 
-    def forward(self, x: torch.Tensor, pos: int) -> None:
+    def forward(self) -> None:
         # attn norm
-        # qkv (norm may be applied to q and k)
+        self.kerns.rmsnorm()
+        # fused qkv
+        self.kerns.qkv()
+        # (optional) rmsnorm per-head over q and k
+        if self.q_norm_td and self.k_norm_td:
+            self.kerns.rmsnorm()
+            self.kerns.rmsnorm()
+        # rope over q and k
+        self.kerns.rope()
+        self.kerns.rope()
         # flash attn
-
+        self.kerns.flash_attn()
         # ffn norm
-        # gating
+        self.kerns.rmsnorm()
+        # moe scoring
+        self.kerns.moe_scoring()
         # routing: all-to-all (if moe model)
+        # unsure what is usually done here
         # ffn
         # gather (if moe model)
-
-        pass
+        return

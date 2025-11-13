@@ -17,12 +17,14 @@ def _get_cuda_kernels():
     return _cuda_kernels
 
 cuda_kernels: Any = _get_cuda_kernels()
-embed = cuda_kernels.embed
+_dequant = cuda_kernels._dequant
 rmsnorm = cuda_kernels.rmsnorm
+rope = cuda_kernels.rope
 matmul = cuda_kernels.matmul
+embed = cuda_kernels.embed
 qkv = cuda_kernels.qkv
 flash_attn = cuda_kernels.flash_attn
-moe_scores = cuda_kernels.moe_scores
-moe_experts = cuda_kernels.moe_experts
+moe_scoring = cuda_kernels.moe_scoring
+ffn = cuda_kernels.ffn
 
-__all__ = ["embed", "rmsnorm", "matmul", "qkv", "flash_attn", "moe_scores", "moe_experts"]
+__all__ = ["rmsnorm", "rope", "matmul", "embed", "qkv", "flash_attn", "moe_scoring", "ffn"]

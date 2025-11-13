@@ -154,6 +154,8 @@ class Params:
     dp_size: int
     ep_size: int
     exp_idxing: str
+    ep_rank: int
+    dp_rank: int
 
     def __init__(self, reader: GGUFReaderWrapper, run_params: dict):
         
@@ -200,6 +202,8 @@ class Params:
         self.dp_size = run_params["dp_size"]
         self.ep_size = run_params["ep_size"]
         self.exp_idxing = run_params["exp_idxing"]
+        self.dp_rank = self.rank // self.ep_size
+        self.ep_rank = self.rank % self.ep_size
         
         assert self.batch_size % self.dp_size == 0, "dp size must divide batch sz"
         assert self.dp_size <= self.batch_size, "dp size exceeds batch sz"
@@ -219,6 +223,21 @@ class Params:
 
 class BufPool(nn.Module):
     """ All act bufs per device """
+    
+    x: torch.Tensor
+    xb: torch.Tensor
+    xb2: torch.Tensor
+    q: torch.Tensor
+    k: torch.Tensor
+    v: torch.Tensor
+    att_scores: torch.Tensor
+    moe_scores: torch.Tensor
+    act_exps: torch.Tensor
+    act_exps_ws: torch.Tensor
+    hb: torch.Tensor
+    hb2: torch.Tensor
+    logits: torch.Tensor
+    
     def __init__(self, params: Params):
         super().__init__()
         

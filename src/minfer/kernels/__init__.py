@@ -1,31 +1,24 @@
 class KernelBackend:
     def __init__(self, backend: str):
         if backend == "triton":
-            from .triton import embed, rmsnorm, matmul, qkv, flash_attn, moe_scores, moe_experts
-            self.embed = embed
+            from .triton import rmsnorm, rope, matmul, embed, qkv, flash_attn, moe_scoring, ffn
             self.rmsnorm = rmsnorm
+            self.rope = rope
             self.matmul = matmul
+            self.embed = embed
             self.qkv = qkv
             self.flash_attn = flash_attn
-            self.moe_scores = moe_scores
-            self.moe_experts = moe_experts
+            self.moe_scoring = moe_scoring
+            self.ffn = ffn
         elif backend == "cuda":
-            from .cuda import embed, rmsnorm, matmul, qkv, flash_attn, moe_scores, moe_experts
-            self.embed = embed
+            from .cuda import rmsnorm, rope, matmul, embed, qkv, flash_attn, moe_scoring, ffn
             self.rmsnorm = rmsnorm
+            self.rope = rope
             self.matmul = matmul
+            self.embed = embed
             self.qkv = qkv
             self.flash_attn = flash_attn
-            self.moe_scores = moe_scores
-            self.moe_experts = moe_experts
-        elif backend == "cpu": # fallback
-            from .cpu import embed, rmsnorm, matmul, qkv, flash_attn, moe_scores, moe_experts
-            self.embed = embed
-            self.rmsnorm = rmsnorm
-            self.matmul = matmul
-            self.qkv = qkv
-            self.flash_attn = flash_attn
-            self.moe_scores = moe_scores
-            self.moe_experts = moe_experts
+            self.moe_scoring = moe_scoring
+            self.ffn = ffn
         else:
-            raise ValueError(f"Unknown backend: {backend}. Choose 'triton', 'cuda', or 'cpu'")
+            raise ValueError(f"Unknown backend: {backend}. Choose 'triton' or 'cuda'")
