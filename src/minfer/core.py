@@ -16,9 +16,9 @@ class Model(nn.Module):
     luts: LUT
     compute_logits: bool
 
-    output_norm_td: TensorData
-    output_td: TensorData
-    token_embd_td: TensorData
+    woutnorm: TensorData
+    wout: TensorData
+    wtoken_embd: TensorData
 
     def __init__(self, path: str, run_params: dict) -> None:
         super().__init__()
@@ -30,24 +30,26 @@ class Model(nn.Module):
         self.compute_logits = False
 
         # TensorData attrs
-        self.token_embd_td = reader.get_tensor_req("token_embd.weight").register(parent=self)
+        self.wtoken_embd = reader.get_tensor_req("token_embd.weight").register(parent=self)
 
-        output_td = reader.get_tensor_noreq("output.weight")
-        if output_td:
-            self.output_td = output_td.register(parent=self)
+        wout = reader.get_tensor_noreq("output.weight")
+        if wout:
+            self.wout = wout.register(parent=self)
         else:
             # tied wrd embd, just clone token_embd data
-            self.output_td = TensorData(
+            self.wout = TensorData(
                 name="output.weight",
-                type=self.token_embd_td.type,
-                shape=self.token_embd_td.shape,
-                n_elements=self.token_embd_td.n_elements,
-                n_bytes=self.token_embd_td.n_bytes,
-                data=self.token_embd_td.data.clone(),
+                type=self.wtoken_embd.type,
+                shape=self.wtoken_embd.shape,
+                n_elements=self.wtoken_embd.n_elements,
+                n_bytes=self.wtoken_embd.n_bytes,
+                data=self.wtoken_embd.data.clone(),
                 parent=self,
             ).register()
 
-        self.output_norm_td = reader.get_tensor_req("output_norm.weight").register(parent=self)
+        self.woutnorm = reader.get_tensor_req("output_norm.weight").register(parent=self)
+        if self.woutnorm.data.dtype != self.params.act_dtype:
+            self.woutnorm.data = self.woutnorm.data.to(self.params.act_dtype)
 
         # block init
         for i in range(self.params.block_cnt):
@@ -73,10 +75,27 @@ class Model(nn.Module):
         self.kerns.matmul()
         return
 
+
 class Transformer(nn.Module):
     block_idx: int
     is_moe: bool
     model: Model
+    exp_ids: list[int]
+
+    k_cache: TensorData
+    v_cache: TensorData
+    
+    wattn_norm: TensorData
+    wattn_out: TensorData
+    wq: TensorData
+    wq_norm: TensorData
+    wk: TensorData
+    wk_norm: TensorData
+    wv: TensorData
+    wffn_norm: TensorData
+    wffn_gate: TensorData
+    wffn_up: TensorData
+    wffn_down: TensorData
     
     def __init__(self, block_idx: int, reader: GGUFReaderWrapper, params: Params, model: Model) -> None:
         super().__init__()
@@ -110,71 +129,75 @@ class Transformer(nn.Module):
         
         # attn
         ## norms
-        self.attn_norm = reader.get_tensor_req(f"blk.{block_idx}.attn_norm.weight").register(parent=self)
-        assert self.attn_norm.type == GGMLQuantizationType.F32
-        q_norm_td = reader.get_tensor_noreq(f"blk.{block_idx}.attn_q_norm.weight")
-        k_norm_td = reader.get_tensor_noreq(f"blk.{block_idx}.attn_k_norm.weight")
-        assert (q_norm_td is None) == (k_norm_td is None) # both either present or absent
-        if q_norm_td and k_norm_td: 
-            assert q_norm_td.type == GGMLQuantizationType.F32
-            assert k_norm_td.type == GGMLQuantizationType.F32
-            self.q_norm_td = q_norm_td.register(parent=self)
-            self.k_norm_td = k_norm_td.register(parent=self)
+        self.wattn_norm = reader.get_tensor_req(f"blk.{block_idx}.attn_norm.weight").register(parent=self)
+        if self.wattn_norm.data.dtype != params.act_dtype:
+            self.wattn_norm.data = self.wattn_norm.data.to(params.act_dtype)
+        wq_norm = reader.get_tensor_noreq(f"blk.{block_idx}.attn_q_norm.weight")
+        wk_norm = reader.get_tensor_noreq(f"blk.{block_idx}.attn_k_norm.weight")
+        assert (wq_norm is None) == (wk_norm is None) # both either present or absent
+        if wq_norm and wk_norm:
+            self.wq_norm = wq_norm.register(parent=self)
+            if self.wq_norm.data.dtype != params.act_dtype:
+                self.wq_norm.data = self.wq_norm.data.to(params.act_dtype)
+            self.wk_norm = wk_norm.register(parent=self)
+            if self.wk_norm.data.dtype != params.act_dtype:
+                self.wk_norm.data = self.wk_norm.data.to(params.act_dtype)
 
         ## projs
-        self.q_td = reader.get_tensor_req(f"blk.{block_idx}.attn_q.weight").register(parent=self)
-        self.k_td = reader.get_tensor_req(f"blk.{block_idx}.attn_k.weight").register(parent=self)
-        self.v_td = reader.get_tensor_req(f"blk.{block_idx}.attn_v.weight").register(parent=self)
-        self.attn_output = reader.get_tensor_req(f"blk.{block_idx}.attn_output.weight").register(parent=self)
+        self.wq = reader.get_tensor_req(f"blk.{block_idx}.attn_q.weight").register(parent=self)
+        self.wk = reader.get_tensor_req(f"blk.{block_idx}.attn_k.weight").register(parent=self)
+        self.wv = reader.get_tensor_req(f"blk.{block_idx}.attn_v.weight").register(parent=self)
+        self.wattn_out = reader.get_tensor_req(f"blk.{block_idx}.attn_output.weight").register(parent=self)
         
         # moe (EP and DP)
         self.is_moe = True # figure out how to deal with dense models later
-        self.ffn_norm = reader.get_tensor_req(f"blk.{block_idx}.ffn_norm.weight").register(parent=self)
-        assert self.ffn_norm.type == GGMLQuantizationType.F32
-        self.ffn_gate_inp = reader.get_tensor_req(f"blk.{block_idx}.ffn_gate_inp.weight").register(parent=self)
+        self.wffn_norm = reader.get_tensor_req(f"blk.{block_idx}.ffn_norm.weight").register(parent=self)
+        if self.wffn_norm.data.dtype != params.act_dtype:
+            self.wffn_norm.data = self.wffn_norm.data.to(params.act_dtype)
+        self.wffn_gate_inp = reader.get_tensor_req(f"blk.{block_idx}.ffn_gate_inp.weight").register(parent=self)
 
         if params.exp_idxing == "contiguous":
             exps_per_rank = params.n_exps // params.ep_size
-            start = params.ep_rank * exps_per_rank
+            start = params.ep_rank*exps_per_rank
             self.exp_ids = list(range(start, start+exps_per_rank))
         elif params.exp_idxing == "interleaved":
             self.exp_ids = list(range(params.ep_rank, params.n_exps, params.ep_size))
 
-        ffn_gate_exps = reader.get_tensor_req(f"blk.{block_idx}.ffn_gate_exps.weight")
-        self.ffn_gate = TensorData(
+        wffn_gate_exps = reader.get_tensor_req(f"blk.{block_idx}.ffn_gate_exps.weight")
+        self.wffn_gate = TensorData(
             name=f"blk.{block_idx}.ffn_gate.weight",
-            type=ffn_gate_exps.type,
-            shape=(len(self.exp_ids),)+ffn_gate_exps.shape[1:],
-            n_elements=ffn_gate_exps.n_elements//len(self.exp_ids),
-            n_bytes=ffn_gate_exps.n_bytes//len(self.exp_ids),
-            data=ffn_gate_exps.data[self.exp_ids].clone(),
+            type=wffn_gate_exps.type,
+            shape=(len(self.exp_ids),)+wffn_gate_exps.shape[1:],
+            n_elements=wffn_gate_exps.n_elements//len(self.exp_ids),
+            n_bytes=wffn_gate_exps.n_bytes//len(self.exp_ids),
+            data=wffn_gate_exps.data[self.exp_ids].clone(),
             parent=self,
         ).register()
-        del ffn_gate_exps
+        del wffn_gate_exps
 
-        ffn_up_exps = reader.get_tensor_req(f"blk.{block_idx}.ffn_up_exps.weight")
-        self.ffn_up = TensorData(
+        wffn_up_exps = reader.get_tensor_req(f"blk.{block_idx}.ffn_up_exps.weight")
+        self.wffn_up = TensorData(
             name=f"blk.{block_idx}.ffn_up.weight",
-            type=ffn_up_exps.type,
-            shape=(len(self.exp_ids),)+ffn_up_exps.shape[1:],
-            n_elements=ffn_up_exps.n_elements//len(self.exp_ids),
-            n_bytes=ffn_up_exps.n_bytes//len(self.exp_ids),
-            data=ffn_up_exps.data[self.exp_ids].clone(),
+            type=wffn_up_exps.type,
+            shape=(len(self.exp_ids),)+wffn_up_exps.shape[1:],
+            n_elements=wffn_up_exps.n_elements//len(self.exp_ids),
+            n_bytes=wffn_up_exps.n_bytes//len(self.exp_ids),
+            data=wffn_up_exps.data[self.exp_ids].clone(),
             parent=self,
         ).register()
-        del ffn_up_exps
+        del wffn_up_exps
 
-        ffn_down_exps = reader.get_tensor_req(f"blk.{block_idx}.ffn_down_exps.weight")
-        self.ffn_down = TensorData(
+        wffn_down_exps = reader.get_tensor_req(f"blk.{block_idx}.ffn_down_exps.weight")
+        self.wffn_down = TensorData(
             name=f"blk.{block_idx}.ffn_down.weight",
-            type=ffn_down_exps.type,
-            shape=(len(self.exp_ids),)+ffn_down_exps.shape[1:],
-            n_elements=ffn_down_exps.n_elements//len(self.exp_ids),
-            n_bytes=ffn_down_exps.n_bytes//len(self.exp_ids),
-            data=ffn_down_exps.data[self.exp_ids].clone(),
+            type=wffn_down_exps.type,
+            shape=(len(self.exp_ids),)+wffn_down_exps.shape[1:],
+            n_elements=wffn_down_exps.n_elements//len(self.exp_ids),
+            n_bytes=wffn_down_exps.n_bytes//len(self.exp_ids),
+            data=wffn_down_exps.data[self.exp_ids].clone(),
             parent=self,
         ).register()
-        del ffn_down_exps
+        del wffn_down_exps
 
         # TODO: non-moe case, tensor names are below
         # f"blk.{block_idx}.ffn_gate.weight"
@@ -204,7 +227,7 @@ class Transformer(nn.Module):
         # fused qkv
         self.kerns.qkv()
         # (optional) rmsnorm per-head over q and k
-        if self.q_norm_td and self.k_norm_td:
+        if self.wq_norm and self.wk_norm:
             self.kerns.rmsnorm()
             self.kerns.rmsnorm()
         # rope over q and k
@@ -219,5 +242,6 @@ class Transformer(nn.Module):
         # routing: all-to-all (if moe model)
         # unsure what is usually done here
         # ffn
+        self.kerns.ffn()
         # gather (if moe model)
         return

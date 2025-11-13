@@ -80,10 +80,16 @@ def test_dequant(backend, dequant):
 
     return
 
+## NOTE: for the rest of the tests FP32 / FP16 dtype tensors are used (as appropriate)
+## since dequant already tests the relevant usage patterns in the other kernels
+## dp_size is used throughout but not actually factored in since it doesn't affect kernel usage
+
 @pytest.mark.parametrize("backend", ["triton", "cuda"])
 def test_rmsnorm(backend):
     kerns = KernelBackend(backend)
-
+    B, L, hidden_dim = 8, 4096, 6144 # adjust as needed
+    input = torch.randn((B,L,hidden_dim), dtype=torch.float16)
+    weight = torch.randn((hidden_dim), dtype=torch.float16)
     # test for rmsnorm applied across entire vector (act. shape [B // dp_size, L, hidden_dim], weight shape [hidden_dim,])
 
     # test for rmsnorm applied across heads (act. shape [B // dp_size, n_heads, L, head_dim], weight shape [head_dim,])
