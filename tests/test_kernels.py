@@ -7,15 +7,11 @@ from minfer.kernels import KernelBackend
 from minfer.kernels.triton.kernels import _dequant as triton_dequant
 from minfer.kernels.cuda.kernels import _dequant as cuda_dequant # type: ignore
 
-def pytest_addoption(parser):
-    parser.addoption("--seed", default=42, type=int)
-
 @pytest.fixture(autouse=True)
-def seed(request):
-    seed_val = request.config.getoption("--seed")
-    torch.manual_seed(seed_val)
-    torch.cuda.manual_seed(seed_val)
-    print(f"Using seed: {seed_val}") # always print out the seed, for user reference
+def seed(request, randomly_seed):
+    torch.manual_seed(randomly_seed)
+    torch.cuda.manual_seed(randomly_seed)
+    return randomly_seed
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
 
