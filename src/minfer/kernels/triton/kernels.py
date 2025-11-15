@@ -84,38 +84,38 @@ def matmul(
     batch_sz: tl.constexpr, seq_len: tl.constexpr,
     d_in: tl.constexpr, d_out: tl.constexpr,
     block_size: tl.constexpr, n_bits: tl.constexpr,
-    packed_sz: tl.constexpr, scale_sz: tl.constexpr,
+    packed_size: tl.constexpr, scale_size: tl.constexpr,
     has_zp: tl.constexpr, out_dtype: tl.constexpr,
-    TILE_SZ: tl.constexpr,
+    TILE_SIZE: tl.constexpr,
 ):
-    """ (ceil(batch_sz*seq_len/TILE_SZ), ceil(d_out/TILE_SZ), ceil(d_in/TILE_SZ)) """
+    """ (ceil(batch_sz*seq_len/TILE_SIZE), ceil(d_out/TILE_SIZE), ceil(d_in/TILE_SIZE)) """
     tile_batch, tile_out, tile_in = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     
-    weight_tile = tl.zeros((TILE_SZ, TILE_SZ), dtype=out_dtype)
+    weight_tile = tl.zeros((TILE_SIZE, TILE_SIZE), dtype=out_dtype)
     
-    weight_row = tile_out*TILE_SZ
-    # weight_col = tile_in*TILE_SZ
+    weight_row = tile_out*TILE_SIZE
+    # weight_col = tile_in*TILE_SIZE
     n_blocks_row = (d_in+block_size-1) // block_size
-    block_stride = packed_sz+scale_sz
+    block_stride = packed_size+scale_size
     weight_offs = weight_row*n_blocks_row*block_stride
     
     _dequant(
         quant_ptr+weight_offs, weight_tile, lut_ptr,
-        M=TILE_SZ, N=TILE_SZ,
+        M=TILE_SIZE, N=TILE_SIZE,
         block_size=block_size, n_bits=n_bits,
-        packed_sz=packed_sz, scale_sz=scale_sz,
+        packed_size=packed_size, scale_size=scale_size,
         has_zp=has_zp, out_dtype=out_dtype,
-        BLOCK_M=TILE_SZ, BLOCK_N=TILE_SZ
+        BLOCK_M=TILE_SIZE, BLOCK_N=TILE_SIZE
     )
     
-    offs_batch = tile_batch*TILE_SZ + tl.arange(0, TILE_SZ)
-    offs_in = tile_in*TILE_SZ + tl.arange(0, TILE_SZ)
+    offs_batch = tile_batch*TILE_SIZE + tl.arange(0, TILE_SIZE)
+    offs_in = tile_in*TILE_SIZE + tl.arange(0, TILE_SIZE)
     act_mask = (offs_batch < batch_sz*seq_len)[:, None] & (offs_in<d_in)[None, :]
     act_tile = tl.load(act_ptr + offs_batch[:, None]*d_in + offs_in[None, :], mask=act_mask, other=0.0)
     
     result = tl.dot(act_tile, tl.trans(weight_tile))
     
-    offs_out = tile_out*TILE_SZ + tl.arange(0, TILE_SZ)
+    offs_out = tile_out*TILE_SIZE + tl.arange(0, TILE_SIZE)
     out_mask = (offs_batch < batch_sz*seq_len)[:, None] & (offs_out<d_out)[None, :]
     tl.atomic_add(out_ptr + offs_batch[:, None]*d_out + offs_out[None, :], result, mask=out_mask)
 
@@ -125,7 +125,7 @@ def embed(
     token_ids_ptr, quant_ptr, out_ptr, lut_ptr,
     batch_sz: tl.constexpr, seq_len: tl.constexpr, hidden_dim: tl.constexpr,
     block_size: tl.constexpr, n_bits: tl.constexpr,
-    packed_sz: tl.constexpr, scale_sz: tl.constexpr,
+    packed_size: tl.constexpr, scale_size: tl.constexpr,
     has_zp: tl.constexpr, out_dtype: tl.constexpr,
 ):
     """ (batch_sz*seq_len, ceil(hidden_dim/64)) """
@@ -136,7 +136,7 @@ def embed(
     token_id = tl.load(token_ids_ptr + batch_idx*seq_len + seq_idx)
     
     n_blocks_row = (hidden_dim+block_size-1) // block_size
-    block_stride = packed_sz+scale_sz
+    block_stride = packed_size+scale_size
     row_offs = token_id*n_blocks_row*block_stride
     out_offs = (batch_idx*seq_len + seq_idx)*hidden_dim
     
@@ -144,7 +144,7 @@ def embed(
         quant_ptr+row_offs, out_ptr+out_offs, lut_ptr,
         M=1, N=hidden_dim,
         block_size=block_size, n_bits=n_bits,
-        packed_sz=packed_sz, scale_sz=scale_sz,
+        packed_size=packed_size, scale_size=scale_size,
         has_zp=has_zp, out_dtype=out_dtype,
         BLOCK_M=1, BLOCK_N=64
     )
