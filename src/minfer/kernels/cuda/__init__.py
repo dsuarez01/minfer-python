@@ -19,7 +19,8 @@ def _get_cuda_kernels():
 cuda_kernels: Any = _get_cuda_kernels()
 _dequant = cuda_kernels._dequant
 rmsnorm = cuda_kernels.rmsnorm
-rope = cuda_kernels.rope
+il_rope = cuda_kernels.il_rope
+neox_rope = cuda_kernels.neox_rope
 matmul = cuda_kernels.matmul
 embed = cuda_kernels.embed
 qkv = cuda_kernels.qkv
@@ -27,4 +28,4 @@ flash_attn = cuda_kernels.flash_attn
 moe_scoring = cuda_kernels.moe_scoring
 ffn = cuda_kernels.ffn
 
-__all__ = ["rmsnorm", "rope", "matmul", "embed", "qkv", "flash_attn", "moe_scoring", "ffn"]
+__all__ = ["_dequant", "rmsnorm", "il_rope", "neox_rope", "matmul", "embed", "qkv", "flash_attn", "moe_scoring", "ffn"]

@@ -250,11 +250,6 @@ class BufPool(nn.Module):
         self.register_buffer("q", torch.zeros((params.batch_size // params.dp_size, params.n_heads, params.max_seq_len, params.head_dim), dtype=params.act_dtype))
         self.register_buffer("k", torch.zeros((params.batch_size // params.dp_size, params.n_kv_heads, params.max_seq_len, params.head_dim), dtype=params.act_dtype))
         self.register_buffer("v", torch.zeros((params.batch_size // params.dp_size, params.n_kv_heads, params.max_seq_len, params.head_dim), dtype=params.act_dtype))
-        
-        self.register_buffer("att_scores", torch.zeros((params.batch_size // params.dp_size, params.n_heads, params.max_seq_len, params.max_seq_len), dtype=params.act_dtype))
-
-        if params.n_heads*params.head_dim != params.hidden_dim: # applies to some models like qwen
-            self.register_buffer("att_out", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.n_heads, params.head_dim), dtype=params.act_dtype))
 
         # moe routing
         self.register_buffer("moe_scores", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.n_exps), dtype=params.act_dtype))
@@ -271,9 +266,9 @@ class BufPool(nn.Module):
 @dataclass
 class QuantConfig:
     block_size: int
-    bits: int
-    packed_bytes: int
-    scale_bytes: int
+    nbits: int
+    packed_nbytes: int
+    scale_nbytes: int
     has_zp: bool
     lut_vals: list
 

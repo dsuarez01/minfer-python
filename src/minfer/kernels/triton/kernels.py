@@ -7,7 +7,7 @@ def _dequant(
     quant_ptr, out_ptr, lut_ptr,
     M: tl.constexpr, N: tl.constexpr,
     block_size: tl.constexpr, n_bits: tl.constexpr,
-    packed_sz: tl.constexpr, scale_sz: tl.constexpr,
+    packed_size: tl.constexpr, scale_size: tl.constexpr,
     has_zp: tl.constexpr, out_dtype: tl.constexpr,
     BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
 ):
@@ -28,13 +28,13 @@ def _dequant(
     
     byte_offs = elem_idx*n_bits // 8
     bit_offs = (elem_idx*n_bits) % 8
-    block_stride = packed_sz+scale_sz
+    block_stride = packed_size+scale_size
     packed_offs = blk_idx*block_stride + byte_offs
     
     packed = tl.load(quant_ptr+packed_offs, mask=mask, other=0)
     code = (packed>>bit_offs) & ((1<<n_bits) - 1) # type:ignore
     
-    scale_offs = blk_idx*block_stride + packed_sz
+    scale_offs = blk_idx*block_stride + packed_size
     scale = tl.load(quant_ptr+scale_offs, mask=mask, other=1.0).to(out_dtype)
     zp = tl.load(quant_ptr+scale_offs+2, mask=mask, other=0.0).to(out_dtype) if has_zp else 0.0
     
@@ -42,37 +42,6 @@ def _dequant(
     
     out_offs = offs_m[:, None]*N + offs_n[None, :]
     tl.store(out_ptr+out_offs, val, mask=mask)
-
-# TODO: complete
-# @triton.jit
-# def _softmax(
-#     in_ptr,
-#     out_ptr,
-#     pid,
-#     dim: tl.constexpr,
-#     BLOCK_SIZE: tl.constexpr,
-# ):
-    
-#     x_max = float("-inf")
-#     for i in range(0, dim, BLOCK_SIZE):
-#         offs = i + tl.arange(0, BLOCK_SIZE)
-#         x = tl.load(in_ptr + pid*dim + offs, mask=offs<dim)
-#         x_max = tl.maximum(x_max, tl.max(x))
-
-#     exp_sum = 0.0
-#     for i in range(0, dim, BLOCK_SIZE):
-#         offs = i + tl.arange(0, BLOCK_SIZE)
-#         mask = offs < dim
-#         x = tl.load(in_ptr + pid*dim + offs, mask=mask)
-#         x_exp = tl.exp(x-x_max)
-#         exp_sum += tl.sum(x_exp)
-#         tl.store(out_ptr + pid*dim + offs, x_exp, mask=mask)
-    
-#     scale = 1.0 / exp_sum
-#     for i in range(0, dim, BLOCK_SIZE):
-#         offs = i + tl.arange(0, BLOCK_SIZE)
-#         x_exp = tl.load(out_ptr + pid*dim + offs, mask=offs<dim)
-#         tl.store(out_ptr + pid*dim + offs, x_exp*scale, mask=offs<dim)
 
 # attn norm weights always stored in F32
 @triton.jit
@@ -102,7 +71,11 @@ def rmsnorm(
         tl.store(out_ptr + pid*dim + offs, x*w*scale, mask=mask)
 
 @triton.jit
-def rope():
+def il_rope():
+    pass
+
+@triton.jit
+def neox_rope():
     pass
 
 @triton.jit

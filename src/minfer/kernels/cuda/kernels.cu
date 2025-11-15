@@ -8,8 +8,11 @@ void _dequant() {
 void rmsnorm() {
     TORCH_CHECK(false, "rmsnorm not implemented");
 }
-void rope() {
-    TORCH_CHECK(false, "rope not implemented");
+void il_rope() {
+    TORCH_CHECK(false, "il_rope not implemented");
+}
+void neox_rope() {
+    TORCH_CHECK(false, "neox_rope not implemented");
 }
 void matmul() {
     TORCH_CHECK(false, "matmul not implemented");
@@ -33,7 +36,8 @@ void ffn() {
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("_dequant", &_dequant);
     m.def("rmsnorm", &rmsnorm);
-    m.def("rope", &rope);
+    m.def("il_rope", &il_rope);
+    m.def("neox_rope", &neox_rope);
     m.def("matmul", &matmul);
     m.def("embed", &embed);
     m.def("qkv", &qkv);
