@@ -1,10 +1,6 @@
 #include <torch/extension.h>
 
 // TODO: complete
-void _dequant() {
-    TORCH_CHECK(false, "_dequant not implemented");
-}
-
 void rmsnorm() {
     TORCH_CHECK(false, "rmsnorm not implemented");
 }
@@ -34,7 +30,6 @@ void ffn() {
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("_dequant", &_dequant);
     m.def("rmsnorm", &rmsnorm);
     m.def("il_rope", &il_rope);
     m.def("neox_rope", &neox_rope);

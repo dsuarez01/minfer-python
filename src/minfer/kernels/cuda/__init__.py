@@ -9,15 +9,18 @@ def _get_cuda_kernels():
     if _cuda_kernels is None:
         source_dir = os.path.dirname(__file__)
         _cuda_kernels = load(
-            name="kernels",
-            sources=[os.path.join(source_dir, "kernels.cu")],
+            name="cuda_kernels",
+            sources=[
+                os.path.join(source_dir, "kernels.cu"),
+                os.path.join(source_dir, "dequant.cu"),    
+            ],
             extra_cuda_cflags=["-O3"],
             verbose=True,
         )
     return _cuda_kernels
 
 cuda_kernels: Any = _get_cuda_kernels()
-_dequant = cuda_kernels._dequant
+_dequant_row = cuda_kernels._dequant_row
 rmsnorm = cuda_kernels.rmsnorm
 il_rope = cuda_kernels.il_rope
 neox_rope = cuda_kernels.neox_rope
@@ -28,4 +31,4 @@ flash_attn = cuda_kernels.flash_attn
 moe_scoring = cuda_kernels.moe_scoring
 ffn = cuda_kernels.ffn
 
-__all__ = ["_dequant", "rmsnorm", "il_rope", "neox_rope", "matmul", "embed", "qkv", "flash_attn", "moe_scoring", "ffn"]
+__all__ = ["_dequant_row", "rmsnorm", "il_rope", "neox_rope", "matmul", "embed", "qkv", "flash_attn", "moe_scoring", "ffn"]

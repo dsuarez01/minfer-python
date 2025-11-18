@@ -26,7 +26,7 @@ class Model(nn.Module):
         self.params = Params(reader, run_params)
         self.kerns = KernelBackend(self.params.backend)
         self.bufs = BufPool(self.params)
-        self.luts = LUT(self.params.act_dtype)
+        self.luts = LUT(self.params.act_dtype) # TODO: remove if unnecessary
         self.compute_logits = False
 
         # TensorData attrs
@@ -231,8 +231,8 @@ class Transformer(nn.Module):
             self.kerns.rmsnorm()
             self.kerns.rmsnorm()
         # rope over q and k
-        self.kerns.rope()
-        self.kerns.rope()
+        self.kerns.il_rope()
+        self.kerns.il_rope()
         # flash attn
         self.kerns.flash_attn()
         # ffn norm

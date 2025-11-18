@@ -1,49 +1,6 @@
 import triton
 import triton.language as tl
-from gguf import GGMLQuantizationType
 
-@triton.jit
-def _dequant(
-    quant_ptr, out_ptr, lut_ptr,
-    M: tl.constexpr, N: tl.constexpr,
-    block_size: tl.constexpr, n_bits: tl.constexpr,
-    packed_size: tl.constexpr, scale_size: tl.constexpr,
-    has_zp: tl.constexpr, out_dtype: tl.constexpr,
-    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
-):
-    pid_m, pid_n = tl.program_id(0), tl.program_id(1)
-    
-    offs_m = pid_m*BLOCK_M + tl.arange(0, BLOCK_M)
-    offs_n = pid_n*BLOCK_N + tl.arange(0, BLOCK_N)
-    mask = (offs_m<M)[:, None] & (offs_n<N)[None, :]
-    
-    blk_row = offs_m // block_size
-    blk_col = offs_n // block_size
-    n_blocks_row = (N+block_size-1) // block_size
-    blk_idx = blk_row*n_blocks_row + blk_col
-    
-    elem_row = offs_m%block_size
-    elem_col = offs_n%block_size
-    elem_idx = elem_row*block_size + elem_col
-    
-    byte_offs = elem_idx*n_bits // 8
-    bit_offs = (elem_idx*n_bits) % 8
-    block_stride = packed_size+scale_size
-    packed_offs = blk_idx*block_stride + byte_offs
-    
-    packed = tl.load(quant_ptr+packed_offs, mask=mask, other=0)
-    code = (packed>>bit_offs) & ((1<<n_bits) - 1) # type:ignore
-    
-    scale_offs = blk_idx*block_stride + packed_size
-    scale = tl.load(quant_ptr+scale_offs, mask=mask, other=1.0).to(out_dtype)
-    zp = tl.load(quant_ptr+scale_offs+2, mask=mask, other=0.0).to(out_dtype) if has_zp else 0.0
-    
-    val = tl.load(lut_ptr+code, mask=mask)*scale + zp
-    
-    out_offs = offs_m[:, None]*N + offs_n[None, :]
-    tl.store(out_ptr+out_offs, val, mask=mask)
-
-# attn norm weights always stored in F32
 @triton.jit
 def rmsnorm(
     in_ptr,
@@ -78,6 +35,7 @@ def il_rope():
 def neox_rope():
     pass
 
+# TODO: fix args since dequant logic has changed
 @triton.jit
 def matmul(
     act_ptr, quant_ptr, out_ptr, lut_ptr,
@@ -99,14 +57,15 @@ def matmul(
     block_stride = packed_size+scale_size
     weight_offs = weight_row*n_blocks_row*block_stride
     
-    _dequant(
-        quant_ptr+weight_offs, weight_tile, lut_ptr,
-        M=TILE_SIZE, N=TILE_SIZE,
-        block_size=block_size, n_bits=n_bits,
-        packed_size=packed_size, scale_size=scale_size,
-        has_zp=has_zp, out_dtype=out_dtype,
-        BLOCK_M=TILE_SIZE, BLOCK_N=TILE_SIZE
-    )
+    # TODO: fix
+    # _dequant_row(
+    #     quant_ptr+weight_offs, weight_tile, lut_ptr,
+    #     M=TILE_SIZE, N=TILE_SIZE,
+    #     block_size=block_size, n_bits=n_bits,
+    #     packed_size=packed_size, scale_size=scale_size,
+    #     has_zp=has_zp, out_dtype=out_dtype,
+    #     BLOCK_M=TILE_SIZE, BLOCK_N=TILE_SIZE
+    # )
     
     offs_batch = tile_batch*TILE_SIZE + tl.arange(0, TILE_SIZE)
     offs_in = tile_in*TILE_SIZE + tl.arange(0, TILE_SIZE)
@@ -119,7 +78,7 @@ def matmul(
     out_mask = (offs_batch < batch_sz*seq_len)[:, None] & (offs_out<d_out)[None, :]
     tl.atomic_add(out_ptr + offs_batch[:, None]*d_out + offs_out[None, :], result, mask=out_mask)
 
-# TODO: complete
+# TODO: fix args since dequant logic has changed
 @triton.jit
 def embed(
     token_ids_ptr, quant_ptr, out_ptr, lut_ptr,
@@ -140,14 +99,15 @@ def embed(
     row_offs = token_id*n_blocks_row*block_stride
     out_offs = (batch_idx*seq_len + seq_idx)*hidden_dim
     
-    _dequant(
-        quant_ptr+row_offs, out_ptr+out_offs, lut_ptr,
-        M=1, N=hidden_dim,
-        block_size=block_size, n_bits=n_bits,
-        packed_size=packed_size, scale_size=scale_size,
-        has_zp=has_zp, out_dtype=out_dtype,
-        BLOCK_M=1, BLOCK_N=64
-    )
+    # TODO: fix
+    # _dequant_row(
+    #     quant_ptr+row_offs, out_ptr+out_offs, lut_ptr,
+    #     M=1, N=hidden_dim,
+    #     block_size=block_size, n_bits=n_bits,
+    #     packed_size=packed_size, scale_size=scale_size,
+    #     has_zp=has_zp, out_dtype=out_dtype,
+    #     BLOCK_M=1, BLOCK_N=64
+    # )
 
 @triton.jit
 def qkv(

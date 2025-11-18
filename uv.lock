@@ -135,7 +135,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "gguf", specifier = ">=0.16.0" },
+    { name = "gguf", specifier = ">=0.17.1" },
     { name = "ninja", specifier = ">=1.11.1.4" },
     { name = "torch", specifier = ">=2.7.0" },
     { name = "triton", marker = "sys_platform == 'linux'", specifier = ">=3.3.0" },

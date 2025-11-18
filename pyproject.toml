@@ -4,10 +4,11 @@ version = "0.1.0"
 description = "Minimal Python (decoder-only) LLM inference engine w/ Triton and CUDA kernels"
 readme = "README.md"
 requires-python = ">=3.13"
+# might have to pull gguf from github main
 dependencies = [
     "torch >= 2.7.0",
     "triton >= 3.3.0 ; sys_platform == 'linux'",
-    "gguf >= 0.16.0",
+    "gguf >= 0.17.1",
     "ninja >= 1.11.1.4",
 ]
 

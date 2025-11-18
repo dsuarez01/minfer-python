@@ -263,6 +263,7 @@ class BufPool(nn.Module):
         # logits
         self.register_buffer("logits", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.vocab_size), dtype=params.act_dtype))
 
+# TODO: Is this even necessary anymore?
 @dataclass
 class QuantConfig:
     block_size: int
@@ -272,6 +273,7 @@ class QuantConfig:
     has_zp: bool
     lut_vals: list
 
+# TODO: Is this even necessary anymore?
 class LUT(nn.Module):
     """ Lookup tables for dequant, one per device """
     

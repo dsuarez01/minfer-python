@@ -3,29 +3,26 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import pytest
-from gguf import quants
+from gguf import quants, GGMLQuantizationType
 
 from minfer.utils import LUT
 from minfer.kernels import KernelBackend
-from minfer.kernels.triton.kernels import _dequant as triton_dequant
-from minfer.kernels.cuda.kernels import _dequant as cuda_dequant # type: ignore
-
-@pytest.fixture(autouse=True)
-def seed(request, randomly_seed):
-    torch.manual_seed(randomly_seed)
-    torch.cuda.manual_seed(randomly_seed)
-    return randomly_seed
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
 
-# dequant needs to be tested but works a little differently
-# it is not exposed in the KernelBackend interface
-@pytest.mark.parametrize("backend,dequant", [("triton",triton_dequant),("cuda",cuda_dequant)])
-@pytest.mark.parametrize("qtype", list(LUT.CFG.keys()))
-@pytest.mark.parametrize("shape, block_m, block_n", [((128,128),16,16), ((128,128),1,128)])
-def test_dequant(backend, dequant, qtype, shape, block_m, block_n):
-    # see https://github.com/ggml-org/llama.cpp/tree/master/gguf-py/gguf
+# NOTE: some of these opns. (quantize, dequantize) aren't fully 
+# implemented for all GGMLQuantizationTypes in gguf-py and won't work.
+# best we can do is point to the newest commit at gguf.quants in the repo
+# someone will finish them all, then we can use latest pypi release
+@pytest.mark.parametrize("backend", ["triton", "cuda"])
+@pytest.mark.parametrize("block_m, block_n", [(16, 16), (1, 256)], ids=["tile-16x16", "tile-1x256"])
+@pytest.mark.parametrize("shape", [(256, 256)], ids=["shape-256x256",])
+@pytest.mark.parametrize("qtype_name", [qtype.name for qtype in quants._type_traits.keys()])
+def test_dequant(backend, qtype_name, shape, block_m, block_n):
+    kerns = KernelBackend(backend)
+    qtype = GGMLQuantizationType[qtype_name]
 
+    # see https://github.com/ggml-org/llama.cpp/tree/master/gguf-py/gguf
     data_A = np.random.randn(*shape).astype(np.float32)
     quantized_A = quants.quantize(data_A, qtype)
     expected_A = quants.dequantize(quantized_A, qtype)
@@ -34,14 +31,8 @@ def test_dequant(backend, dequant, qtype, shape, block_m, block_n):
     actual_A = torch.zeros(shape, dtype=torch.float32).cuda()
     cfg = LUT.CFG[qtype]
     lut = torch.tensor(cfg.lut_vals, dtype=torch.float32).cuda()
-    dequant(
-        quantized_A, actual_A, lut,
-        M=shape[0], N=shape[1],
-        block_size=cfg.block_size, n_bits=cfg.nbits,
-        packed_size=cfg.packed_nbytes, scale_size=cfg.scale_nbytes,
-        has_zp=cfg.has_zp,
-        BLOCK_M=block_m, BLOCK_N=block_n
-    )
+    grid = (shape[0] // block_m, shape[1] // block_n)
+    # kerns._dequant_row[grid](qtype) # TODO: add the proper args in once defined
     actual_A = actual_A.cpu().numpy()
     assert np.allclose(actual_A, expected_A, rtol=1e-2, atol=1e-3)
 
