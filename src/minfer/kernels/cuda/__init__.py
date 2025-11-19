@@ -12,7 +12,7 @@ def _get_cuda_kernels():
             name="cuda_kernels",
             sources=[
                 os.path.join(source_dir, "kernels.cu"),
-                os.path.join(source_dir, "dequant.cu"),    
+                os.path.join(source_dir, "quants.cu"),    
             ],
             extra_cuda_cflags=["-O3"],
             verbose=True,
@@ -30,5 +30,3 @@ qkv = cuda_kernels.qkv
 flash_attn = cuda_kernels.flash_attn
 moe_scoring = cuda_kernels.moe_scoring
 ffn = cuda_kernels.ffn
-
-__all__ = ["_dequant_row", "rmsnorm", "il_rope", "neox_rope", "matmul", "embed", "qkv", "flash_attn", "moe_scoring", "ffn"]

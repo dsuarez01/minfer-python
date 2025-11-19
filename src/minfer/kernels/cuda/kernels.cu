@@ -1,6 +1,6 @@
 #include <torch/extension.h>
 
-// TODO: complete
+// TODO: complete me!
 void rmsnorm() {
     TORCH_CHECK(false, "rmsnorm not implemented");
 }

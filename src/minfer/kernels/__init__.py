@@ -1,13 +1,12 @@
 class KernelBackend:
     def __init__(self, backend: str):
         if backend == "triton":
-            from .triton import _dequant_row, rmsnorm, il_rope, neox_rope, matmul, embed, qkv, flash_attn, moe_scoring, ffn
+            from .triton import rmsnorm, il_rope, neox_rope, matmul, embed, qkv, flash_attn, moe_scoring, ffn
         elif backend == "cuda":
-            from .cuda import _dequant_row, rmsnorm, il_rope, neox_rope, matmul, embed, qkv, flash_attn, moe_scoring, ffn
+            from .cuda import rmsnorm, il_rope, neox_rope, matmul, embed, qkv, flash_attn, moe_scoring, ffn
         else:
             raise ValueError(f"Unknown backend: {backend}. Choose 'triton' or 'cuda'")
         
-        self._dequant_row = _dequant_row # only exposed for testing
         self.rmsnorm = rmsnorm
         self.il_rope = il_rope
         self.neox_rope = neox_rope

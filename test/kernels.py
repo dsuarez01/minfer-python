@@ -3,10 +3,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import pytest
-from gguf import quants, GGMLQuantizationType
+from gguf import quants, GGMLQuantizationType, GGML_QUANT_SIZES
 
-from minfer.utils import LUT
 from minfer.kernels import KernelBackend
+from minfer.kernels.triton import _dequant_row as triton_dequant_row
+from minfer.kernels.cuda import _dequant_row as cuda_dequant_row
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
 
@@ -14,25 +15,30 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU requi
 # implemented for all GGMLQuantizationTypes in gguf-py and won't work.
 # best we can do is point to the newest commit at gguf.quants in the repo
 # someone will finish them all, then we can use latest pypi release
+SUPPORTED_QTYPES = [qtype.name for qtype in quants._type_traits.keys()]
+
 @pytest.mark.parametrize("backend", ["triton", "cuda"])
-@pytest.mark.parametrize("block_m, block_n", [(16, 16), (1, 256)], ids=["tile-16x16", "tile-1x256"])
-@pytest.mark.parametrize("shape", [(256, 256)], ids=["shape-256x256",])
-@pytest.mark.parametrize("qtype_name", [qtype.name for qtype in quants._type_traits.keys()])
-def test_dequant(backend, qtype_name, shape, block_m, block_n):
-    kerns = KernelBackend(backend)
+@pytest.mark.parametrize("shape", [(1024,6144), (16384,6144), (1,6144,6144)], 
+                         ids=["1024x6144", "16384x6144", "1x6144x6144"])
+@pytest.mark.parametrize("qtype_name", SUPPORTED_QTYPES)
+def test_dequant(backend, qtype_name, shape):
+    dequant_row = triton_dequant_row if backend == "triton" else cuda_dequant_row
     qtype = GGMLQuantizationType[qtype_name]
+    M, N = shape
+    grid = (M,)
 
     # see https://github.com/ggml-org/llama.cpp/tree/master/gguf-py/gguf
     data_A = np.random.randn(*shape).astype(np.float32)
     quantized_A = quants.quantize(data_A, qtype)
     expected_A = quants.dequantize(quantized_A, qtype)
+
+    block_size, type_size = GGML_QUANT_SIZES[qtype]
+    bytes_per_row = N // block_size * type_size
     
     quantized_A = torch.from_numpy(quantized_A).cuda()
     actual_A = torch.zeros(shape, dtype=torch.float32).cuda()
-    cfg = LUT.CFG[qtype]
-    lut = torch.tensor(cfg.lut_vals, dtype=torch.float32).cuda()
-    grid = (shape[0] // block_m, shape[1] // block_n)
-    # kerns._dequant_row[grid](qtype) # TODO: add the proper args in once defined
+
+    dequant_row[grid](qtype, quantized_A, actual_A, bytes_per_row, N)
     actual_A = actual_A.cpu().numpy()
     assert np.allclose(actual_A, expected_A, rtol=1e-2, atol=1e-3)
 

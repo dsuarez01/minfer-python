@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from minfer.kernels import KernelBackend
-from minfer.utils import GGUFReaderWrapper, Params, BufPool, TensorData, LUT, GGMLQuantizationType
+from minfer.utils import GGUFReaderWrapper, Params, BufPool, TensorData, GGMLQuantizationType
 
 import torch
 import torch.nn as nn
@@ -13,7 +13,6 @@ class Model(nn.Module):
     params: Params
     kerns: KernelBackend
     bufs: BufPool
-    luts: LUT
     compute_logits: bool
 
     woutnorm: TensorData
@@ -26,7 +25,6 @@ class Model(nn.Module):
         self.params = Params(reader, run_params)
         self.kerns = KernelBackend(self.params.backend)
         self.bufs = BufPool(self.params)
-        self.luts = LUT(self.params.act_dtype) # TODO: remove if unnecessary
         self.compute_logits = False
 
         # TensorData attrs
@@ -216,10 +214,6 @@ class Transformer(nn.Module):
     @property
     def bufs(self) -> BufPool:
         return self.model.bufs
-    
-    @property
-    def luts(self) -> LUT:
-        return self.model.luts
 
     def forward(self) -> None:
         # attn norm
