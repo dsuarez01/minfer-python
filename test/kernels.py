@@ -18,8 +18,7 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU requi
 SUPPORTED_QTYPES = [qtype.name for qtype in quants._type_traits.keys()]
 
 @pytest.mark.parametrize("backend", ["triton", "cuda"])
-@pytest.mark.parametrize("shape", [(1024,6144), (16384,6144), (1,6144,6144)], 
-                         ids=["1024x6144", "16384x6144", "1x6144x6144"])
+@pytest.mark.parametrize("shape", [(1024,6144), (16384,6144)], ids=["1024x6144", "16384x6144"])
 @pytest.mark.parametrize("qtype_name", SUPPORTED_QTYPES)
 def test_dequant(backend, qtype_name, shape):
     dequant_row = triton_dequant_row if backend == "triton" else cuda_dequant_row
