@@ -12,9 +12,10 @@ from minfer.kernels.cuda import _dequant_row as cuda_dequant_row
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
 
 # NOTE: some of these opns. (quantize, dequantize) aren't fully 
-# implemented for all GGMLQuantizationTypes in gguf-py and won't work.
+# implemented for all GGMLQuantizationTypes in gguf-py, so this test isn't comprehensive.
 # best we can do is point to the newest commit at gguf.quants in the repo
 # someone will finish them all, then we can use latest pypi release
+# (maybe could help out by submitting a pull request, idk)
 SUPPORTED_QTYPES = [qtype.name for qtype in quants._type_traits.keys()]
 
 @pytest.mark.parametrize("backend", ["triton", "cuda"])
@@ -40,6 +41,8 @@ def test_dequant(backend, qtype_name, shape):
     dequant_row[grid](qtype, quantized_A, actual_A, bytes_per_row, N)
     actual_A = actual_A.cpu().numpy()
     assert np.allclose(actual_A, expected_A, rtol=1e-2, atol=1e-3)
+
+    # TODO: add check for FP16 here as well (as test B), important!
 
 ## NOTE: for the rest of the tests FP16 dtype tensors are used (as appropriate)
 ## since dequant already tests the relevant usage patterns in the other kernels
