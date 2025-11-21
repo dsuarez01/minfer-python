@@ -24,6 +24,16 @@ __device__ inline float E8M0_TO_FP32_HALF(uint8_t x) {
     return result;
 }
 
+// TODO: why is this isolated at all?
+__device__ inline void get_scale_min_k4(int j, const uint8_t * __restrict__ q, uint8_t * __restrict__ d, uint8_t * __restrict__ m) {
+    if (j < 4) {
+        *d = q[j] & 63; *m = q[j + 4] & 63;
+    } else {
+        *d = (q[j+4] & 0xF) | ((q[j-4] >> 6) << 4);
+        *m = (q[j+4] >>  4) | ((q[j-0] >> 6) << 4);
+    }
+}
+
 // exposed for testing in Python host-side code
 template <typename T>
 __global__ void _dequant_row(

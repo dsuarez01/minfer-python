@@ -209,11 +209,11 @@ def __dequant_row_q2_K(x_ptr, y_ptr, k) -> None:
 
     bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
     oi = tl.expand_dims(tl.arange(0,qk), axis=0)
-    si = oi//scsz
+    sci = oi//scsz
 
     d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
     min_ptr = (x_ptr+bo+dmino).to(tl.pointer_type(tl.float16))
-    sc_ptr = (x_ptr+bo+sco+si)
+    sc_ptr = (x_ptr+bo+sco+sci)
 
     d = tl.load(d_ptr).to(tl.float32)
     min = tl.load(min_ptr).to(tl.float32)
@@ -222,15 +222,11 @@ def __dequant_row_q2_K(x_ptr, y_ptr, k) -> None:
     dl = d*(sc&0xF)
     ml = min*(sc>>4)
 
-    ne = 4                          # 4 vals of 2 bits each
-    hi = oi%(qk//2)                 # index w/in half
-    hbi = oi//(qk//2)               # which half
-    qi = hi//ne + (qsz//2)*(hbi)
+    ne = 4            # 4 vals of 2 bits each
+    qi = oi//ne
     shift = (oi%ne)*2
 
-    q_ptr = x_ptr+bo+qso+qi
-    q = tl.load(q_ptr)
-
+    q = tl.load(x_ptr+bo+qso+qi)
     q = ((q>>shift)&0x03).to(tl.int8)
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
@@ -238,11 +234,74 @@ def __dequant_row_q2_K(x_ptr, y_ptr, k) -> None:
 
 @triton.jit
 def __dequant_row_q3_K(x_ptr, y_ptr, k) -> None:
-    pass
+    qtype = GGMLQuantizationType.Q3_K
+    qk, bsz = GGML_QUANT_SIZES[qtype]
+    bl = BLOCK_LAYOUTS[qtype]
+    hmasko, hmasksz = bl["hmask"]
+    qso, qsz = bl["qs"]
+    sco, scsz = bl["scales"]
+    do, dsz = bl["d"]
+
+    assert k % qk == 0, qtype.name
+    nb = k // qk
+
+    bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
+    d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
+    d = tl.load(d_ptr).to(tl.float32)
+
+    ## (very odd logic to get the scales)
+    # load first 12 bytes of each block
+    s = tl.load(x_ptr+bo+sco+tl.expand_dims(tl.arange(0,12),axis=0))
+    
+    # bytes packed into 3 uint32s
+    aux0 = s[:,0].to(tl.uint32) | (s[:,1].to(tl.uint32)<<8) | (s[:,2].to(tl.uint32)<<16) | (s[:,3].to(tl.uint32)<<24)
+    aux1 = s[:,4].to(tl.uint32) | (s[:,5].to(tl.uint32)<<8) | (s[:,6].to(tl.uint32)<<16) | (s[:,7].to(tl.uint32)<<24)
+    aux2 = s[:,8].to(tl.uint32) | (s[:,9].to(tl.uint32)<<8) | (s[:,10].to(tl.uint32)<<16) | (s[:,11].to(tl.uint32)<<24)
+
+    kmask1, kmask2 = 0x03030303, 0x0f0f0f0f
+    tmp = aux2
+
+    # bit shuffling
+    aux2_new = ((aux0 >> 4) & kmask2) | (((tmp >> 4) & kmask1) << 4)
+    aux3_new = ((aux1 >> 4) & kmask2) | (((tmp >> 6) & kmask1) << 4)
+    aux0_new = (aux0 & kmask2) | (((tmp >> 0) & kmask1) << 4)
+    aux1_new = (aux1 & kmask2) | (((tmp >> 2) & kmask1) << 4)
+
+    scales_list = []
+    for aux in [aux0_new, aux1_new, aux2_new, aux3_new]:
+        for s in [0,8,16,24]:
+            scales_list.append(tl.expand_dims(((aux>>s) & 0xFF).to(tl.int8), axis=1))
+    
+    scales = scales_list[0]
+    for s in scales_list[1:]:
+        scales = tl.cat(scales,s)
+
+    sc = tl.gather(scales, oi//scsz, axis=1)
+    ## (end of very odd logic to get the scales)
+
+    dl = d*(sc-32)
+
+    ne = 4                          # 4 vals of 2 bits each
+    qi = oi//ne
+    hi = qi%(qsz//2)
+    biti = oi//32
+    m = 1 << biti
+    shift = (oi%ne)*2
+
+    q = tl.load(x_ptr+bo+qso+qi)
+    h = tl.load(x_ptr+bo+hmasko+hi)
+
+
+    q = ((q>>shift)&0x03-tl.where((h & m)!=0,0,4)).to(tl.int8)
+    
+    ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
+    tl.store(y_ptr+ybo+oi, dl*q)
 
 @triton.jit
 def __dequant_row_q4_K(x_ptr, y_ptr, k) -> None:
-    pass
+    
 
 @triton.jit
 def __dequant_row_q5_K(x_ptr, y_ptr, k) -> None:
