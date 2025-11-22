@@ -315,16 +315,13 @@ def __dequant_row_q4_K(x_ptr, y_ptr, k) -> None:
     bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
     oi = tl.expand_dims(tl.arange(0,qk), axis=0)
 
+    # scale and min logic
+
     d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
     d_min_ptr = (x_ptr+bo+dmino).to(tl.pointer_type(tl.float16))
 
     d = tl.load(d_ptr).to(tl.float32)
     dmin = tl.load(d_min_ptr).to(tl.float32)
-
-    qi = (oi//2)
-    shift = (oi%2)*4
-
-    q = tl.load(x_ptr+bo+qso+qi)
 
     sb = tl.load(x_ptr+bo+sco+tl.expand_dims(tl.arange(0,scsz),axis=0))
     gpi = oi//(qk//8)
@@ -341,12 +338,68 @@ def __dequant_row_q4_K(x_ptr, y_ptr, k) -> None:
     dl = d * sc
     ml = dmin * m
 
+    # q
+
+    qi = (oi//2)
+    shift = (oi%2)*4
+
+    q = tl.load(x_ptr+bo+qso+qi)
+
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
     tl.store(y_ptr+ybo+oi, dl*((q>>shift)&0xF)-ml)
 
 @triton.jit
 def __dequant_row_q5_K(x_ptr, y_ptr, k) -> None:
-    pass
+    qtype = GGMLQuantizationType.Q5_K
+    qk, bsz = GGML_QUANT_SIZES[qtype]
+    bl = BLOCK_LAYOUTS[qtype]
+    do, dsz = bl["d"]
+    dmino, dminsz = bl["dmin"]
+    sco, scsz = bl["scales"]
+    qho, qhsz = bl["qh"]
+    qso, qsz = bl["qs"]
+
+    assert k % qk == 0, qtype.name
+    nb = k // qk
+
+    bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
+    # scale and min logic
+
+    d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
+    d_min_ptr = (x_ptr+bo+dmino).to(tl.pointer_type(tl.float16))
+
+    d = tl.load(d_ptr).to(tl.float32)
+    dmin = tl.load(d_min_ptr).to(tl.float32)
+
+    sb = tl.load(x_ptr+bo+sco+tl.expand_dims(tl.arange(0,scsz),axis=0))
+    gpi = oi//(qk//8)
+    low = gpi < 4
+
+    d1 = tl.gather(sb, tl.where(low, gpi, gpi+4), axis=1)
+    d2 = tl.gather(sb, tl.where(low, gpi+4, gpi-4), axis=1) # the True case is a dummy entry
+    m1 = tl.gather(sb, gpi+4, axis=1)
+    m2 = tl.gather(sb, tl.where(low, gpi+4, gpi), axis=1) # the True case is a dummy entry
+
+    sc = tl.where(low, d1 & 63, (d1 & 0xF) | ((d2 >> 6) << 4))
+    m = tl.where(low, m1 & 63, (m1 >> 4) | ((m2 >> 6) << 4))
+
+    dl = d * sc
+    ml = dmin * m
+
+    ## ql, qh, u1 and u2 merged into u
+    ui = oi//(qk//8)
+    qli = oi//2
+    qhi = oi%(qk//8)
+    shift = (oi%2)*4
+
+    ql = tl.load(x_ptr+bo+qso+qli)
+    qh = tl.load(x_ptr+bo+qho+qhi)
+
+    ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
+    tl.store(y_ptr+ybo+oi, dl*((ql>>shift)&0xF)+(tl.where((qh&(1<<ui))!=0,16,0))-ml)
+
 
 @triton.jit
 def __dequant_row_q6_K(x_ptr, y_ptr, k) -> None:
