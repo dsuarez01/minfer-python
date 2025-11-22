@@ -189,8 +189,30 @@ def __dequant_row_q8_0(x_ptr, y_ptr, k) -> None:
 
 @triton.jit
 def __dequant_row_mxfp4(x_ptr, y_ptr, k) -> None:
-    pass
+    qtype = GGMLQuantizationType.MXFP4
+    qk, bsz = GGML_QUANT_SIZES[qtype]
+    bl = BLOCK_LAYOUTS[qtype]
+    eo, esz = bl["e"]
+    qo, qsz = bl["qs"]
 
+    assert k % qk == 0, qtype.name
+    nb = k // qk
+
+    bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
+    d = tl.load(x_ptr+bo+eo)
+    d = tl.where(d<2, 0x00200000<<d, ((d.to(tl.uint32)-1) << 23))
+    d = d.to(tl.float32, bitcast=True)
+
+    qi = oi%(qk//2)
+    q = tl.load(x_ptr+bo+qo+qi)
+    shift = (oi//(qk//2))*4
+
+    q = KVALUES_MXFP4[(q>>shift)&0x0F].to(tl.int8) # TODO: fix const.py
+
+    ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
+    tl.store(y_ptr+ybo+oi, d*q)
 
 # 2-6 bit quantization in super-blocks
 
