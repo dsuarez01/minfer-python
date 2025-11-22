@@ -460,13 +460,16 @@ def __dequant_row_tq1_0(x_ptr, y_ptr, k) -> None:
     d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
     d = tl.load(d_ptr).to(tl.float32)
 
+    POW3 = tl.constexpr([1,3,9,27,81])
+
     qi = oi//5
     q = tl.load(x_ptr+bo+qso+qi)
-    q = (q//3**(oi%5))%3
+    q = q * POW3[oi%5]
+    q = ((q.to(tl.uint16)*3)>>8).to(tl.int16)
 
     qhi = tl.where(oi>=252, (oi-252)//4, 0)
-    qhs = tl.where(oi>=252, ((oi-252)%4)*2, 0)
     qh = tl.load(x_ptr+bo+qho+qhi)
+    
     qh = (qh>>qhs)&0x3
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
