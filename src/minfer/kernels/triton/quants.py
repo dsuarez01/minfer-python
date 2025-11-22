@@ -3,7 +3,7 @@ import triton
 import triton.language as tl
 
 from .const import *
-from gguf import GGMLQuantizationType, GGML_QUANT_SIZES, QK_K
+from gguf import GGMLQuantizationType
 
 # NOTE: make sure to use newest version of GGUF from Github repo for MXFP4 support
 @triton.jit
@@ -39,177 +39,168 @@ def _dequant_row(qtype : GGMLQuantizationType, x_ptr, y_ptr, b, k):
     elif qtype == GGMLQuantizationType.Q8_K: __dequant_row_q8_K(x_row_ptr, y_row_ptr, k)
     else: raise ValueError(f"Unsupported GGMLQuantizationType {qtype.name}")
 
-
 # legacy / simple quants
 
 @triton.jit
 def __dequant_row_q4_0(x_ptr, y_ptr, k) -> None:
-    qtype = GGMLQuantizationType.Q4_0
-    qk, bsz = GGML_QUANT_SIZES[qtype]
-    bl = BLOCK_LAYOUTS[qtype]
-    do, dsz = bl["d"]
-    qo, qsz = bl["qs"]
+    qk, bsz = BL_Q4_0.qk, BL_Q4_0.bsz
+    do, dsz = BL_Q4_0.do,  BL_Q4_0.dsz
+    qo, qsz = BL_Q4_0.qo, BL_Q4_0.qsz
 
-    assert k % qk == 0, qtype.name
+    assert k % qk == 0, "Q4_0"
     nb = k // qk
 
     bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
     d_ptr = tl.load(x_ptr+bo+do).to(tl.pointer_type(tl.float16))
     d = tl.load(d_ptr).to(tl.float32)
 
-    j = tl.expand_dims(tl.arange(0,qsz), axis=0)
-    p = tl.load(x_ptr+bo+qo+j)
-    x0 = (p&0x0F)-8
-    x1 = (p>>4)-8
+    qi = oi%(qk//2)
+    qs = (oi//(qk//2))*4
+
+    q = tl.load(x_ptr+bo+qo+qi)
+
+    x = ((q>>qs)&0x0F).to(tl.int32)-8
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-    tl.store(y_ptr+ybo+j, x0*d)
-    tl.store(y_ptr+ybo+j+qsz, x1*d)
+    tl.store(y_ptr+ybo+oi, d*x)
 
 @triton.jit
 def __dequant_row_q4_1(x_ptr, y_ptr, k) -> None:
-    qtype = GGMLQuantizationType.Q4_1
-    qk, bsz = GGML_QUANT_SIZES[qtype]
-    bl = BLOCK_LAYOUTS[qtype]
-    do,dsz = bl["d"]
-    mo,msz = bl["m"]
-    qo,qsz = bl["qs"]
+    qk, bsz = BL_Q4_1.qk, BL_Q4_1.bsz
+    do,dsz = BL_Q4_1.do, BL_Q4_1.dsz
+    mo,msz = BL_Q4_1.mo, BL_Q4_1.msz
+    qo,qsz = BL_Q4_1.qo, BL_Q4_1.qsz
 
-    assert k % qk == 0, qtype.name
+    assert k % qk == 0, "Q4_1"
     nb = k // qk
 
     bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
     d_ptr = tl.load(x_ptr+bo+do).to(tl.pointer_type(tl.float16))
     m_ptr = tl.load(x_ptr+bo+mo).to(tl.pointer_type(tl.float16))
+    
     d = tl.load(d_ptr).to(tl.float32)
     m = tl.load(m_ptr).to(tl.float32)
 
-    j = tl.expand_dims(tl.arange(0,qsz), axis=0)
+    qi = oi%(qk//2)
+    qs = (oi//(qk//2))*4
+
+    q = tl.load(x_ptr+bo+qo+qi)
+
+    x = ((q>>qs)&0x0F).to(tl.int32)
+
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-
-    p = tl.load(x_ptr+bo+qo+j)
-    x0 = (p&0x0F)
-    x1 = (p>>4)
-
-    tl.store(y_ptr+ybo+j, x0*d+m)
-    tl.store(y_ptr+ybo+j+qsz, x1*d+m)
+    tl.store(y_ptr+ybo+oi, d*x+m)
 
 @triton.jit
 def __dequant_row_q5_0(x_ptr, y_ptr, k) -> None:
-    qtype = GGMLQuantizationType.Q5_0
-    qk, bsz = GGML_QUANT_SIZES[qtype]
-    bl = BLOCK_LAYOUTS[qtype]
-    do, dsz = bl["d"]
-    qho, qhsz = bl["qh"]
-    qlo, qlsz = bl["qs"]
+    qk, bsz = BL_Q5_0.qk, BL_Q5_0.bsz
+    do, dsz = BL_Q5_0.do, BL_Q5_0.dsz
+    qho, qhsz = BL_Q5_0.qho, BL_Q5_0.qhsz
+    qo, qsz = BL_Q5_0.qo, BL_Q5_0.qsz
 
-    assert k % qk == 0, qtype.name
+    assert k % qk == 0, "Q5_0"
     nb = k // qk
 
     bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
     d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
-    qh_ptr = (x_ptr+bo+qho).to(tl.pointer_type(tl.uint32))
-
     d = tl.load(d_ptr).to(tl.float32)
-    qh = tl.load(qh_ptr)
+    
+    qi = qhi = (oi%(qk//2))
+    qs = (oi//(qk//2))*4
+    qhs = qi+(oi//(qk//2))*16
 
-    j = tl.expand_dims(tl.arange(0,qlsz), axis=0)
+    q = tl.load(x_ptr+bo+qo+qi)
+    qh = tl.load(x_ptr+bo+qho+qhi)
+
+    qh = (((qh>>qhs)<<4)&0x10)
+    x = (((q>>qs)&0x0F)|qh).to(tl.int32)-16
+
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-    
-    xh_0 = ((qh >> j) << 4) & 0x10
-    xh_1 = (qh >> (j+12)) & 0x10
-    
-    p = tl.load(x_ptr+bo+qlo+j) 
-    x0 = ((p & 0x0F) | xh_0) - 16
-    x1 = ((p >> 4) | xh_1) - 16
-
-    tl.store(y_ptr+ybo+j, x0*d)
-    tl.store(y_ptr+ybo+j+qlsz, x1*d)
-
+    tl.store(y_ptr+ybo+oi, d*x)
 
 @triton.jit
 def __dequant_row_q5_1(x_ptr, y_ptr, k) -> None:
     qtype = GGMLQuantizationType.Q5_1
-    qk, bsz = GGML_QUANT_SIZES[qtype]
-    bl = BLOCK_LAYOUTS[qtype]
-    do, dsz = bl["d"]
-    mo, msz = bl["m"]
-    qho, qhsz = bl["qh"]
-    qlo, qlsz = bl["qs"]
+    qk, bsz = BL_Q5_1.qk, BL_Q5_1.bsz
+    do, dsz = BL_Q5_1.do, BL_Q5_1.dsz
+    mo, msz = BL_Q5_1.mo, BL_Q5_1.msz
+    qho, qhsz = BL_Q5_1.qho, BL_Q5_1.qhsz
+    qo, qsz = BL_Q5_1.qo, BL_Q5_1.qsz
 
-    assert k % qk == 0, qtype.name
+    assert k % qk == 0, "Q5_1"
     nb = k // qk
 
     bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
     d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
     m_ptr = (x_ptr+bo+mo).to(tl.pointer_type(tl.float16))
-    qh_ptr = (x_ptr+bo+qho).to(tl.pointer_type(tl.uint32))
 
     d = tl.load(d_ptr).to(tl.float32)
     m = tl.load(m_ptr).to(tl.float32)
-    qh = tl.load(qh_ptr)
 
-    j = tl.expand_dims(tl.arange(0,qlsz), axis=0)
+    qi = qhi = (oi%(qk//2))
+    qs = (oi//(qk//2))*4
+    qhs = qi+(oi//(qk//2))*16
+
+    q = tl.load(x_ptr+bo+qo+qi)
+    qh = tl.load(x_ptr+bo+qho+qhi)
+
+    qh = (((qh>>qhs)<<4)&0x10)
+    x = (((q>>qs)&0x0F)|qh).to(tl.int32)
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-    
-    xh_0 = ((qh >> j) << 4) & 0x10
-    xh_1 = (qh >> (j+12)) & 0x10
-    
-    p = tl.load(x_ptr+bo+qlo+j)
-    x0 = ((p & 0x0F) | xh_0)
-    x1 = ((p >> 4) | xh_1)
 
-    tl.store(y_ptr+ybo+j, x0*d+m)
-    tl.store(y_ptr+ybo+j+qlsz, x1*d+m)
+    tl.store(y_ptr+ybo+oi, d*x+m)
 
 @triton.jit
 def __dequant_row_q8_0(x_ptr, y_ptr, k) -> None:
-    qtype = GGMLQuantizationType.Q8_0
-    qk, bsz = GGML_QUANT_SIZES[qtype]
-    bl = BLOCK_LAYOUTS[qtype]
-    do, dsz = bl["d"]
-    qo, qsz = bl["qs"]
+    qk, bsz = BL_Q8_0.qk, BL_Q8_0.bsz
+    do, dsz = BL_Q8_0.do, BL_Q8_0.dsz
+    qo, qsz = BL_Q8_0.qo, BL_Q8_0.qsz
 
-    assert k % qk == 0, qtype.name
+    assert k % qk == 0, "Q8_0"
     nb = k // qk
 
     bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
     d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
     d = tl.load(d_ptr).to(tl.float32)
 
-    j = tl.expand_dims(tl.arange(0,qsz), axis=0)
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
 
-    x = tl.load((x_ptr+bo+qo+j).to(tl.pointer_type(tl.int8)))
+    x = tl.load((x_ptr+bo+qo+oi).to(tl.pointer_type(tl.int8)))
 
-    tl.store(y_ptr+ybo+j, x*d)
-
+    tl.store(y_ptr+ybo+oi, x*d)
 
 # "microscaling" quant
 
 @triton.jit
 def __dequant_row_mxfp4(x_ptr, y_ptr, k) -> None:
-    qtype = GGMLQuantizationType.MXFP4
-    qk, bsz = GGML_QUANT_SIZES[qtype]
-    bl = BLOCK_LAYOUTS[qtype]
-    eo, esz = bl["e"]
-    qo, qsz = bl["qs"]
+    qk, bsz = BL_MXFP4.qk, BL_MXFP4.bsz
+    eo, esz = BL_MXFP4.eo, BL_MXFP4.esz
+    qo, qsz = BL_MXFP4.qo, BL_MXFP4.qsz
 
-    assert k % qk == 0, qtype.name
+    assert k % qk == 0, "MXFP4"
     nb = k // qk
 
     bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
     oi = tl.expand_dims(tl.arange(0,qk), axis=0)
 
     d = tl.load(x_ptr+bo+eo)
-    d = tl.where(d<2, 0x00200000<<d, ((d.to(tl.uint32)-1) << 23))
+    d = tl.where(d<2,0x00200000<<d,((d.to(tl.uint32)-1)<<23))
     d = d.to(tl.float32, bitcast=True)
 
     qi = oi%(qk//2)
     q = tl.load(x_ptr+bo+qo+qi)
-    shift = (oi//(qk//2))*4
-
-    q = KVALUES_MXFP4[(q>>shift)&0x0F].to(tl.int8) # TODO: fix const.py
+    qs = (oi//(qk//2))*4
+    q = KVALUES_MXFP4[(q>>qs)&0x0F].to(tl.int8)
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
     tl.store(y_ptr+ybo+oi, d*q)
@@ -218,15 +209,13 @@ def __dequant_row_mxfp4(x_ptr, y_ptr, k) -> None:
 
 @triton.jit
 def __dequant_row_q2_K(x_ptr, y_ptr, k) -> None:
-    qtype = GGMLQuantizationType.Q2_K
-    qk, bsz = GGML_QUANT_SIZES[qtype]
-    bl = BLOCK_LAYOUTS[qtype]
-    sco, scsz = bl["scales"]
-    qso, qsz = bl["qs"]
-    do, dsz = bl["d"]
-    dmino, dminsz = bl["dmin"]
+    qk, bsz = BL_Q2_K.qk, BL_Q2_K.bsz
+    sco, scsz = BL_Q2_K.sco, BL_Q2_K.scsz
+    qo, qsz = BL_Q2_K.qo, BL_Q2_K.qsz
+    do, dsz = BL_Q2_K.do, BL_Q2_K.dsz
+    dmo, dmsz = BL_Q2_K.dmo, BL_Q2_K.dmsz
 
-    assert k % qk == 0, qtype.name
+    assert k % qk == 0, "Q2_K"
     nb = k // qk
 
     bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
@@ -234,37 +223,33 @@ def __dequant_row_q2_K(x_ptr, y_ptr, k) -> None:
     sci = oi//scsz
 
     d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
-    min_ptr = (x_ptr+bo+dmino).to(tl.pointer_type(tl.float16))
+    dmin_ptr = (x_ptr+bo+dmo).to(tl.pointer_type(tl.float16))
     sc_ptr = (x_ptr+bo+sco+sci)
 
     d = tl.load(d_ptr).to(tl.float32)
-    min = tl.load(min_ptr).to(tl.float32)
+    dmin = tl.load(dmin_ptr).to(tl.float32)
     sc = tl.load(sc_ptr)
 
     dl = d*(sc&0xF)
-    ml = min*(sc>>4)
+    ml = dmin*(sc>>4)
 
-    ne = 4            # 4 vals of 2 bits each
-    qi = oi//ne
-    shift = (oi%ne)*2
-
-    q = tl.load(x_ptr+bo+qso+qi)
-    q = ((q>>shift)&0x03).to(tl.int8)
+    qi = oi//4
+    qs = (oi%4)*2
+    q = tl.load(x_ptr+bo+qo+qi)
+    q = ((q>>qs)&0x03).to(tl.int8)
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
     tl.store(y_ptr+ybo+oi, dl*q-ml)
 
 @triton.jit
 def __dequant_row_q3_K(x_ptr, y_ptr, k) -> None:
-    qtype = GGMLQuantizationType.Q3_K
-    qk, bsz = GGML_QUANT_SIZES[qtype]
-    bl = BLOCK_LAYOUTS[qtype]
-    hmasko, hmasksz = bl["hmask"]
-    qso, qsz = bl["qs"]
-    sco, scsz = bl["scales"]
-    do, dsz = bl["d"]
+    qk, bsz = BL_Q3_K.qk, BL_Q3_K.bsz
+    hmo, hmsz = BL_Q3_K.hmo, BL_Q3_K.hmsz
+    qo, qsz = BL_Q3_K.qo, BL_Q3_K.qsz
+    sco, scsz = BL_Q3_K.sco, BL_Q3_K.scsz
+    do, dsz = BL_Q3_K.do, BL_Q3_K.dsz
 
-    assert k % qk == 0, qtype.name
+    assert k % qk == 0, "Q3_K"
     nb = k // qk
 
     bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
@@ -305,45 +290,40 @@ def __dequant_row_q3_K(x_ptr, y_ptr, k) -> None:
 
     dl = d*(sc-32)
 
-    ne = 4                          # 4 vals of 2 bits each
-    qi = oi//ne
-    hi = qi%(qsz//2)
+    qi = oi//4
+    hmi = qi%(qsz//2)
     biti = oi//32
     m = 1 << biti
-    shift = (oi%ne)*2
+    qs = (oi%4)*2
 
-    q = tl.load(x_ptr+bo+qso+qi)
-    h = tl.load(x_ptr+bo+hmasko+hi)
+    q = tl.load(x_ptr+bo+qo+qi)
+    hm = tl.load(x_ptr+bo+hmo+hmi)
 
-
-    q = ((q>>shift)&0x03-tl.where((h & m)!=0,0,4)).to(tl.int8)
+    q = (((q>>qs)&0x03)-tl.where((hm&m)!=0,0,4)).to(tl.int8)
     
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
     tl.store(y_ptr+ybo+oi, dl*q)
 
 @triton.jit
 def __dequant_row_q4_K(x_ptr, y_ptr, k) -> None:
-    qtype = GGMLQuantizationType.Q4_K
-    qk, bsz = GGML_QUANT_SIZES[qtype]
-    bl = BLOCK_LAYOUTS[qtype]
-    do, dsz = bl["d"]
-    dmino, dminsz = bl["dmin"]
-    sco, scsz = bl["scales"]
-    qso, qsz = bl["qs"]
+    qk, bsz = BL_Q4_K.qk, BL_Q4_K.bsz
+    do, dsz = BL_Q4_K.do, BL_Q4_K.dsz
+    dmo, dmsz = BL_Q4_K.dmo, BL_Q4_K.dmsz
+    sco, scsz = BL_Q4_K.sco, BL_Q4_K.scsz
+    qo, qsz = BL_Q4_K.qo, BL_Q4_K.qsz
 
-    assert k % qk == 0, qtype.name
+    assert k % qk == 0, "Q4_K"
     nb = k // qk
 
     bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
     oi = tl.expand_dims(tl.arange(0,qk), axis=0)
 
     # scale and min logic
-
     d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
-    d_min_ptr = (x_ptr+bo+dmino).to(tl.pointer_type(tl.float16))
+    dmin_ptr = (x_ptr+bo+dmo).to(tl.pointer_type(tl.float16))
 
     d = tl.load(d_ptr).to(tl.float32)
-    dmin = tl.load(d_min_ptr).to(tl.float32)
+    dmin = tl.load(dmin_ptr).to(tl.float32)
 
     sb = tl.load(x_ptr+bo+sco+tl.expand_dims(tl.arange(0,scsz),axis=0))
     gpi = oi//(qk//8)
@@ -357,31 +337,26 @@ def __dequant_row_q4_K(x_ptr, y_ptr, k) -> None:
     sc = tl.where(low, d1 & 63, (d1 & 0xF) | ((d2 >> 6) << 4))
     m = tl.where(low, m1 & 63, (m1 >> 4) | ((m2 >> 6) << 4))
 
-    dl = d * sc
-    ml = dmin * m
-
-    # q
+    dl = d*sc
+    ml = dmin*m
 
     qi = (oi//2)
-    shift = (oi%2)*4
-
-    q = tl.load(x_ptr+bo+qso+qi)
+    qs = (oi%2)*4
+    q = tl.load(x_ptr+bo+qo+qi)
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-    tl.store(y_ptr+ybo+oi, dl*((q>>shift)&0xF)-ml)
+    tl.store(y_ptr+ybo+oi, dl*((q>>qs)&0xF)-ml)
 
 @triton.jit
 def __dequant_row_q5_K(x_ptr, y_ptr, k) -> None:
-    qtype = GGMLQuantizationType.Q5_K
-    qk, bsz = GGML_QUANT_SIZES[qtype]
-    bl = BLOCK_LAYOUTS[qtype]
-    do, dsz = bl["d"]
-    dmino, dminsz = bl["dmin"]
-    sco, scsz = bl["scales"]
-    qho, qhsz = bl["qh"]
-    qso, qsz = bl["qs"]
+    qk, bsz = BL_Q5_K.qk, BL_Q5_K.bsz
+    do, dsz = BL_Q5_K.do, BL_Q5_K.dsz
+    dmo, dmsz = BL_Q5_K.dmo, BL_Q5_K.dmsz
+    sco, scsz = BL_Q5_K.sco, BL_Q5_K.scsz
+    qho, qhsz = BL_Q5_K.qho, BL_Q5_K.qhsz
+    qo, qsz = BL_Q5_K.qo, BL_Q5_K.qsz
 
-    assert k % qk == 0, qtype.name
+    assert k % qk == 0, "Q5_K"
     nb = k // qk
 
     bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
@@ -390,10 +365,10 @@ def __dequant_row_q5_K(x_ptr, y_ptr, k) -> None:
     # scale and min logic
 
     d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
-    d_min_ptr = (x_ptr+bo+dmino).to(tl.pointer_type(tl.float16))
+    dmin_ptr = (x_ptr+bo+dmo).to(tl.pointer_type(tl.float16))
 
     d = tl.load(d_ptr).to(tl.float32)
-    dmin = tl.load(d_min_ptr).to(tl.float32)
+    dmin = tl.load(dmin_ptr).to(tl.float32)
 
     sb = tl.load(x_ptr+bo+sco+tl.expand_dims(tl.arange(0,scsz),axis=0))
     gpi = oi//(qk//8)
@@ -412,29 +387,25 @@ def __dequant_row_q5_K(x_ptr, y_ptr, k) -> None:
 
     ## ql, qh, u1 and u2 merged into u
     ui = oi//(qk//8)
-    qli = oi//2
+    qi = oi//2
     qhi = oi%(qk//8)
-    shift = (oi%2)*4
+    qs = (oi%2)*4
 
-    ql = tl.load(x_ptr+bo+qso+qli)
+    q = tl.load(x_ptr+bo+qo+qi)
     qh = tl.load(x_ptr+bo+qho+qhi)
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-    tl.store(y_ptr+ybo+oi, dl*((ql>>shift)&0xF)+(tl.where((qh&(1<<ui))!=0,16,0))-ml)
-
+    tl.store(y_ptr+ybo+oi, dl*((q>>qs)&0xF)+(tl.where((qh&(1<<ui))!=0,16,0))-ml)
 
 @triton.jit
 def __dequant_row_q6_K(x_ptr, y_ptr, k) -> None:
-    qtype = GGMLQuantizationType.Q6_K
-    qk, bsz = GGML_QUANT_SIZES[qtype]
-    bl = BLOCK_LAYOUTS[qtype]
-    
-    qlo, qlsz = bl["ql"]
-    qho, qhsz = bl["qh"]
-    sco, scsz = bl["scales"]
-    do, dsz = bl["d"]
+    qk, bsz = BL_Q6_K.qk, BL_Q6_K.bsz
+    qo, qsz = BL_Q6_K.qo, BL_Q6_K.qsz
+    qho, qhsz = BL_Q6_K.qho, BL_Q6_K.qhsz
+    sco, scsz = BL_Q6_K.sco, BL_Q6_K.scsz
+    do, dsz = BL_Q6_K.do, BL_Q6_K.dsz
 
-    assert k % qk == 0, qtype.name
+    assert k % qk == 0, "Q6_K"
     nb = k // qk
 
     bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
@@ -450,13 +421,13 @@ def __dequant_row_q6_K(x_ptr, y_ptr, k) -> None:
     qhi = oi%(qk//8)
     qhs = oi//(qk//8)
 
-    qli = oi // 2
-    qls = (oi%2)*4
+    qi = oi//2
+    qs = (oi%2)*4
 
-    ql = tl.load(x_ptr+bo+qlo+qli)
+    q = tl.load(x_ptr+bo+qo+qi)
     qh = tl.load(x_ptr+bo+qho+qhi)
 
-    q6 = (((ql >> qls) & 0x0F) | (((qh >> qhs) & 3) << 4)).to(tl.int8) - 32
+    q6 = (((q>>qs)&0x0F)|(((qh>>qhs)&3)<<4)).to(tl.int8)-32
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
     tl.store(y_ptr+ybo+oi, d*sc*q6)
@@ -465,15 +436,12 @@ def __dequant_row_q6_K(x_ptr, y_ptr, k) -> None:
 
 @triton.jit
 def __dequant_row_tq1_0(x_ptr, y_ptr, k) -> None:
-    qtype = GGMLQuantizationType.TQ1_0
-    qk, bsz = GGML_QUANT_SIZES[qtype]
-    bl = BLOCK_LAYOUTS[qtype]
+    qk, bsz = BL_TQ1_0.qk, BL_TQ1_0.bsz
+    qo, qsz = BL_TQ1_0.qo, BL_TQ1_0.qsz
+    qho, qhsz = BL_TQ1_0.qho, BL_TQ1_0.qhsz
+    do, dsz = BL_TQ1_0.do, BL_TQ1_0.dsz
 
-    qso, qsz = bl["qs"]
-    qho, qhsz = bl["qh"]
-    do, dsz = bl["d"]
-
-    assert k % qk == 0, qtype.name
+    assert k % qk == 0, "TQ1_0"
     nb = k // qk
 
     bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
@@ -485,13 +453,13 @@ def __dequant_row_tq1_0(x_ptr, y_ptr, k) -> None:
     POW3 = tl.constexpr([1,3,9,27,81])
 
     qi = oi//5
-    q = tl.load(x_ptr+bo+qso+qi)
-    q = q * POW3[oi%5]
+    q = tl.load(x_ptr+bo+qo+qi)
+    q = q*POW3[oi%5]
     q = ((q.to(tl.uint16)*3)>>8).to(tl.int16)
 
     qhi = tl.where(oi>=252, (oi-252)//4, 0)
     qh = tl.load(x_ptr+bo+qho+qhi)
-    qh = qh * POW3[tl.where(oi>=252, (oi-252)%4, 0)]
+    qh = qh * POW3[tl.where(oi>=252,(oi-252)%4,0)]
     qh = ((qh.to(tl.uint16)*3)>>8).to(tl.int16)
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
@@ -499,14 +467,11 @@ def __dequant_row_tq1_0(x_ptr, y_ptr, k) -> None:
 
 @triton.jit
 def __dequant_row_tq2_0(x_ptr, y_ptr, k) -> None:
-    qtype = GGMLQuantizationType.TQ2_0
-    qk, bsz = GGML_QUANT_SIZES[qtype]
-    bl = BLOCK_LAYOUTS[qtype]
+    qk, bsz = BL_TQ2_0.qk, BL_TQ2_0.bsz
+    qo, qsz = BL_TQ2_0.qo, BL_TQ2_0.qsz
+    do, dsz = BL_TQ2_0.do, BL_TQ2_0.dsz
 
-    qso, qsz = bl["qs"]
-    do, dsz = bl["d"]
-
-    assert k % qk == 0, qtype.name
+    assert k % qk == 0, "TQ2_0"
     nb = k // qk
 
     bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
@@ -516,10 +481,10 @@ def __dequant_row_tq2_0(x_ptr, y_ptr, k) -> None:
     d = tl.load(d_ptr).to(tl.float32)
 
     qi = oi//4
-    shift = (oi%4)*2
+    qs = (oi%4)*2
 
-    q = tl.load(x_ptr+bo+qso+qi)
-    q = ((q>>shift)&3).to(tl.int8)
+    q = tl.load(x_ptr+bo+qo+qi)
+    q = ((q>>qs)&3).to(tl.int8)
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
     tl.store(y_ptr+ybo+oi, d*(q-1))
@@ -566,14 +531,11 @@ def __dequant_row_iq1_m(x_ptr, y_ptr, k) -> None:
 
 @triton.jit
 def __dequant_row_iq4_nl(x_ptr, y_ptr, k) -> None:
-    qtype = GGMLQuantizationType.IQ4_NL
-    qk, bsz = GGML_QUANT_SIZES[qtype]
-    bl = BLOCK_LAYOUTS[qtype]
+    qk, bsz = BL_IQ4_NL.qk, BL_IQ4_NL.bsz
+    do, dsz = BL_IQ4_NL.do, BL_IQ4_NL.dsz
+    qo, qsz = BL_IQ4_NL.qo, BL_IQ4_NL.qsz
 
-    do, dsz = bl["d"]
-    qso, qsz = bl["qs"]
-
-    assert k % qk == 0, qtype.name
+    assert k % qk == 0, "IQ4_NL"
     nb = k // qk
 
     bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
@@ -583,12 +545,12 @@ def __dequant_row_iq4_nl(x_ptr, y_ptr, k) -> None:
     d = tl.load(d_ptr).to(tl.float32)
 
     qi = oi%(qk//2)
-    shift = (oi//(qk//2))*4
+    qs = (oi//(qk//2))*4
 
-    qs = tl.load(x_ptr+bo+qso+qi)
+    q = tl.load(x_ptr+bo+qo+qi)
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-    tl.store(y_ptr+ybo+oi, d*KVALUES_IQ4_NL[(qs>>shift) & 0xF])
+    tl.store(y_ptr+ybo+oi, d*KVALUES_IQ4_NL[(q>>qs)&0xF])
 
 @triton.jit
 def __dequant_row_iq4_xs(x_ptr, y_ptr, k) -> None:
@@ -598,21 +560,18 @@ def __dequant_row_iq4_xs(x_ptr, y_ptr, k) -> None:
 
 @triton.jit
 def __dequant_row_q8_K(x_ptr, y_ptr, k) -> None:
-    qtype = GGMLQuantizationType.Q8_K
-    qk, bsz = GGML_QUANT_SIZES[qtype]
-    bl = BLOCK_LAYOUTS[qtype]
+    qk, bsz = BL_Q8_K.qk, BL_Q8_K.bsz
+    do, dsz = BL_Q8_K.do, BL_Q8_K.dsz
+    qo, qsz = BL_Q8_K.qo, BL_Q8_K.qsz
 
-    do, dsz = bl["d"]
-    qso, qsz = bl["qs"]
-
-    assert k % qk == 0, qtype.name
+    assert k % qk == 0, "Q8_K"
     nb = k // qk
 
     bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
     oi = tl.expand_dims(tl.arange(0,qk), axis=0)
     
     d = tl.load((x_ptr+bo+do).to(tl.pointer_type(tl.float32)))
-    q = tl.load((x_ptr+bo+qso+oi))
+    q = tl.load((x_ptr+bo+qo+oi))
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
     tl.store(y_ptr+ybo+oi, d*q)
