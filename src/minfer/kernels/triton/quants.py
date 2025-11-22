@@ -403,7 +403,42 @@ def __dequant_row_q5_K(x_ptr, y_ptr, k) -> None:
 
 @triton.jit
 def __dequant_row_q6_K(x_ptr, y_ptr, k) -> None:
-    pass
+    qtype = GGMLQuantizationType.Q6_K
+    qk, bsz = GGML_QUANT_SIZES[qtype]
+    bl = BLOCK_LAYOUTS[qtype]
+    
+    qlo, qlsz = bl["ql"]
+    qho, qhsz = bl["qh"]
+    sco, scsz = bl["scales"]
+    do, dsz = bl["d"]
+
+    assert k % qk == 0, qtype.name
+    nb = k // qk
+
+    bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
+    d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
+    
+    d = tl.load(d_ptr).to(tl.float32)
+
+    sci = oi//(qk//16)
+    sc_ptr = (x_ptr+bo+sco+sci).to(tl.pointer_type(tl.int8))
+    sc = tl.load(sc_ptr)
+
+    qhi = oi%(qk//8)
+    qhs = oi//(qk//8)
+
+    qli = oi // 2
+    qls = (oi%2)*4
+
+    ql = tl.load(x_ptr+bo+qlo+qli)
+    qh = tl.load(x_ptr+bo+qho+qhi)
+
+    q6 = (((ql >> qls) & 0x0F) | (((qh >> qhs) & 3) << 4)).to(tl.int8) - 32
+
+    ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
+    tl.store(y_ptr+ybo+oi, d*sc*q6)
 
 # ====================== Ternary (de)-quantization (BitNet b1.58 and TriLMs)
 
