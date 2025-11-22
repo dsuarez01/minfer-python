@@ -469,18 +469,38 @@ def __dequant_row_tq1_0(x_ptr, y_ptr, k) -> None:
 
     qhi = tl.where(oi>=252, (oi-252)//4, 0)
     qh = tl.load(x_ptr+bo+qho+qhi)
-    
-    qh = (qh>>qhs)&0x3
+    qh = qh * POW3[tl.where(oi>=252, (oi-252)%4, 0)]
+    qh = ((qh.to(tl.uint16)*3)>>8).to(tl.int16)
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
     tl.store(y_ptr+ybo+oi, d*(tl.where(oi<252, q, qh)-1))
 
-
-
-
 @triton.jit
 def __dequant_row_tq2_0(x_ptr, y_ptr, k) -> None:
-    pass
+    qtype = GGMLQuantizationType.TQ2_0
+    qk, bsz = GGML_QUANT_SIZES[qtype]
+    bl = BLOCK_LAYOUTS[qtype]
+
+    qso, qsz = bl["qs"]
+    do, dsz = bl["d"]
+
+    assert k % qk == 0, qtype.name
+    nb = k // qk
+
+    bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
+    d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
+    d = tl.load(d_ptr).to(tl.float32)
+
+    qi = oi//4
+    shift = (oi%4)*2
+
+    q = tl.load(x_ptr+bo+qso+qi)
+    q = ((q>>shift)&3).to(tl.int8)
+
+    ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
+    tl.store(y_ptr+ybo+oi, d*(q-1))
 
 # ====================== "True" 2-bit (de)-quantization
 
