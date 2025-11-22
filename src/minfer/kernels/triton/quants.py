@@ -492,7 +492,31 @@ def __dequant_row_iq1_m(x_ptr, y_ptr, k) -> None:
 
 @triton.jit
 def __dequant_row_iq4_nl(x_ptr, y_ptr, k) -> None:
-    pass
+    qtype = GGMLQuantizationType.IQ4_NL
+    qk, bsz = GGML_QUANT_SIZES[qtype]
+    bl = BLOCK_LAYOUTS[qtype]
+
+    do, dsz = bl["d"]
+    qso, qsz = bl["qs"]
+
+    assert k % qk == 0, qtype.name
+    nb = k // qk
+
+    bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
+    d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
+    d = tl.load(d_ptr).to(tl.float32)
+
+    qi = oi%(qk//2)
+    shift = (oi//(qk//2))*4
+
+    qs = tl.load(x_ptr+bo+qso+qi)
+
+    ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
+    tl.store(y_ptr+ybo+oi, d*KVALUES_IQ4_NL[(qs>>shift) & 0xF])
+
+
 
 @triton.jit
 def __dequant_row_iq4_xs(x_ptr, y_ptr, k) -> None:
