@@ -535,7 +535,53 @@ def __dequant_row_iq3_xxs(x_ptr, y_ptr, k) -> None:
 
 @triton.jit
 def __dequant_row_iq3_s(x_ptr, y_ptr, k) -> None:
-    pass
+    qk, bsz = BL_IQ3_S.qk, BL_IQ3_S.bsz
+    do, dsz = BL_IQ3_S.do, BL_IQ3_S.dsz
+    qo, qsz = BL_IQ3_S.qo, BL_IQ3_S.qsz
+    qho, qhsz = BL_IQ3_S.qho, BL_IQ3_S.qhsz
+    signo, signsz = BL_IQ3_S.signo, BL_IQ3_S.signsz
+    sco, scsz = BL_IQ3_S.sco, BL_IQ3_S.scsz
+
+    assert all(x != -1 for x in [do, dsz, qho, qhsz, signo, signsz, sco, scsz]), "IQ3_S"
+    assert k % qk == 0, "IQ3_S"
+
+    nb = k // qk
+
+    bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
+    # scale
+    d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
+    d = tl.load(d_ptr).to(tl.float32)
+
+    sci = oi//(qk//4)
+    scs = ((oi//(qk//8)%2))*4
+    scb = tl.load(x_ptr+bo+sco+sci)
+    sc = d*(1+2*((scb>>scs)&0xF))
+
+
+    # sign
+    signi = oi//(qk//32)
+    signs = oi%(qk//32)
+    signb = tl.load(x_ptr+bo+signo+signi)
+    sign = tl.where((signb>>signs)&1,-1.0,1.0)
+
+    # vals
+    qi = (oi//4)
+    qs = (oi%4)*2
+    q = tl.load(x_ptr+bo+qo+qi)
+
+    qhi = oi//(qk//8)
+    qhs = (8-2*(oi%(qk//8))) - ((oi//4)%2)
+
+    qhb = tl.load(x_ptr+bo+qho+qhi)
+    qh = ((qhb<<qhs)>>8)&1
+    gi = (q>>qs) | (qh << 8)
+
+    x = IQ3S_GRID[gi]* sign
+
+    ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
+    tl.store(y_ptr+ybo+oi, sc*x)
 
 # ====================== 1.5625 bpw (de)-quantization
 
