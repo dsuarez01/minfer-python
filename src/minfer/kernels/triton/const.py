@@ -135,39 +135,65 @@ BLOCK_LAYOUTS = {
 }
 
 class BlockLayout:
-    qk: int
-    bsz: int
-    do: int
-    dsz: int
-    qo: int
-    qsz: int
-    mo: int
-    msz: int
-    eo: int
-    esz: int
-    qho: int
-    qhsz: int
-    hmo: int # rename from hmasko -> hmo
-    hmsz: int # hmasksz -> hmsz
-    sco: int  # rename from scaleso -> sco (requires redo of init)
-    scsz: int # rename to scalessz -> scsz
-    dmo: int # dmino -> dmo
-    dmsz: int # dminsz -> dmsz
-    bsumso: int
-    bsumssz: int
-    signso: int
-    signssz: int
-    scales_ho: int
-    scales_hsz: int
-    scales_lo: int
-    scales_lsz: int
+    qk: tl.constexpr
+    bsz: tl.constexpr
+    do: tl.constexpr | None
+    dsz: tl.constexpr | None
+    qo: tl.constexpr | None
+    qsz: tl.constexpr | None
+    mo: tl.constexpr | None
+    msz: tl.constexpr | None
+    eo: tl.constexpr | None
+    esz: tl.constexpr | None
+    qho: tl.constexpr | None
+    qhsz: tl.constexpr | None
+    hmo: tl.constexpr | None # hmasko -> hmo
+    hmsz: tl.constexpr | None # hmasksz -> hmsz
+    sco: tl.constexpr | None  # scaleso -> sco
+    scsz: tl.constexpr | None # scalessz -> scsz
+    dmo: tl.constexpr | None # dmino -> dmo
+    dmsz: tl.constexpr | None # dminsz -> dmsz
+    bsumo: tl.constexpr | None # bsumso-> bsumo
+    bsumsz: tl.constexpr | None # bsumssz -> bsumsz
+    signo: tl.constexpr | None # signso -> signo
+    signsz: tl.constexpr | None # signssz -> signsz
+    scho: tl.constexpr | None # scales_ho -> scho
+    schsz: tl.constexpr | None # scales_hsz -> schsz
+    sclo: tl.constexpr | None # scales_lo -> sclo
+    sclsz: tl.constexpr | None # scales_lsz -> sclsz
 
-    def __init__(self, qtype:GGMLQuantizationType) -> None:
+    def __init__(self, qtype: GGMLQuantizationType) -> None:
+        self.qtype_name = qtype.name
         self.qk, self.bsz = tl.constexpr(GGML_QUANT_SIZES[qtype])
         bl = BLOCK_LAYOUTS[qtype]
-        for k, (o,sz) in bl.items():
-            setattr(self, f"{k}o", tl.constexpr(o))
-            setattr(self, f"{k}sz", tl.constexpr(sz))
+        
+        for k in ["d", "q", "m", "e", "qh", "scales"]:
+            if k in bl:
+                o, sz = bl[k]
+                setattr(self, f"{k}o", tl.constexpr(o))
+                setattr(self, f"{k}sz", tl.constexpr(sz))
+        
+        if "hmask" in bl:
+            o, sz = bl["hmask"]
+            self.hmo, self.hmsz = tl.constexpr(o), tl.constexpr(sz)
+        if "dmin" in bl:
+            o, sz = bl["dmin"]
+            self.dmo, self.dmsz = tl.constexpr(o), tl.constexpr(sz)
+        if "bsums" in bl:
+            o, sz = bl["bsums"]
+            self.bsumo, self.bsumsz = tl.constexpr(o), tl.constexpr(sz)
+        if "signs" in bl:
+            o, sz = bl["signs"]
+            self.signo, self.signsz = tl.constexpr(o), tl.constexpr(sz)
+        if "scales_h" in bl:
+            o, sz = bl["scales_h"]
+            self.scho, self.schsz = tl.constexpr(o), tl.constexpr(sz)
+        if "scales_l" in bl:
+            o, sz = bl["scales_l"]
+            self.sclo, self.sclsz = tl.constexpr(o), tl.constexpr(sz)
+    
+    def __getattr__(self, name):
+        raise AttributeError(f"Block layout field '{name}' not available/set for this qtype {self.qtype_name}")
 
 BL_Q4_0 = BlockLayout(GGMLQuantizationType.Q4_0)
 BL_Q4_1 = BlockLayout(GGMLQuantizationType.Q4_1)

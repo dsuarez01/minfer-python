@@ -61,14 +61,14 @@ def __dequant_row_q4_0(x_ptr, y_ptr, k) -> None:
 
     q = tl.load(x_ptr+bo+qo+qi)
 
-    x = ((q>>qs)&0x0F).to(tl.int32)-8
+    x = ((q>>qs)&0xF).to(tl.int32)-8
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
     tl.store(y_ptr+ybo+oi, d*x)
 
 @triton.jit
 def __dequant_row_q4_1(x_ptr, y_ptr, k) -> None:
-    qk, bsz = BL_Q4_1.qk, BL_Q4_1.bsz
+    qk,bsz = BL_Q4_1.qk, BL_Q4_1.bsz
     do,dsz = BL_Q4_1.do, BL_Q4_1.dsz
     mo,msz = BL_Q4_1.mo, BL_Q4_1.msz
     qo,qsz = BL_Q4_1.qo, BL_Q4_1.qsz
@@ -90,7 +90,7 @@ def __dequant_row_q4_1(x_ptr, y_ptr, k) -> None:
 
     q = tl.load(x_ptr+bo+qo+qi)
 
-    x = ((q>>qs)&0x0F).to(tl.int32)
+    x = ((q>>qs)&0xF).to(tl.int32)
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
     tl.store(y_ptr+ybo+oi, d*x+m)
@@ -119,7 +119,7 @@ def __dequant_row_q5_0(x_ptr, y_ptr, k) -> None:
     qh = tl.load(x_ptr+bo+qho+qhi)
 
     qh = (((qh>>qhs)<<4)&0x10)
-    x = (((q>>qs)&0x0F)|qh).to(tl.int32)-16
+    x = (((q>>qs)&0xF)|qh).to(tl.int32)-16
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
     tl.store(y_ptr+ybo+oi, d*x)
@@ -153,7 +153,7 @@ def __dequant_row_q5_1(x_ptr, y_ptr, k) -> None:
     qh = tl.load(x_ptr+bo+qho+qhi)
 
     qh = (((qh>>qhs)<<4)&0x10)
-    x = (((q>>qs)&0x0F)|qh).to(tl.int32)
+    x = (((q>>qs)&0xF)|qh).to(tl.int32)
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
 
     tl.store(y_ptr+ybo+oi, d*x+m)
@@ -177,7 +177,7 @@ def __dequant_row_q8_0(x_ptr, y_ptr, k) -> None:
 
     x = tl.load((x_ptr+bo+qo+oi).to(tl.pointer_type(tl.int8)))
 
-    tl.store(y_ptr+ybo+oi, x*d)
+    tl.store(y_ptr+ybo+oi, d*x)
 
 # "microscaling" quant
 
@@ -200,10 +200,10 @@ def __dequant_row_mxfp4(x_ptr, y_ptr, k) -> None:
     qi = oi%(qk//2)
     q = tl.load(x_ptr+bo+qo+qi)
     qs = (oi//(qk//2))*4
-    q = KVALUES_MXFP4[(q>>qs)&0x0F].to(tl.int8)
+    x = KVALUES_MXFP4[(q>>qs)&0xF].to(tl.int8)
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-    tl.store(y_ptr+ybo+oi, d*q)
+    tl.store(y_ptr+ybo+oi, d*x)
 
 # 2-6 bit quantization in super-blocks
 
@@ -236,10 +236,10 @@ def __dequant_row_q2_K(x_ptr, y_ptr, k) -> None:
     qi = oi//4
     qs = (oi%4)*2
     q = tl.load(x_ptr+bo+qo+qi)
-    q = ((q>>qs)&0x03).to(tl.int8)
+    x = ((q>>qs)&3).to(tl.int8)
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-    tl.store(y_ptr+ybo+oi, dl*q-ml)
+    tl.store(y_ptr+ybo+oi, dl*x-ml)
 
 @triton.jit
 def __dequant_row_q3_K(x_ptr, y_ptr, k) -> None:
@@ -299,10 +299,10 @@ def __dequant_row_q3_K(x_ptr, y_ptr, k) -> None:
     q = tl.load(x_ptr+bo+qo+qi)
     hm = tl.load(x_ptr+bo+hmo+hmi)
 
-    q = (((q>>qs)&0x03)-tl.where((hm&m)!=0,0,4)).to(tl.int8)
+    x = (((q>>qs)&3)-tl.where((hm&m)!=0,0,4)).to(tl.int8)
     
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-    tl.store(y_ptr+ybo+oi, dl*q)
+    tl.store(y_ptr+ybo+oi, dl*x)
 
 @triton.jit
 def __dequant_row_q4_K(x_ptr, y_ptr, k) -> None:
@@ -344,8 +344,10 @@ def __dequant_row_q4_K(x_ptr, y_ptr, k) -> None:
     qs = (oi%2)*4
     q = tl.load(x_ptr+bo+qo+qi)
 
+    x = (q>>qs)&0xF
+
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-    tl.store(y_ptr+ybo+oi, dl*((q>>qs)&0xF)-ml)
+    tl.store(y_ptr+ybo+oi, dl*x-ml)
 
 @triton.jit
 def __dequant_row_q5_K(x_ptr, y_ptr, k) -> None:
@@ -394,8 +396,10 @@ def __dequant_row_q5_K(x_ptr, y_ptr, k) -> None:
     q = tl.load(x_ptr+bo+qo+qi)
     qh = tl.load(x_ptr+bo+qho+qhi)
 
+    x = ((q>>qs)&0xF)+tl.where((qh&(1<<ui))!=0,16,0) # NOTE: could cast here
+
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-    tl.store(y_ptr+ybo+oi, dl*((q>>qs)&0xF)+(tl.where((qh&(1<<ui))!=0,16,0))-ml)
+    tl.store(y_ptr+ybo+oi, dl*x-ml)
 
 @triton.jit
 def __dequant_row_q6_K(x_ptr, y_ptr, k) -> None:
@@ -427,10 +431,10 @@ def __dequant_row_q6_K(x_ptr, y_ptr, k) -> None:
     q = tl.load(x_ptr+bo+qo+qi)
     qh = tl.load(x_ptr+bo+qho+qhi)
 
-    q6 = (((q>>qs)&0x0F)|(((qh>>qhs)&3)<<4)).to(tl.int8)-32
+    x = (((q>>qs)&0xF)|(((qh>>qhs)&3)<<4)).to(tl.int8)-32
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-    tl.store(y_ptr+ybo+oi, d*sc*q6)
+    tl.store(y_ptr+ybo+oi, d*sc*x)
 
 # ====================== Ternary (de)-quantization (BitNet b1.58 and TriLMs)
 
@@ -462,8 +466,10 @@ def __dequant_row_tq1_0(x_ptr, y_ptr, k) -> None:
     qh = qh * POW3[tl.where(oi>=252,(oi-252)%4,0)]
     qh = ((qh.to(tl.uint16)*3)>>8).to(tl.int16)
 
+    x = tl.where(oi<252, q, qh)
+
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-    tl.store(y_ptr+ybo+oi, d*(tl.where(oi<252, q, qh)-1))
+    tl.store(y_ptr+ybo+oi, d*(x-1))
 
 @triton.jit
 def __dequant_row_tq2_0(x_ptr, y_ptr, k) -> None:
@@ -484,10 +490,10 @@ def __dequant_row_tq2_0(x_ptr, y_ptr, k) -> None:
     qs = (oi%4)*2
 
     q = tl.load(x_ptr+bo+qo+qi)
-    q = ((q>>qs)&3).to(tl.int8)
+    x = ((q>>qs)&3).to(tl.int8)
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-    tl.store(y_ptr+ybo+oi, d*(q-1))
+    tl.store(y_ptr+ybo+oi, d*(x-1))
 
 # ====================== "True" 2-bit (de)-quantization
 
@@ -549,8 +555,10 @@ def __dequant_row_iq4_nl(x_ptr, y_ptr, k) -> None:
 
     q = tl.load(x_ptr+bo+qo+qi)
 
+    x = KVALUES_IQ4_NL[(q>>qs)&0xF]
+
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-    tl.store(y_ptr+ybo+oi, d*KVALUES_IQ4_NL[(q>>qs)&0xF])
+    tl.store(y_ptr+ybo+oi, d*x)
 
 @triton.jit
 def __dequant_row_iq4_xs(x_ptr, y_ptr, k) -> None:
@@ -571,7 +579,7 @@ def __dequant_row_q8_K(x_ptr, y_ptr, k) -> None:
     oi = tl.expand_dims(tl.arange(0,qk), axis=0)
     
     d = tl.load((x_ptr+bo+do).to(tl.pointer_type(tl.float32)))
-    q = tl.load((x_ptr+bo+qo+oi))
+    q = x = tl.load((x_ptr+bo+qo+oi))
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-    tl.store(y_ptr+ybo+oi, d*q)
+    tl.store(y_ptr+ybo+oi, d*x)
