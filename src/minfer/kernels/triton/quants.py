@@ -511,25 +511,159 @@ def __dequant_row_tq2_0(x_ptr, y_ptr, k) -> None:
 
 @triton.jit
 def __dequant_row_iq2_xxs(x_ptr, y_ptr, k) -> None:
-    pass
+    qk, bsz = BL_IQ2_XXS.qk, BL_IQ2_XXS.bsz
+    do, dsz = BL_IQ2_XXS.do, BL_IQ2_XXS.dsz
+    qo, qsz = BL_IQ2_XXS.qo, BL_IQ2_XXS.qsz
+
+    assert all(x != -1 for x in [do, dsz]), "IQ2_XXS"
+    assert k % qk == 0, "IQ2_XXS"
+
+    nb = k // qk
+
+    bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
+    d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
+    d = tl.load(d_ptr).to(tl.float32)
+
+    auxo = (oi//(qk//8))*8
+    aux_ptr = (x_ptr+bo+qo+auxo).to(tl.pointer_type(tl.uint32))
+    aux0 = tl.load(aux_ptr)
+    aux1 = tl.load(aux_ptr+1)
+
+    sc = d*(0.5+(aux1>>28))*0.25
+
+    gii = ((oi//(qk//32))%4)*8
+    gi = ((aux0>>(gii))&0xFF)*8 + oi%8
+
+    signi = ((oi//(qk//32))%4)*7
+    signb = KSIGNS_IQ2XS[(aux1>>signi)&127]
+    sign = tl.where((signb>>(oi%(qk//32)))&1,-1.0,1.0)
+
+    x = IQ2XXS_GRID[gi]
+
+    ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
+    tl.store(y_ptr+ybo+oi, x*sign*sc)
 
 # ====================== 2.3125 bpw (de)-quantization
 
 @triton.jit
 def __dequant_row_iq2_xs(x_ptr, y_ptr, k) -> None:
-    pass
+    qk, bsz = BL_IQ2_XS.qk, BL_IQ2_XS.bsz
+    do, dsz = BL_IQ2_XS.do, BL_IQ2_XS.dsz
+    sco, scsz = BL_IQ2_XS.sco, BL_IQ2_XS.scsz
+    qo, qsz = BL_IQ2_XS.qo, BL_IQ2_XS.qsz
+
+    assert all(x != 1 for x in [do, dsz, sco, scsz]), "IQ2_XS"
+    assert k % qk == 0, "IQ2_XS"
+
+    nb = k // qk
+
+    bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
+    d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
+    d = tl.load(d_ptr).to(tl.float32)
+
+    sci = oi//(qk//8)
+    scs = ((oi//(qk//16))%2)*4
+    scb = tl.load(x_ptr+bo+sco+sci)
+    sc = d*(0.5+((scb>>scs)&0xF))*0.25
+
+    qi = (oi//(qk//32))*2
+    q_ptr = (x_ptr+bo+qo+qi).to(tl.pointer_type(tl.uint16))
+    q = tl.load(q_ptr)
+
+    gi = (q&511)*8 + oi%8
+    signb = KSIGNS_IQ2XS[q>>9]
+    sign = tl.where((signb>>(oi%(qk//32)))&1, -1.0,1.0)
+
+    x = IQ2XS_GRID[gi]
+
+    ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
+    tl.store(y_ptr+ybo+oi, x*sign*sc)
 
 # ====================== 2.5625 bpw (de)-quantization
 
 @triton.jit
 def __dequant_row_iq2_s(x_ptr, y_ptr, k) -> None:
-    pass
+    qk, bsz = BL_IQ2_S.qk, BL_IQ2_S.bsz
+    do, dsz = BL_IQ2_S.do, BL_IQ2_S.dsz
+    sco, scsz = BL_IQ2_S.sco, BL_IQ2_S.scsz
+    qho, qhsz = BL_IQ2_S.qho, BL_IQ2_S.qhsz
+    qo, qsz = BL_IQ2_S.qo, BL_IQ2_S.qsz
+
+    assert all(x != 1 for x in [do, dsz, sco, scsz, qho, qhsz]), "IQ2_S"
+    assert k % qk == 0, "IQ2_S"
+
+    nb = k // qk
+
+    bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
+    d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
+    d = tl.load(d_ptr).to(tl.float32)
+
+    sci = oi//(qk//8)
+    scs = ((oi//(qk//16))%2)*4
+    scb = tl.load(x_ptr+bo+sco+sci)
+    sc = d*(0.5+((scb>>scs)&0xF))*0.25
+
+    # signs array starts at qo+qsz
+    signi = oi//(qk//32)
+    signb = tl.load(x_ptr+bo+qo+qsz+signi)
+    sign = tl.where((signb>>(oi%(qk//32)))&1, -1.0, 1.0)
+
+    qi = oi//(qk//32)
+    q = tl.load(x_ptr+bo+qo+qi)
+
+    qhi = oi//(qk//8)
+    qhs = 8 - 2*((oi//(qk//32))%4)
+    qhb = tl.load(x_ptr+bo+qho+qhi)
+    qh = ((qhb<<qhs)>>8)&3
+
+    gi = (q|(qh<<8))*8 + oi%8
+    x = IQ2S_GRID[gi]
+
+    ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
+    tl.store(y_ptr+ybo+oi, x*sign*sc)
 
 # ====================== 3.0625 bpw (de)-quantization
 
 @triton.jit
 def __dequant_row_iq3_xxs(x_ptr, y_ptr, k) -> None:
-    pass
+    qk, bsz = BL_IQ3_XXS.qk, BL_IQ3_XXS.bsz
+    do, dsz = BL_IQ3_XXS.do, BL_IQ3_XXS.dsz
+    qo, qsz = BL_IQ3_XXS.qo, BL_IQ3_XXS.qsz
+
+    assert all(x != -1 for x in [do, dsz]), "IQ3_XXS"
+    assert k % qk == 0, "IQ3_XXS"
+
+    nb = k // qk
+
+    bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
+    d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
+    d = tl.load(d_ptr).to(tl.float32)
+
+    ssi = (oi//(qk//8))*4
+    ss_ptr = (x_ptr+bo+qo+qsz+ssi).to(tl.pointer_type(tl.uint32))
+    ss = tl.load(ss_ptr)
+
+    sc = d*(0.5+(ss>>28))*0.5
+
+    signi = ((oi//(qk//32))%4)*7
+    signb = (ss>>signi)&127
+    sign = tl.where((KSIGNS_IQ2XS[signb]>>(oi%(qk//64)))&1, -1.0, 1.0)
+
+    qi = (oi//(qk//32))*2 + (oi//(qk//64))%2
+    q = tl.load(x_ptr+bo+qo+qi)
+    gi = q*4 + oi%4
+    x = IQ3XXS_GRID[gi]
+
+    ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
+    tl.store(y_ptr+ybo+oi, x*sign*sc)
 
 # ====================== 3.3125 bpw (de)-quantization
 
@@ -559,7 +693,6 @@ def __dequant_row_iq3_s(x_ptr, y_ptr, k) -> None:
     scb = tl.load(x_ptr+bo+sco+sci)
     sc = d*(1+2*((scb>>scs)&0xF))
 
-
     # sign
     signi = oi//(qk//32)
     signs = oi%(qk//32)
@@ -572,16 +705,16 @@ def __dequant_row_iq3_s(x_ptr, y_ptr, k) -> None:
     q = tl.load(x_ptr+bo+qo+qi)
 
     qhi = oi//(qk//8)
-    qhs = (8-2*(oi%(qk//8))) - ((oi//4)%2)
+    qhs = (8-2*(oi%(qk//8)))-((oi//4)%2)
 
     qhb = tl.load(x_ptr+bo+qho+qhi)
     qh = ((qhb<<qhs)>>8)&1
-    gi = (q>>qs) | (qh << 8)
+    gi = ((q>>qs) | (qh << 8))*4 + (oi%4)
 
-    x = IQ3S_GRID[gi]* sign
+    x = IQ3S_GRID[gi]
 
     ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
-    tl.store(y_ptr+ybo+oi, sc*x)
+    tl.store(y_ptr+ybo+oi, sc*x*sign)
 
 # ====================== 1.5625 bpw (de)-quantization
 
@@ -617,7 +750,7 @@ def __dequant_row_iq1_s(x_ptr, y_ptr, k) -> None:
     qh3 = qh&7
     qh1 = (qh>>15)&1
 
-    gi = (q|(qh3<<8)).to(tl.int32)
+    gi = ((q|(qh3<<8)).to(tl.int32))*8 + (oi%8)
     delta = tl.where(qh1, -IQ1S_DELTA, IQ1S_DELTA)
     x = IQ1S_GRID[gi]+delta
 
@@ -651,15 +784,15 @@ def __dequant_row_iq1_m(x_ptr, y_ptr, k) -> None:
     # end scale logic
 
     qi = oi//8
-    qhi = oi//16
-    qhs = (qi%2)*4
+    qhi = (oi//(qk//8))*2+(oi//(qk//16))%2
+    qhs = ((oi//(qk//32))%2)*4
 
     q = tl.load(x_ptr+bo+qo+qi)
     qh = tl.load(x_ptr+bo+qho+qhi)
     qh3 = (qh>>qhs)&7
     qh1 = (qh>>(qhs+3))&1
 
-    gi = (q|(qh3<<8)).to(tl.int32)
+    gi = ((q|(qh3<<8)).to(tl.int32))*8 + oi%8
     delta = tl.where(qh1, -IQ1S_DELTA, IQ1S_DELTA)
     x = IQ1S_GRID[gi]+delta
 
@@ -694,7 +827,47 @@ def __dequant_row_iq4_nl(x_ptr, y_ptr, k) -> None:
 
 @triton.jit
 def __dequant_row_iq4_xs(x_ptr, y_ptr, k) -> None:
-    pass
+    qk, bsz = BL_IQ4_XS.qk, BL_IQ4_XS.bsz
+    do, dsz = BL_IQ4_XS.do, BL_IQ4_XS.dsz
+    scho, schsz = BL_IQ4_XS.scho, BL_IQ4_XS.schsz
+    sclo, sclsz = BL_IQ4_XS.sclo, BL_IQ4_XS.sclsz
+    qo, qsz = BL_IQ4_XS.qo, BL_IQ4_XS.qsz
+
+    assert all(x != 1 for x in [do, dsz, scho, schsz, sclo, sclsz]), "IQ4_XS"
+    assert k % qk == 0, "IQ4_XS"
+
+    nb = k // qk
+
+    bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
+    d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
+    d = tl.load(d_ptr).to(tl.float32)
+
+    sci = oi//(qk//8)
+    scli = sci//2
+    scls = (sci%2)*4
+    sclb = tl.load(x_ptr+bo+sclo+scli)
+    sclbits = (sclb>>scls)&0xF
+
+    sch_ptr = (x_ptr+bo+scho).to(tl.pointer_type(tl.uint16))
+    sch = tl.load(sch_ptr)
+    schbits = (sch>>(sci*2))&3
+
+    ls = sclbits | (schbits<<4)
+    sc = d*(ls-32)
+
+    qi = oi%(qk//2)
+    qs = (oi//(qk//2))*4
+    q = tl.load(x_ptr+bo+qo+qi)
+    gi = (q>>qs)&0xF
+
+    x = KVALUES_IQ4_NL[gi]
+
+    ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
+    tl.store(y_ptr+ybo+oi, sc*x)
+
+
 
 # ==================== Q8_K ======================
 
