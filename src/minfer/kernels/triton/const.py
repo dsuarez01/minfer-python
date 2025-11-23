@@ -203,7 +203,7 @@ class BlockLayout:
             self.sclo, self.sclsz = tl.constexpr(o), tl.constexpr(sz)
         
         # validation
-        for attr in ["qk", "bsz", "do", "dsz", "qo", "qsz"]:
+        for attr in ["qk", "bsz", "qo", "qsz"]:
             if getattr(self, attr, -1) == -1:
                 raise ValueError(f"Required field {attr} not set for {qtype.name}")
 

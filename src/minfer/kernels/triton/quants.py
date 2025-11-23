@@ -47,7 +47,7 @@ def __dequant_row_q4_0(x_ptr, y_ptr, k) -> None:
     do, dsz = BL_Q4_0.do,  BL_Q4_0.dsz
     qo, qsz = BL_Q4_0.qo, BL_Q4_0.qsz
 
-    # the above are already validated during BlockLayout init
+    assert all(x != -1 for x in [do, dsz]), "Q4_0"
     assert k % qk == 0, "Q4_0"
     nb = k // qk
 
@@ -74,7 +74,7 @@ def __dequant_row_q4_1(x_ptr, y_ptr, k) -> None:
     mo,msz = BL_Q4_1.mo, BL_Q4_1.msz
     qo,qsz = BL_Q4_1.qo, BL_Q4_1.qsz
 
-    assert all(x != -1 for x in [mo, msz]), "Q4_1"
+    assert all(x != -1 for x in [do, dsz, mo, msz]), "Q4_1"
     assert k % qk == 0, "Q4_1"
     nb = k // qk
 
@@ -104,7 +104,7 @@ def __dequant_row_q5_0(x_ptr, y_ptr, k) -> None:
     qho, qhsz = BL_Q5_0.qho, BL_Q5_0.qhsz
     qo, qsz = BL_Q5_0.qo, BL_Q5_0.qsz
 
-    assert all(x != -1 for x in [qho, qhsz]), "Q5_0"
+    assert all(x != -1 for x in [do, dsz, qho, qhsz]), "Q5_0"
     assert k % qk == 0, "Q5_0"
     nb = k // qk
 
@@ -129,14 +129,13 @@ def __dequant_row_q5_0(x_ptr, y_ptr, k) -> None:
 
 @triton.jit
 def __dequant_row_q5_1(x_ptr, y_ptr, k) -> None:
-    qtype = GGMLQuantizationType.Q5_1
     qk, bsz = BL_Q5_1.qk, BL_Q5_1.bsz
     do, dsz = BL_Q5_1.do, BL_Q5_1.dsz
     mo, msz = BL_Q5_1.mo, BL_Q5_1.msz
     qho, qhsz = BL_Q5_1.qho, BL_Q5_1.qhsz
     qo, qsz = BL_Q5_1.qo, BL_Q5_1.qsz
 
-    assert all(x != -1 for x in [mo, msz, qho, qhsz]), "Q5_1"
+    assert all(x != -1 for x in [do, dsz, mo, msz, qho, qhsz]), "Q5_1"
     assert k % qk == 0, "Q5_1"
     nb = k // qk
 
@@ -168,7 +167,7 @@ def __dequant_row_q8_0(x_ptr, y_ptr, k) -> None:
     do, dsz = BL_Q8_0.do, BL_Q8_0.dsz
     qo, qsz = BL_Q8_0.qo, BL_Q8_0.qsz
 
-    # the above are already validated during BlockLayout init
+    assert all(x != -1 for x in [do, dsz]), "Q8_0"
     assert k % qk == 0, "Q8_0"
     nb = k // qk
 
@@ -221,7 +220,7 @@ def __dequant_row_q2_K(x_ptr, y_ptr, k) -> None:
     do, dsz = BL_Q2_K.do, BL_Q2_K.dsz
     dmo, dmsz = BL_Q2_K.dmo, BL_Q2_K.dmsz
 
-    assert all(x != -1 for x in [sco, scsz, dmo, dmsz]), "Q2_K"
+    assert all(x != -1 for x in [sco, scsz, do, dsz, dmo, dmsz]), "Q2_K"
     assert k % qk == 0, "Q2_K"
     nb = k // qk
 
@@ -256,7 +255,7 @@ def __dequant_row_q3_K(x_ptr, y_ptr, k) -> None:
     sco, scsz = BL_Q3_K.sco, BL_Q3_K.scsz
     do, dsz = BL_Q3_K.do, BL_Q3_K.dsz
 
-    assert all(x != -1 for x in [hmo, hmsz, sco, scsz]), "Q3_K"
+    assert all(x != -1 for x in [hmo, hmsz, sco, scsz, do, dsz]), "Q3_K"
     assert k % qk == 0, "Q3_K"
     nb = k // qk
 
@@ -320,7 +319,7 @@ def __dequant_row_q4_K(x_ptr, y_ptr, k) -> None:
     sco, scsz = BL_Q4_K.sco, BL_Q4_K.scsz
     qo, qsz = BL_Q4_K.qo, BL_Q4_K.qsz
 
-    assert all(x != -1 for x in [dmo, dmsz, sco, scsz]), "Q4_K"
+    assert all(x != -1 for x in [do, dsz, dmo, dmsz, sco, scsz]), "Q4_K"
     assert k % qk == 0, "Q4_K"
     nb = k // qk
 
@@ -367,7 +366,7 @@ def __dequant_row_q5_K(x_ptr, y_ptr, k) -> None:
     qho, qhsz = BL_Q5_K.qho, BL_Q5_K.qhsz
     qo, qsz = BL_Q5_K.qo, BL_Q5_K.qsz
 
-    assert all(x != -1 for x in [dmo, dmsz, sco, scsz, qho, qhsz]), "Q5_K"
+    assert all(x != -1 for x in [do, dsz, dmo, dmsz, sco, scsz, qho, qhsz]), "Q5_K"
     assert k % qk == 0, "Q5_K"
     nb = k // qk
 
@@ -419,7 +418,7 @@ def __dequant_row_q6_K(x_ptr, y_ptr, k) -> None:
     sco, scsz = BL_Q6_K.sco, BL_Q6_K.scsz
     do, dsz = BL_Q6_K.do, BL_Q6_K.dsz
 
-    assert all(x != -1 for x in [qho, qhsz, sco, scsz]), "Q6_K"
+    assert all(x != -1 for x in [qho, qhsz, sco, scsz, do, dsz]), "Q6_K"
     assert k % qk == 0, "Q6_K"
     nb = k // qk
 
@@ -456,7 +455,7 @@ def __dequant_row_tq1_0(x_ptr, y_ptr, k) -> None:
     qho, qhsz = BL_TQ1_0.qho, BL_TQ1_0.qhsz
     do, dsz = BL_TQ1_0.do, BL_TQ1_0.dsz
 
-    assert all(x != -1 for x in [qho, qhsz]), "TQ1_0"
+    assert all(x != -1 for x in [qho, qhsz, do, dsz]), "TQ1_0"
     assert k % qk == 0, "TQ1_0"
     nb = k // qk
 
@@ -489,7 +488,7 @@ def __dequant_row_tq2_0(x_ptr, y_ptr, k) -> None:
     qo, qsz = BL_TQ2_0.qo, BL_TQ2_0.qsz
     do, dsz = BL_TQ2_0.do, BL_TQ2_0.dsz
 
-    # the above are already validated during BlockLayout init
+    assert all(x != -1 for x in [do, dsz]), "TQ2_0"
     assert k % qk == 0, "TQ2_0"
     nb = k // qk
 
@@ -542,11 +541,84 @@ def __dequant_row_iq3_s(x_ptr, y_ptr, k) -> None:
 
 @triton.jit
 def __dequant_row_iq1_s(x_ptr, y_ptr, k) -> None:
-    pass
+    qk, bsz = BL_IQ1_S.qk, BL_IQ1_S.bsz
+    qo, qsz = BL_IQ1_S.qo, BL_IQ1_S.qsz
+    do, dsz = BL_IQ1_S.do, BL_IQ1_S.dsz
+    qho, qhsz = BL_IQ1_S.qho, BL_IQ1_S.qhsz
+
+    assert all(x != -1 for x in [do,dsz,qho,qhsz]), "IQ1_S"
+    assert k % qk == 0, "IQ1_S"
+
+    nb = k // qk
+
+    bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
+    d_ptr = (x_ptr+bo+do).to(tl.pointer_type(tl.float16))
+    d = tl.load(d_ptr).to(tl.float32)
+
+    qi = oi//8
+    qhi = (oi//(qk//8))*2
+
+    qh_ptr = (x_ptr+bo+qho+qhi).to(tl.pointer_type(tl.uint16))
+
+    q = tl.load(x_ptr+bo+qo+qi)
+    qh = tl.load(qh_ptr)
+    
+    scb = (qh>>12)&7
+    sc = d*(2*scb+1)
+
+    qh3 = qh&7
+    qh1 = (qh>>15)&1
+
+    gi = (q|(qh3<<8)).to(tl.int32)
+    delta = tl.where(qh1, -IQ1S_DELTA, IQ1S_DELTA)
+    x = IQ1S_GRID[gi]+delta
+
+    ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
+    tl.store(y_ptr+ybo+oi, sc*x)
 
 @triton.jit
 def __dequant_row_iq1_m(x_ptr, y_ptr, k) -> None:
-    pass
+    qk, bsz = BL_IQ1_M.qk, BL_IQ1_M.bsz
+    qo, qsz = BL_IQ1_M.qo, BL_IQ1_M.qsz
+    qho, qhsz = BL_IQ1_M.qho, BL_IQ1_M.qhsz
+    sco, scsz = BL_IQ1_M.sco, BL_IQ1_M.scsz
+
+    assert all(x != -1 for x in [qho, qhsz, sco, scsz]), "IQ1_M"
+    assert k % qk == 0, "IQ1_M"
+
+    nb = k // qk
+
+    bo = tl.expand_dims(tl.arange(0,nb)*bsz, axis=1)
+    oi = tl.expand_dims(tl.arange(0,qk), axis=0)
+
+    # scale logic
+    scb = tl.load(x_ptr+bo+sco+tl.expand_dims(tl.arange(0,4)*2,axis=0)).to(tl.uint16)
+    d_bits = (scb[:,0]>>12) | ((scb[:,1]>>8)&0xf0) | ((scb[:,2]>>4)&0xf00) | (scb[:,3]&0xf000)
+    d = d_bits.to(tl.float16, bitcast=True).to(tl.float32)
+    sci = oi//(qk//4)
+    scs = ((oi//(qk//8))%2)*6 + ((oi//(qk//16))%2)*3
+    sc = tl.gather(scb, sci, axis=1)
+    sc = (sc>>scs)&7
+    sc = d*(2*sc+1)
+    # end scale logic
+
+    qi = oi//8
+    qhi = oi//16
+    qhs = (qi%2)*4
+
+    q = tl.load(x_ptr+bo+qo+qi)
+    qh = tl.load(x_ptr+bo+qho+qhi)
+    qh3 = (qh>>qhs)&7
+    qh1 = (qh>>(qhs+3))&1
+
+    gi = (q|(qh3<<8)).to(tl.int32)
+    delta = tl.where(qh1, -IQ1S_DELTA, IQ1S_DELTA)
+    x = IQ1S_GRID[gi]+delta
+
+    ybo = tl.expand_dims(tl.arange(0,nb)*qk, axis=1)
+    tl.store(y_ptr+ybo+oi, sc*x)
 
 @triton.jit
 def __dequant_row_iq4_nl(x_ptr, y_ptr, k) -> None:
@@ -554,7 +626,7 @@ def __dequant_row_iq4_nl(x_ptr, y_ptr, k) -> None:
     do, dsz = BL_IQ4_NL.do, BL_IQ4_NL.dsz
     qo, qsz = BL_IQ4_NL.qo, BL_IQ4_NL.qsz
 
-    # the above are already validated during BlockLayout init
+    assert all(x != -1 for x in [do, dsz]), "IQ4_NL"
     assert k % qk == 0, "IQ4_NL"
     nb = k // qk
 
@@ -586,7 +658,7 @@ def __dequant_row_q8_K(x_ptr, y_ptr, k) -> None:
     do, dsz = BL_Q8_K.do, BL_Q8_K.dsz
     qo, qsz = BL_Q8_K.qo, BL_Q8_K.qsz
 
-    # the above are already validated during BlockLayout init
+    assert all(x != -1 for x in [do, dsz]), "Q8_K"
     assert k % qk == 0, "Q8_K"
     nb = k // qk
 
