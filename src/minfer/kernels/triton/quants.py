@@ -47,6 +47,7 @@ def __dequant_row_q4_0(x_ptr, y_ptr, k) -> None:
     do, dsz = BL_Q4_0.do,  BL_Q4_0.dsz
     qo, qsz = BL_Q4_0.qo, BL_Q4_0.qsz
 
+    # the above are already validated during BlockLayout init
     assert k % qk == 0, "Q4_0"
     nb = k // qk
 
@@ -73,6 +74,7 @@ def __dequant_row_q4_1(x_ptr, y_ptr, k) -> None:
     mo,msz = BL_Q4_1.mo, BL_Q4_1.msz
     qo,qsz = BL_Q4_1.qo, BL_Q4_1.qsz
 
+    assert all(x != -1 for x in [mo, msz]), "Q4_1"
     assert k % qk == 0, "Q4_1"
     nb = k // qk
 
@@ -102,6 +104,7 @@ def __dequant_row_q5_0(x_ptr, y_ptr, k) -> None:
     qho, qhsz = BL_Q5_0.qho, BL_Q5_0.qhsz
     qo, qsz = BL_Q5_0.qo, BL_Q5_0.qsz
 
+    assert all(x != -1 for x in [qho, qhsz]), "Q5_0"
     assert k % qk == 0, "Q5_0"
     nb = k // qk
 
@@ -133,6 +136,7 @@ def __dequant_row_q5_1(x_ptr, y_ptr, k) -> None:
     qho, qhsz = BL_Q5_1.qho, BL_Q5_1.qhsz
     qo, qsz = BL_Q5_1.qo, BL_Q5_1.qsz
 
+    assert all(x != -1 for x in [mo, msz, qho, qhsz]), "Q5_1"
     assert k % qk == 0, "Q5_1"
     nb = k // qk
 
@@ -164,6 +168,7 @@ def __dequant_row_q8_0(x_ptr, y_ptr, k) -> None:
     do, dsz = BL_Q8_0.do, BL_Q8_0.dsz
     qo, qsz = BL_Q8_0.qo, BL_Q8_0.qsz
 
+    # the above are already validated during BlockLayout init
     assert k % qk == 0, "Q8_0"
     nb = k // qk
 
@@ -187,6 +192,7 @@ def __dequant_row_mxfp4(x_ptr, y_ptr, k) -> None:
     eo, esz = BL_MXFP4.eo, BL_MXFP4.esz
     qo, qsz = BL_MXFP4.qo, BL_MXFP4.qsz
 
+    assert all(x != -1 for x in [eo, esz]), "MXFP4"
     assert k % qk == 0, "MXFP4"
     nb = k // qk
 
@@ -215,6 +221,7 @@ def __dequant_row_q2_K(x_ptr, y_ptr, k) -> None:
     do, dsz = BL_Q2_K.do, BL_Q2_K.dsz
     dmo, dmsz = BL_Q2_K.dmo, BL_Q2_K.dmsz
 
+    assert all(x != -1 for x in [sco, scsz, dmo, dmsz]), "Q2_K"
     assert k % qk == 0, "Q2_K"
     nb = k // qk
 
@@ -249,6 +256,7 @@ def __dequant_row_q3_K(x_ptr, y_ptr, k) -> None:
     sco, scsz = BL_Q3_K.sco, BL_Q3_K.scsz
     do, dsz = BL_Q3_K.do, BL_Q3_K.dsz
 
+    assert all(x != -1 for x in [hmo, hmsz, sco, scsz]), "Q3_K"
     assert k % qk == 0, "Q3_K"
     nb = k // qk
 
@@ -312,6 +320,7 @@ def __dequant_row_q4_K(x_ptr, y_ptr, k) -> None:
     sco, scsz = BL_Q4_K.sco, BL_Q4_K.scsz
     qo, qsz = BL_Q4_K.qo, BL_Q4_K.qsz
 
+    assert all(x != -1 for x in [dmo, dmsz, sco, scsz]), "Q4_K"
     assert k % qk == 0, "Q4_K"
     nb = k // qk
 
@@ -358,6 +367,7 @@ def __dequant_row_q5_K(x_ptr, y_ptr, k) -> None:
     qho, qhsz = BL_Q5_K.qho, BL_Q5_K.qhsz
     qo, qsz = BL_Q5_K.qo, BL_Q5_K.qsz
 
+    assert all(x != -1 for x in [dmo, dmsz, sco, scsz, qho, qhsz]), "Q5_K"
     assert k % qk == 0, "Q5_K"
     nb = k // qk
 
@@ -409,6 +419,7 @@ def __dequant_row_q6_K(x_ptr, y_ptr, k) -> None:
     sco, scsz = BL_Q6_K.sco, BL_Q6_K.scsz
     do, dsz = BL_Q6_K.do, BL_Q6_K.dsz
 
+    assert all(x != -1 for x in [qho, qhsz, sco, scsz]), "Q6_K"
     assert k % qk == 0, "Q6_K"
     nb = k // qk
 
@@ -445,6 +456,7 @@ def __dequant_row_tq1_0(x_ptr, y_ptr, k) -> None:
     qho, qhsz = BL_TQ1_0.qho, BL_TQ1_0.qhsz
     do, dsz = BL_TQ1_0.do, BL_TQ1_0.dsz
 
+    assert all(x != -1 for x in [qho, qhsz]), "TQ1_0"
     assert k % qk == 0, "TQ1_0"
     nb = k // qk
 
@@ -477,6 +489,7 @@ def __dequant_row_tq2_0(x_ptr, y_ptr, k) -> None:
     qo, qsz = BL_TQ2_0.qo, BL_TQ2_0.qsz
     do, dsz = BL_TQ2_0.do, BL_TQ2_0.dsz
 
+    # the above are already validated during BlockLayout init
     assert k % qk == 0, "TQ2_0"
     nb = k // qk
 
@@ -541,6 +554,7 @@ def __dequant_row_iq4_nl(x_ptr, y_ptr, k) -> None:
     do, dsz = BL_IQ4_NL.do, BL_IQ4_NL.dsz
     qo, qsz = BL_IQ4_NL.qo, BL_IQ4_NL.qsz
 
+    # the above are already validated during BlockLayout init
     assert k % qk == 0, "IQ4_NL"
     nb = k // qk
 
@@ -572,6 +586,7 @@ def __dequant_row_q8_K(x_ptr, y_ptr, k) -> None:
     do, dsz = BL_Q8_K.do, BL_Q8_K.dsz
     qo, qsz = BL_Q8_K.qo, BL_Q8_K.qsz
 
+    # the above are already validated during BlockLayout init
     assert k % qk == 0, "Q8_K"
     nb = k // qk
 
