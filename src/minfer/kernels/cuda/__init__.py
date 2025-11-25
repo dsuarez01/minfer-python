@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Callable
 from torch.utils.cpp_extension import load
 import os
 
@@ -12,7 +12,7 @@ def _get_cuda_kernels():
             name="cuda_kernels",
             sources=[
                 os.path.join(source_dir, "kernels.cu"),
-                os.path.join(source_dir, "quants.cu"),    
+                # os.path.join(source_dir, "quants.cu"),
             ],
             extra_cuda_cflags=["-O3"],
             verbose=True,
@@ -20,13 +20,13 @@ def _get_cuda_kernels():
     return _cuda_kernels
 
 cuda_kernels: Any = _get_cuda_kernels()
-_dequant_row = cuda_kernels._dequant_row
-rmsnorm = cuda_kernels.rmsnorm
-il_rope = cuda_kernels.il_rope
-neox_rope = cuda_kernels.neox_rope
-matmul = cuda_kernels.matmul
-embed = cuda_kernels.embed
-qkv = cuda_kernels.qkv
-flash_attn = cuda_kernels.flash_attn
-moe_scoring = cuda_kernels.moe_scoring
-ffn = cuda_kernels.ffn
+_dequant_row: Callable = cuda_kernels._dequant_row
+rmsnorm: Callable = cuda_kernels.rmsnorm
+il_rope: Callable = cuda_kernels.il_rope
+neox_rope: Callable = cuda_kernels.neox_rope
+matmul: Callable = cuda_kernels.matmul
+embed: Callable = cuda_kernels.embed
+qkv: Callable = cuda_kernels.qkv
+flash_attn: Callable = cuda_kernels.flash_attn
+moe_scoring: Callable = cuda_kernels.moe_scoring
+ffn: Callable = cuda_kernels.ffn
