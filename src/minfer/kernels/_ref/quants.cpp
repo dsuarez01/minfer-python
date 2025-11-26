@@ -40,22 +40,29 @@ void dequant_row(
     int qtype_int,
     torch::Tensor x,
     torch::Tensor y,
-    int64_t row_idx,
     int64_t b,
     int64_t k
 ) {
+    TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
+    TORCH_CHECK(x.size(0) == y.size(0), "x and y must have the same number of rows");
+
     GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
     const uint8_t* __restrict__ x_ptr = x.data_ptr<uint8_t>();
+    int64_t n_rows = x.size(0);
 
     switch (y.scalar_type()) {
         case torch::kFloat32: {
             float* __restrict__ y_ptr = y.data_ptr<float>();
-            dequant_row_<float>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
+            for (int64_t row_idx = 0; row_idx < n_rows; ++row_idx) {
+                dequant_row_<float>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
+            }
             break;
         }
         case torch::kFloat16: {
             half_t* __restrict__ y_ptr = y.data_ptr<half_t>();
-            dequant_row_<half_t>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
+            for (int64_t row_idx = 0; row_idx < n_rows; ++row_idx) {
+                dequant_row_<half_t>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
+            }
             break;
         }
         default: TORCH_CHECK(false, "Expected y scalar dtype to be float32 or float16, got ", y.scalar_type()); break;
@@ -100,17 +107,22 @@ void quant_row(
     int qtype_int,
     torch::Tensor x,
     torch::Tensor y,
-    int64_t row_idx,
     int64_t b,
     int64_t n
 ) {
+    TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
+    TORCH_CHECK(x.size(0) == y.size(0), "x and y must have same number of rows");
+
     GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
     uint8_t* __restrict__ y_ptr = y.data_ptr<uint8_t>();
+    int64_t n_rows = x.size(0);
 
     switch (x.scalar_type()) {
         case torch::kFloat32: {
             const float* __restrict__ x_ptr = x.data_ptr<float>();
-            quant_row_(qtype, x_ptr+row_idx*n, y_ptr+row_idx*b, n);
+            for (int64_t row_idx = 0; row_idx < n_rows; ++row_idx) {
+                quant_row_(qtype, x_ptr+row_idx*n, y_ptr+row_idx*b, n);
+            }
             break;
         }
         default: TORCH_CHECK(false, "Expected x scalar dtype to be float32, got ", x.scalar_type()); break;
@@ -118,11 +130,19 @@ void quant_row(
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    // NOTE: 2-3 min to initialize upon first import
+    iq2xs_init_impl(GGMLQuantizationType::IQ2_XXS);
+    iq2xs_init_impl(GGMLQuantizationType::IQ2_XS);
+    iq2xs_init_impl(GGMLQuantizationType::IQ2_S);
+    iq2xs_init_impl(GGMLQuantizationType::IQ1_S);
+    iq2xs_init_impl(GGMLQuantizationType::IQ1_M);
+    iq3xs_init_impl(GGMLQuantizationType::IQ3_XXS); 
+    iq3xs_init_impl(GGMLQuantizationType::IQ3_S);
+    
     m.def("dequant_row", &dequant_row,
         py::arg("qtype"),
         py::arg("x"),
         py::arg("y"),
-        py::arg("row_idx"),
         py::arg("b"),
         py::arg("k")); // NOTE: for named arguments in Python call
     
@@ -130,7 +150,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("qtype"),
         py::arg("x"),
         py::arg("y"),
-        py::arg("row_idx"),
         py::arg("b"),
         py::arg("n"));
     

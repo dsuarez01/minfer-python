@@ -53,6 +53,22 @@ enum class GGMLQuantizationType : int {
     MXFP4   = 39
 };
 
+inline bool is_valid_qtype(int qtype_int) {
+    switch (qtype_int) {
+        case 0: case 1: case 2: case 3: 
+        case 6: case 7: case 8: case 10:
+        case 11: case 12: case 13: case 14:
+        case 15: case 16: case 17: case 18:
+        case 19: case 20: case 21: case 22:
+        case 23: case 24: case 25: case 26:
+        case 27: case 28: case 29: case 30:
+        case 34: case 35: case 39:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // QK = number of values after dequantization
 // QK_K = super-block size
 
@@ -411,7 +427,9 @@ void quant_row_iq4_nl(const float* __restrict__ x, uint8_t* __restrict__ yr, int
 void quant_row_iq4_xs(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n, const float* quant_weights = nullptr);
 void quant_row_q8_K(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
 
-// fcns for clean-up (called in quants.cpp)
+// fcns for init. and clean-up (called in quants.cpp)
+void iq2xs_init_impl(GGMLQuantizationType type);
+void iq3xs_init_impl(GGMLQuantizationType type);
 void iq2xs_free_impl(GGMLQuantizationType type);
 void iq3xs_free_impl(GGMLQuantizationType type);
 

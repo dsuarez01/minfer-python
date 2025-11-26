@@ -1,13 +1,10 @@
-# TODO: add me
+# TODO: modify ALL tests to use RefKernelBackend once ready (for now, only test_dequant uses it)
 import numpy as np
 import torch
 import torch.nn.functional as F
 import pytest
 
-from minfer.kernels import KernelBackend
-from minfer.kernels.cpu import _dequant_row as cpu_dequant_row, _quant_row as cpu_quant_row
-from minfer.kernels.triton import _dequant_row as triton_dequant_row
-# from minfer.kernels.cuda import _dequant_row as cuda_dequant_row
+from minfer.kernels import KernelBackend, RefKernelBackend
 from minfer.const import GGMLQuantizationType, GGML_QUANT_SIZES
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
@@ -25,37 +22,31 @@ SUPPORTED_QTYPES = [
 @pytest.mark.parametrize("shape", [(1024,6144), (16384,6144)])
 @pytest.mark.parametrize("qtype_name", SUPPORTED_QTYPES)
 def test_dequant(backend, qtype_name, shape):
-    if not torch.cuda.is_available():
-        pytest.skip("GPU required")
-    
+
+    ref_backend = KernelBackend("_ref")
+    test_backend = KernelBackend(backend)
+
     M, N = shape
     qtype = GGMLQuantizationType[qtype_name]
+    
     block_size, type_size = GGML_QUANT_SIZES[qtype]
     bytes_per_row = (N//block_size)*type_size
     
     data_A = torch.randn(shape, dtype=torch.float32)
     
-    # CPU round-trip (taken to be ground truth)
+    # Reference round-trip is ground truth
     quantized_A = torch.zeros((M, bytes_per_row), dtype=torch.uint8)
     expected_A = torch.zeros(shape, dtype=torch.float32)
     
-    for row_idx in range(M):
-        # print(type(qtype))
-        # print(type(data_A))
-        # print(type(quantized_A))
-        # print(f"Types: {type(row_idx)}, {type(bytes_per_row)}, {type(N)}")
-        # print(f"data_A: device={data_A.device}, dtype={data_A.dtype}, shape={data_A.shape}")
-        # print(f"quantized_A: device={quantized_A.device}, dtype={quantized_A.dtype}, shape={quantized_A.shape}")
-        cpu_quant_row(qtype, data_A, quantized_A, row_idx, bytes_per_row, N)
-        cpu_dequant_row(qtype, quantized_A, expected_A, row_idx, bytes_per_row, N)
+    ref_backend._quant_row(qtype, data_A, quantized_A, bytes_per_row, N)
+    ref_backend._dequant_row(qtype, quantized_A, expected_A, bytes_per_row, N)
     
-    # GPU (dequant)
+    # Test dequant
     quantized_A = quantized_A.cuda()
     actual_A = torch.zeros(shape, dtype=torch.float32).cuda()
     
-    dequant_row = triton_dequant_row if backend == "triton" else cuda_dequant_row
     grid = (M,)
-    dequant_row[grid](qtype, quantized_A, actual_A, bytes_per_row, N)
+    test_backend._dequant_row[grid](qtype, quantized_A, actual_A, bytes_per_row, N)
     
     assert torch.allclose(actual_A.cpu(), expected_A, rtol=1e-2, atol=1e-3)
 

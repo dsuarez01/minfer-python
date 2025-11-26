@@ -5,7 +5,6 @@ import triton.language as tl
 from .const import *
 from gguf import GGMLQuantizationType
 
-# NOTE: make sure to use newest version of GGUF from Github repo for MXFP4 support
 @triton.jit
 def _dequant_row(qtype : GGMLQuantizationType, x_ptr, y_ptr, b, k):
     

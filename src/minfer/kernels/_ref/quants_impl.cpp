@@ -10,8 +10,8 @@
 #include <cassert>
 #include <cfloat>
 #include <cstdlib> // for qsort
-#include <mutex> // for impl inits
-#include <algorithm>
+// #include <mutex> // for impl inits
+#include <algorithm> // for min and max
 
 constexpr float GROUP_MAX_EPS = 1e-15f;
 constexpr float GROUP_MAX_EPS_IQ3_XXS = 1e-8f;
@@ -358,11 +358,11 @@ float make_qp_quants(int n, int nmax, const float * __restrict__ x, uint8_t * __
 
 // ====== for IQ1 / IQ2 Quantization ======
 
-static std::once_flag iq2_xxs_init_flag;
-static std::once_flag iq2_xs_init_flag;
-static std::once_flag iq1_s_init_flag;
-static std::once_flag iq1_m_init_flag;
-static std::once_flag iq2_s_init_flag;
+// static std::once_flag iq2_xxs_init_flag;
+// static std::once_flag iq2_xs_init_flag;
+// static std::once_flag iq1_s_init_flag;
+// static std::once_flag iq1_m_init_flag;
+// static std::once_flag iq2_s_init_flag;
 
 typedef struct {
     uint64_t * grid;
@@ -561,8 +561,8 @@ static int iq2_find_best_neighbour(const uint16_t * __restrict__ neighbours, con
 
 // ====== for IQ3 Quantization ======
 
-static std::once_flag iq3_xxs_init_flag;
-static std::once_flag iq3_s_init_flag;
+// static std::once_flag iq3_xxs_init_flag;
+// static std::once_flag iq3_s_init_flag;
 
 typedef struct {
     uint32_t * grid;
@@ -729,6 +729,7 @@ static int iq3_find_best_neighbour(const uint16_t * __restrict__ neighbours, con
 
 // ====== IQ1 helpers ======
 
+// NOTE: currently unused
 static int iq1_find_best_neighbour(const uint16_t * __restrict__ neighbours, const uint64_t * __restrict__ grid,
         const float * __restrict__ xval, const float * __restrict__ weight, float * scale, int8_t * __restrict__ L, int ngrid) {
     int num_neighbors = neighbours[0];
@@ -1989,9 +1990,9 @@ void dequant_row_iq2_xxs(const uint8_t * __restrict__ xr, T * __restrict__ y, in
 
 void quant_row_iq2_xxs(const float * __restrict__ x, uint8_t * __restrict__ yr, int64_t n, const float * quant_weights) {
 
-    std::call_once(iq2_xxs_init_flag, []() {
-        iq2xs_init_impl(GGMLQuantizationType::IQ2_XXS);
-    });
+    // std::call_once(iq2_xxs_init_flag, []() {
+    //     iq2xs_init_impl(GGMLQuantizationType::IQ2_XXS);
+    // });
 
     block_iq2_xxs * __restrict__ y = reinterpret_cast<block_iq2_xxs *>(yr);
     const int gindex = iq2_data_index(GGMLQuantizationType::IQ2_XXS);
@@ -2198,9 +2199,9 @@ void dequant_row_iq2_xs(const uint8_t * __restrict__ xr, T * __restrict__ y, int
 
 void quant_row_iq2_xs(const float * __restrict__ x, uint8_t * __restrict__ yr, int64_t n, const float * quant_weights) {
 
-    std::call_once(iq2_xs_init_flag, []() {
-        iq2xs_init_impl(GGMLQuantizationType::IQ2_XS);
-    });
+    // std::call_once(iq2_xs_init_flag, []() {
+    //     iq2xs_init_impl(GGMLQuantizationType::IQ2_XS);
+    // });
 
     block_iq2_xs * __restrict__ y = reinterpret_cast<block_iq2_xs *>(yr);
     const int gindex = iq2_data_index(GGMLQuantizationType::IQ2_XS);
@@ -2419,9 +2420,9 @@ void dequant_row_iq2_s(const uint8_t * __restrict__ xr, T * __restrict__ y, int6
 
 void quant_row_iq2_s(const float * __restrict__ x, uint8_t * __restrict__ yr, int64_t n, const float * quant_weights) {
 
-    std::call_once(iq2_s_init_flag, []() {
-        iq2xs_init_impl(GGMLQuantizationType::IQ2_S);
-    });
+    // std::call_once(iq2_s_init_flag, []() {
+    //     iq2xs_init_impl(GGMLQuantizationType::IQ2_S);
+    // });
 
     block_iq2_s * __restrict__ y = reinterpret_cast<block_iq2_s *>(yr);
     const int gindex = iq2_data_index(GGMLQuantizationType::IQ2_S);
@@ -2625,9 +2626,9 @@ void dequant_row_iq3_xxs(const uint8_t * __restrict__ xr, T * __restrict__ y, in
 
 void quant_row_iq3_xxs(const float * __restrict__ x, uint8_t * __restrict__ yr, int64_t n, const float * quant_weights) {
 
-    std::call_once(iq3_xxs_init_flag, []() {
-        iq3xs_init_impl(GGMLQuantizationType::IQ3_XXS);
-    });
+    // std::call_once(iq3_xxs_init_flag, []() {
+    //     iq3xs_init_impl(GGMLQuantizationType::IQ3_XXS);
+    // });
 
     block_iq3_xxs * __restrict__ y = reinterpret_cast<block_iq3_xxs *>(yr);
     const int gindex = iq3_data_index(GGMLQuantizationType::IQ3_XXS);
@@ -2675,7 +2676,7 @@ void quant_row_iq3_xxs(const float * __restrict__ x, uint8_t * __restrict__ yr, 
     uint8_t q3[3*(QK_K/8)+QK_K/32];
 
     uint32_t * scales_and_signs = (uint32_t *)(q3 + QK_K/4);
-    uint8_t  * qh = q3 + 3*(QK_K/8);
+    uint8_t  * qh = q3 + 3*(QK_K/8); // NOTE: unused
     
 
     for (int ibl = 0; ibl < nbl; ++ibl) {
@@ -2889,9 +2890,9 @@ void dequant_row_iq3_s(const uint8_t * __restrict__ xr, T * __restrict__ y, int6
 constexpr int IQ3S_BLOCK_SIZE = 32;
 void quant_row_iq3_s(const float * __restrict__ x, uint8_t * __restrict__ yr, int64_t n, const float * quant_weights) {
 
-    std::call_once(iq3_s_init_flag, []() {
-        iq3xs_init_impl(GGMLQuantizationType::IQ3_S);
-    });
+    // std::call_once(iq3_s_init_flag, []() {
+    //     iq3xs_init_impl(GGMLQuantizationType::IQ3_S);
+    // });
 
     block_iq3_s * __restrict__ y = reinterpret_cast<block_iq3_s *>(yr);
     const int gindex = iq3_data_index(GGMLQuantizationType::IQ3_S);
@@ -3104,9 +3105,9 @@ void dequant_row_iq1_s(const uint8_t * __restrict__ xr, T * __restrict__ y, int6
 constexpr int IQ1S_BLOCK_SIZE = 32;
 void quant_row_iq1_s(const float * __restrict__ x, uint8_t * __restrict__ yr, int64_t n, const float * quant_weights) {
 
-    std::call_once(iq1_s_init_flag, []() {
-        iq2xs_init_impl(GGMLQuantizationType::IQ1_S);
-    });
+    // std::call_once(iq1_s_init_flag, []() {
+    //     iq2xs_init_impl(GGMLQuantizationType::IQ1_S);
+    // });
 
     block_iq1_s * __restrict__ y = reinterpret_cast<block_iq1_s *>(yr);
     const int gindex = iq2_data_index(GGMLQuantizationType::IQ1_S);
@@ -3325,9 +3326,9 @@ void dequant_row_iq1_m(const uint8_t * __restrict__ xr, T * __restrict__ y, int6
 constexpr int IQ1M_BLOCK_SIZE = 16;
 void quant_row_iq1_m(const float * __restrict__ x, uint8_t * __restrict__ yr, int64_t n, const float * quant_weights) {
 
-    std::call_once(iq1_m_init_flag, []() {
-        iq2xs_init_impl(GGMLQuantizationType::IQ1_M);
-    });
+    // std::call_once(iq1_m_init_flag, []() {
+    //     iq2xs_init_impl(GGMLQuantizationType::IQ1_M);
+    // });
 
     block_iq1_m * __restrict__ y = reinterpret_cast<block_iq1_m *>(yr);
     const int gindex = iq2_data_index(GGMLQuantizationType::IQ1_M);

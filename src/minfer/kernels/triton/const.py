@@ -1,9 +1,6 @@
 # TODO: complete me!
-# Most things we need are implemented in gguf.constants
-# The lookup tables (and a few other things we need) are missing.
-# gguf-py uses a hex-grid encoding scheme
-# I don't think the savings are worth it.
-# So, we use the actual values
+
+# Most things we need are implemented in minfer.const
 
 import triton.language as tl
 import numpy as np
