@@ -7,8 +7,9 @@
 
 import triton.language as tl
 import numpy as np
-from gguf import GGMLQuantizationType, GGML_QUANT_SIZES
-from gguf import QK_K as _QK_K
+
+from minfer.const import GGMLQuantizationType, GGML_QUANT_SIZES
+from minfer.const import QK_K as _QK_K
 
 QK_K = tl.constexpr(_QK_K)
 

@@ -13,6 +13,7 @@ def _get_cpu_kernels():
             sources=[
                 # os.path.join(source_dir, "kernels.cu"),
                 os.path.join(source_dir, "quants.cpp"),
+                os.path.join(source_dir, "quants_impl.cpp"),
             ],
             extra_cflags=["-std=c++17", "-O3"],
             verbose=True,
@@ -20,8 +21,8 @@ def _get_cpu_kernels():
     return _cpu_kernels
 
 cpu_kernels: Any = _get_cpu_kernels()
-_dequant_row: Callable = cpu_kernels._dequant_row
-_quant_row: Callable = cpu_kernels._quant_row
+_dequant_row: Callable = cpu_kernels.dequant_row
+_quant_row: Callable = cpu_kernels.quant_row
 # rmsnorm: Callable = cpu_kernels.rmsnorm
 # il_rope: Callable = cpu_kernels.il_rope
 # neox_rope: Callable = cpu_kernels.neox_rope

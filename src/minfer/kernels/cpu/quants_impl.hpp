@@ -1,10 +1,13 @@
 #pragma once
 
+// Adapted from: https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-common.h (MIT License)
+
 #include <cstdint>
 #include <c10/util/Half.h>
 
 using half_t = c10::Half;
 
+// move these into the global namespace out of convenience
 using std::int8_t;
 using std::int16_t;
 using std::int32_t;
@@ -13,9 +16,6 @@ using std::uint8_t;
 using std::uint16_t;
 using std::uint32_t;
 using std::uint64_t;
-
-// TODO: complete me!
-// Adapted from: https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-common.h
 
 // NOTE: sometimes llama-cpp will change things on their end
 // Discrepancy will cause errors... Is there a better way to deal w this?
@@ -359,6 +359,62 @@ constexpr int QI4_XS = (QK_K / (4*QR4_XS));
 
 constexpr int QR3_S = 4;
 constexpr int QI3_S = (QK_K / (4*QR3_S));
+
+////////////////////////////////////////////////////////////////////////////////
+// (De)quant Impls.
+////////////////////////////////////////////////////////////////////////////////
+
+template <typename T> void dequant_row_q4_0(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_q4_1(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_q5_0(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_q5_1(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_q8_0(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_mxfp4(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_q2_K(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_q3_K(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_q4_K(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_q5_K(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_q6_K(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_tq1_0(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_tq2_0(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_iq2_xxs(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_iq2_xs(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_iq2_s(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_iq3_xxs(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_iq3_s(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_iq1_s(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_iq1_m(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_iq4_nl(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_iq4_xs(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_q8_K(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+
+void quant_row_q4_0(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
+void quant_row_q4_1(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
+void quant_row_q5_0(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
+void quant_row_q5_1(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
+void quant_row_q8_0(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
+void quant_row_mxfp4(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
+void quant_row_q2_K(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
+void quant_row_q3_K(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
+void quant_row_q4_K(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
+void quant_row_q5_K(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
+void quant_row_q6_K(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
+void quant_row_tq1_0(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
+void quant_row_tq2_0(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
+void quant_row_iq2_xxs(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n, const float* quant_weights = nullptr);
+void quant_row_iq2_xs(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n, const float* quant_weights = nullptr);
+void quant_row_iq2_s(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n, const float* quant_weights = nullptr);
+void quant_row_iq3_xxs(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n, const float* quant_weights = nullptr);
+void quant_row_iq3_s(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n, const float* quant_weights = nullptr);
+void quant_row_iq1_s(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n, const float* quant_weights = nullptr);
+void quant_row_iq1_m(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n, const float* quant_weights = nullptr);
+void quant_row_iq4_nl(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n, const float* quant_weights = nullptr);
+void quant_row_iq4_xs(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n, const float* quant_weights = nullptr);
+void quant_row_q8_K(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
+
+// fcns for clean-up (called in quants.cpp)
+void iq2xs_free_impl(GGMLQuantizationType type);
+void iq3xs_free_impl(GGMLQuantizationType type);
 
 ////////////////////////////////////////////////////////////////////////////////
 // Tables

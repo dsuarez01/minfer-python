@@ -20,7 +20,7 @@ def _get_cuda_kernels():
     return _cuda_kernels
 
 cuda_kernels: Any = _get_cuda_kernels()
-_dequant_row: Callable = cuda_kernels._dequant_row
+# _dequant_row: Callable = cuda_kernels.dequant_row
 rmsnorm: Callable = cuda_kernels.rmsnorm
 il_rope: Callable = cuda_kernels.il_rope
 neox_rope: Callable = cuda_kernels.neox_rope

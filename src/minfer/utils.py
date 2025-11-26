@@ -3,10 +3,12 @@ import re
 from pathlib import Path
 from dataclasses import dataclass
 
-from gguf import ReaderField, ReaderTensor, GGUFReader, LlamaFileType, GGMLQuantizationType
+from gguf import ReaderField, ReaderTensor, GGUFReader
 
 import torch
 import torch.nn as nn
+
+from .const import GGMLQuantizationType
 
 # https://github.com/ggml-org/ggml/blob/master/docs/gguf.md
 PATTERN = re.compile(
@@ -130,7 +132,6 @@ class GGUFReaderWrapper:
 class Params:
 
     arch: str
-    dtype: LlamaFileType
     block_cnt: int
     vocab_size: int
     ctx_len: int
@@ -160,7 +161,6 @@ class Params:
     def __init__(self, reader: GGUFReaderWrapper, run_params: dict):
         
         self.arch = reader.get_field_req("general.architecture").contents()
-        self.dtype = LlamaFileType(reader.get_field_req("general.file_type").contents())
         self.block_cnt = reader.get_field_req(f"{self.arch}.block_count").contents()
         
         vocab_field = reader.get_field_noreq(f"{self.arch}.vocab_size")

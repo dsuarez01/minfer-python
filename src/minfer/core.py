@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from minfer.kernels import KernelBackend
-from minfer.utils import GGUFReaderWrapper, Params, BufPool, TensorData, GGMLQuantizationType
+from minfer.utils import GGUFReaderWrapper, Params, BufPool, TensorData
+from minfer.const import GGMLQuantizationType
 
 import torch
 import torch.nn as nn
