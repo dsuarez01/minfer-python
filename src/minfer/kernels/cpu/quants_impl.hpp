@@ -20,14 +20,13 @@ using std::uint64_t;
 // NOTE: sometimes llama-cpp will change things on their end
 // Discrepancy will cause errors... Is there a better way to deal w this?
 enum class GGMLQuantizationType : int {
-    // F32     = 0,
-    // F16     = 1,
+    F32     = 0,
+    F16     = 1,
     Q4_0    = 2,
     Q4_1    = 3,
     Q5_0    = 6,
     Q5_1    = 7,
     Q8_0    = 8,
-    // Q8_1    = 9, // removed
     Q2_K    = 10,
     Q3_K    = 11,
     Q4_K    = 12,
@@ -42,11 +41,11 @@ enum class GGMLQuantizationType : int {
     IQ3_S   = 21,
     IQ2_S   = 22,
     IQ4_XS  = 23,
-    // I8      = 24,
-    // I16     = 25,
-    // I32     = 26,
-    // I64     = 27,
-    // F64     = 28,
+    I8      = 24,
+    I16     = 25,
+    I32     = 26,
+    I64     = 27,
+    F64     = 28,
     IQ1_M   = 29,
     BF16    = 30,
     TQ1_0   = 34,

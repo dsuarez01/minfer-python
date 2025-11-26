@@ -40,6 +40,12 @@ def test_dequant(backend, qtype_name, shape):
     expected_A = torch.zeros(shape, dtype=torch.float32)
     
     for row_idx in range(M):
+        # print(type(qtype))
+        # print(type(data_A))
+        # print(type(quantized_A))
+        # print(f"Types: {type(row_idx)}, {type(bytes_per_row)}, {type(N)}")
+        # print(f"data_A: device={data_A.device}, dtype={data_A.dtype}, shape={data_A.shape}")
+        # print(f"quantized_A: device={quantized_A.device}, dtype={quantized_A.dtype}, shape={quantized_A.shape}")
         cpu_quant_row(qtype, data_A, quantized_A, row_idx, bytes_per_row, N)
         cpu_dequant_row(qtype, quantized_A, expected_A, row_idx, bytes_per_row, N)
     
@@ -49,7 +55,7 @@ def test_dequant(backend, qtype_name, shape):
     
     dequant_row = triton_dequant_row if backend == "triton" else cuda_dequant_row
     grid = (M,)
-    dequant_row[grid](qtype, quantized_A_gpu, actual_A, bytes_per_row, N)
+    dequant_row[grid](qtype, quantized_A, actual_A, bytes_per_row, N)
     
     assert torch.allclose(actual_A.cpu(), expected_A, rtol=1e-2, atol=1e-3)
 

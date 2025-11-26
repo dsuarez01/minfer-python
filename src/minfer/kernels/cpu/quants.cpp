@@ -37,14 +37,14 @@ void dequant_row_(
 }
 
 void dequant_row(
-    GGMLQuantizationType qtype,
+    int qtype_int,
     torch::Tensor x,
     torch::Tensor y,
     int64_t row_idx,
     int64_t b,
     int64_t k
 ) {
-
+    GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
     const uint8_t* __restrict__ x_ptr = x.data_ptr<uint8_t>();
 
     switch (y.scalar_type()) {
@@ -97,14 +97,14 @@ void quant_row_(
 }
 
 void quant_row(
-    GGMLQuantizationType qtype,
+    int qtype_int,
     torch::Tensor x,
     torch::Tensor y,
     int64_t row_idx,
     int64_t b,
     int64_t n
 ) {
-
+    GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
     uint8_t* __restrict__ y_ptr = y.data_ptr<uint8_t>();
 
     switch (x.scalar_type()) {
@@ -118,8 +118,21 @@ void quant_row(
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("dequant_row", &dequant_row);
-    m.def("quant_row", &quant_row);
+    m.def("dequant_row", &dequant_row,
+        py::arg("qtype"),
+        py::arg("x"),
+        py::arg("y"),
+        py::arg("row_idx"),
+        py::arg("b"),
+        py::arg("k")); // NOTE: for named arguments in Python call
+    
+    m.def("quant_row", &quant_row,
+        py::arg("qtype"),
+        py::arg("x"),
+        py::arg("y"),
+        py::arg("row_idx"),
+        py::arg("b"),
+        py::arg("n"));
     
     // for clean-up once python exits
     auto atexit = py::module_::import("atexit");
