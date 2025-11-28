@@ -4,7 +4,6 @@
 
 #include "quants_impl.hpp"
 
-#include <torch/extension.h>
 #include <cmath>
 #include <cstring>
 #include <cassert>

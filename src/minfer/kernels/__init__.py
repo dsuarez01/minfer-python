@@ -1,9 +1,15 @@
+from . import _C, ops
+
+# TODO 1: need to make CUDA/C++ kernels compatible with torch.compile here
+# TODO 2: adjust KernelBackend to handle this logic as necessary
+
 class KernelBackend:
     def __init__(self, backend: str):
         if backend == "triton":
             from .triton import _dequant_row, rmsnorm, il_rope, neox_rope, matmul, embed, qkv, flash_attn, moe_scoring, ffn
         elif backend == "cuda":
-            from .cuda import _dequant_row, rmsnorm, il_rope, neox_rope, matmul, embed, qkv, flash_attn, moe_scoring, ffn
+
+            # from .cuda import _dequant_row, rmsnorm, il_rope, neox_rope, matmul, embed, qkv, flash_attn, moe_scoring, ffn
         elif backend == "_ref":
             from ._ref import _dequant_row, _quant_row, rmsnorm, il_rope, neox_rope, matmul, embed, qkv, flash_attn, moe_scoring, ffn
             self._quant_row = _quant_row

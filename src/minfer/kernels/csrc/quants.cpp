@@ -1,5 +1,23 @@
-#include <torch/extension.h>
+#include <Python.h>
+#include <torch/library.h>
+#include <ATen/core/Tensor.h>
+#include <c10/util/Exception.h>
 #include "quants_impl.hpp"
+
+extern "C" {
+    PyObject* PyInit__C(void) {
+        static struct PyModuleDef module_def = {
+            PyModuleDef_HEAD_INIT,
+            "_C",
+            NULL,
+            -1,
+            NULL,
+        };
+        return PyModule_Create(&module_def);
+    }
+}
+
+namespace minfer {
 
 template <typename T>
 void dequant_row_(
@@ -38,27 +56,32 @@ void dequant_row_(
 
 void dequant_row(
     int qtype_int,
-    torch::Tensor x,
-    torch::Tensor y,
+    const at::Tensor& x,
+    at::Tensor& y,
     int64_t b,
     int64_t k
 ) {
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
     TORCH_CHECK(x.size(0) == y.size(0), "x and y must have the same number of rows");
+    TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
+    TORCH_CHECK(y.is_contiguous(), "y must be contiguous");
+
+    TORCH_INTERNAL_ASSERT(x.device().type() == at::DeviceType::CPU);
+    TORCH_INTERNAL_ASSERT(y.device().type() == at::DeviceType::CPU);
 
     GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
     const uint8_t* __restrict__ x_ptr = x.data_ptr<uint8_t>();
     int64_t n_rows = x.size(0);
 
     switch (y.scalar_type()) {
-        case torch::kFloat32: {
+        case at::kFloat: {
             float* __restrict__ y_ptr = y.data_ptr<float>();
             for (int64_t row_idx = 0; row_idx < n_rows; ++row_idx) {
                 dequant_row_<float>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
             }
             break;
         }
-        case torch::kFloat16: {
+        case at::kHalf: {
             half_t* __restrict__ y_ptr = y.data_ptr<half_t>();
             for (int64_t row_idx = 0; row_idx < n_rows; ++row_idx) {
                 dequant_row_<half_t>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
@@ -105,20 +128,25 @@ void quant_row_(
 
 void quant_row(
     int qtype_int,
-    torch::Tensor x,
-    torch::Tensor y,
+    const at::Tensor& x,
+    at::Tensor& y,
     int64_t b,
     int64_t n
 ) {
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
     TORCH_CHECK(x.size(0) == y.size(0), "x and y must have same number of rows");
+    TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
+    TORCH_CHECK(y.is_contiguous(), "y must be contiguous");
+
+    TORCH_INTERNAL_ASSERT(x.device().type() == at::DeviceType::CPU);
+    TORCH_INTERNAL_ASSERT(y.device().type() == at::DeviceType::CPU);
 
     GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
     uint8_t* __restrict__ y_ptr = y.data_ptr<uint8_t>();
     int64_t n_rows = x.size(0);
 
     switch (x.scalar_type()) {
-        case torch::kFloat32: {
+        case at::kFloat: {
             const float* __restrict__ x_ptr = x.data_ptr<float>();
             for (int64_t row_idx = 0; row_idx < n_rows; ++row_idx) {
                 quant_row_(qtype, x_ptr+row_idx*n, y_ptr+row_idx*b, n);
@@ -129,33 +157,28 @@ void quant_row(
     }
 }
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    // NOTE: 2-3 min to initialize upon first import
-    iq2xs_init_impl(GGMLQuantizationType::IQ2_XXS);
-    iq2xs_init_impl(GGMLQuantizationType::IQ2_XS);
-    iq2xs_init_impl(GGMLQuantizationType::IQ2_S);
-    iq2xs_init_impl(GGMLQuantizationType::IQ1_S);
-    iq2xs_init_impl(GGMLQuantizationType::IQ1_M);
-    iq3xs_init_impl(GGMLQuantizationType::IQ3_XXS); 
-    iq3xs_init_impl(GGMLQuantizationType::IQ3_S);
-    
-    m.def("dequant_row", &dequant_row,
-        py::arg("qtype"),
-        py::arg("x"),
-        py::arg("y"),
-        py::arg("b"),
-        py::arg("k")); // NOTE: for named arguments in Python call
-    
-    m.def("quant_row", &quant_row,
-        py::arg("qtype"),
-        py::arg("x"),
-        py::arg("y"),
-        py::arg("b"),
-        py::arg("n"));
-    
-    // for clean-up once python exits
-    auto atexit = py::module_::import("atexit");
-    atexit.attr("register")(py::cpp_function([]() {
+TORCH_LIBRARY(minfer, m) {
+    m.def("dequant_row(int qtype, Tensor x, Tensor(a!) Tensor y, int b, int k) -> ()");
+    m.def("quant_row(int qtype, Tensor x, Tensor(a!) Tensor y, int b, int n) -> ()");
+}
+
+TORCH_LIBRARY_IMPL(minfer, CPU, m) {
+    m.impl("dequant_row", &dequant_row);
+    m.impl("quant_row", &quant_row);
+}
+
+static struct Initializer {
+    Initializer() {
+        // NOTE: 2-3 min to initialize upon first import
+        iq2xs_init_impl(GGMLQuantizationType::IQ2_XXS);
+        iq2xs_init_impl(GGMLQuantizationType::IQ2_XS);
+        iq2xs_init_impl(GGMLQuantizationType::IQ2_S);
+        iq2xs_init_impl(GGMLQuantizationType::IQ1_S);
+        iq2xs_init_impl(GGMLQuantizationType::IQ1_M);
+        iq3xs_init_impl(GGMLQuantizationType::IQ3_XXS); 
+        iq3xs_init_impl(GGMLQuantizationType::IQ3_S);
+    }
+    ~Initializer() {
         iq2xs_free_impl(GGMLQuantizationType::IQ2_XXS);
         iq2xs_free_impl(GGMLQuantizationType::IQ2_XS);
         iq2xs_free_impl(GGMLQuantizationType::IQ1_S);
@@ -163,5 +186,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         iq2xs_free_impl(GGMLQuantizationType::IQ2_S);
         iq3xs_free_impl(GGMLQuantizationType::IQ3_XXS);
         iq3xs_free_impl(GGMLQuantizationType::IQ3_S);
-    }));
+    }
+
+} init;
+
 }

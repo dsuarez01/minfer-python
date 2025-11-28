@@ -1,35 +1,82 @@
-from setuptools import setup
-from torch.utils.cpp_extension import CppExtension, CUDAExtension, BuildExtension
+import os
+import torch
+import glob
+
+from setuptools import find_packages, setup
+from torch.utils.cpp_extension import (
+    CppExtension,
+    CUDAExtension,
+    BuildExtension,
+    CUDA_HOME,
+)
+
+library_name = "minfer"
+
+if torch.__version__ >= "2.6.0":
+    py_limited_api = True
+else:
+    py_limited_api = False
+
+def get_extensions():
+    debug_mode = os.getenv("DEBUG", "0") == "1"
+    use_cuda = os.getenv("USE_CUDA", "1") == "1"
+    
+    if debug_mode:
+        print("Compiling in debug mode")
+
+    assert torch.cuda.is_available() and CUDA_HOME is not None, "CUDA not enabled or CUDA_HOME not set"
+    
+    extra_link_args = []
+    extra_compile_args = {
+        "cxx": [
+            "-std=c++17",
+            "-O3" if not debug_mode else "-O0",
+            "-fdiagnostics-color=always",
+            "-DPy_LIMITED_API=0x030d0000",  # min CPython v3.13
+        ],
+        "nvcc": [
+            "-O3" if not debug_mode else "-O0",
+            "--use_fast_math",
+        ],
+    }
+    
+    if debug_mode:
+        extra_compile_args["cxx"].append("-g")
+        extra_compile_args["nvcc"].append("-g")
+        extra_link_args.extend(["-O0", "-g"])
+
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    src_dir = os.path.join(this_dir, "src")
+    extensions_dir = os.path.join(src_dir, library_name, "kernels", "csrc")
+    
+    sources = list(glob.glob(os.path.join(extensions_dir, "*.cpp")))
+    
+    extensions_cuda_dir = os.path.join(extensions_dir, "cuda")
+    cuda_sources = list(glob.glob(os.path.join(extensions_cuda_dir, "*.cu")))
+    sources += cuda_sources
+    
+    extension = CUDAExtension if use_cuda else CppExtension
+    
+    return [
+        extension(
+            name=f"{library_name}.kernels._C",
+            sources=sources,
+            extra_compile_args=extra_compile_args,
+            extra_link_args=extra_link_args,
+            py_limited_api=py_limited_api,
+        )
+    ]
 
 setup(
-    ext_modules=[
-        CppExtension( # reference kernels
-            name="minfer.kernels._ref._C",
-            sources=[
-                "src/minfer/kernels/_ref/quants.cpp",
-                "src/minfer/kernels/_ref/quants_impl.cpp",
-            ],
-            extra_compile_args=["-std=c++17", "-O3"],
-        ),
-        CUDAExtension( # CUDA kernels
-            name="minfer.kernels.cuda._kernels_C",
-            sources=["src/minfer/kernels/cuda/kernels.cu"],
-            extra_compile_args={
-                "cxx": ["-std=c++17", "-O3"],
-                "nvcc": ["-O3", "--use_fast_math"]
-            }
-        ),
-        CUDAExtension( # CUDA quant-specific kernels
-            name="minfer.kernels.cuda._quants_C",
-            sources = [
-                "src/minfer/kernels/cuda/quants.cu", 
-                "src/minfer/kernels/cuda/quants_impl.cu"
-            ],
-            extra_compile_args={
-                "cxx": ["-std=c++17", "-O3"],
-                "nvcc": ["-O3", "--use_fast_math"]
-            }
-        ), 
-    ],
-    cmdclass={"build_ext": BuildExtension}
+    name=library_name,
+    version="0.1.0",
+    packages=find_packages(where="src"),
+    package_dir={"": "src"},
+    ext_modules=get_extensions(),
+    install_requires=["torch"],
+    description="Minimal Python (decoder-only) LLM inference engine w/ Triton and CUDA kernels",
+    long_description=open("README.md").read(),
+    long_description_content_type="text/markdown",
+    cmdclass={"build_ext": BuildExtension},
+    options={"bdist_wheel": {"py_limited_api": "cp313"}} if py_limited_api else {},
 )

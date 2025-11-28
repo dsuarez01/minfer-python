@@ -22,6 +22,6 @@ export TORCH_CUDA_ARCH_LIST="7.0" # NVIDIA V100
 
 # this compiles the kernels as specified in setup.py
 # (compiling may take a few minutes)
-
+export MAX_JOBS=8
 # (run uv sync --group dev --no-install-project on the login node first)
-uv sync --group dev --no-build-isolation
+uv sync --group dev --no-build-isolation --verbose

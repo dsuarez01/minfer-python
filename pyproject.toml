@@ -6,16 +6,16 @@ readme = "README.md"
 requires-python = ">=3.13"
 # might have to pull gguf from github main
 dependencies = [
-    "torch >= 2.7.0",
-    "triton >= 3.3.0 ; sys_platform == 'linux'",
-    "gguf >= 0.17.1",
-    "ninja >= 1.11.1.4",
+    "torch >= 2.6.0",
+    "triton >= 3.2.0 ; sys_platform == 'linux'",
+    "gguf",
+    "ninja",
 ]
 
 [build-system]
 requires = [
-    "setuptools >= 80.9.0",
-    "torch >= 2.7.0",
+    "setuptools",
+    "torch",
 ]
 build-backend = "setuptools.build_meta"
 
