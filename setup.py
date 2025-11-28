@@ -19,8 +19,7 @@ else:
 
 def get_extensions():
     debug_mode = os.getenv("DEBUG", "0") == "1"
-    use_cuda = os.getenv("USE_CUDA", "1") == "1"
-    
+
     if debug_mode:
         print("Compiling in debug mode")
 
@@ -46,20 +45,17 @@ def get_extensions():
         extra_link_args.extend(["-O0", "-g"])
 
     this_dir = os.path.dirname(os.path.abspath(__file__))
-    src_dir = os.path.join(this_dir, "src")
-    extensions_dir = os.path.join(src_dir, library_name, "kernels", "csrc")
-    
+    extensions_dir = os.path.join(this_dir, "src", library_name, "kernels", "csrc")
+
     sources = list(glob.glob(os.path.join(extensions_dir, "*.cpp")))
     
     extensions_cuda_dir = os.path.join(extensions_dir, "cuda")
     cuda_sources = list(glob.glob(os.path.join(extensions_cuda_dir, "*.cu")))
     sources += cuda_sources
     
-    extension = CUDAExtension if use_cuda else CppExtension
-    
     return [
-        extension(
-            name=f"{library_name}.kernels._C",
+        CUDAExtension(
+            name=f"{library_name}.kernels.torch_ext._C",
             sources=sources,
             extra_compile_args=extra_compile_args,
             extra_link_args=extra_link_args,

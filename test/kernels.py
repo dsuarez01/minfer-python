@@ -18,7 +18,7 @@ SUPPORTED_QTYPES = [
     "MXFP4"
 ]
 
-@pytest.mark.parametrize("backend", ["triton"]) # TODO: add "cuda" in later once working
+@pytest.mark.parametrize("backend", ["triton"]) # TODO: how to incorporate torch_ext here?
 @pytest.mark.parametrize("shape", [(1024,6144), (16384,6144)])
 @pytest.mark.parametrize("qtype_name", SUPPORTED_QTYPES)
 def test_dequant(backend, qtype_name, shape):
@@ -56,7 +56,7 @@ def test_dequant(backend, qtype_name, shape):
 
 # A: [B, L, hidden_dim]
 # B: [B, n_heads, L, head_dim]
-@pytest.mark.parametrize("backend", ["triton", "cuda"])
+@pytest.mark.parametrize("backend", ["triton", "torch_ext"])
 def test_rmsnorm(backend):
     kerns = KernelBackend(backend)
     B, L, hidden_dim, n_heads, head_dim, eps = 8, 4096, 6144, 48, 128, 1e-6 # adjust as needed
@@ -81,7 +81,7 @@ def test_rmsnorm(backend):
 
 # A: interleaved rope
 # B: neox rope
-@pytest.mark.parametrize("backend", ["triton", "cuda"])
+@pytest.mark.parametrize("backend", ["triton", "torch_ext"])
 def test_rope(backend):
     kerns = KernelBackend(backend)
     B, L, n_heads, head_dim, rotary_dim, base_freq = 8, 4096, 48, 128, 64, 1e6 # adjust as needed
@@ -124,7 +124,7 @@ def test_rope(backend):
     # output act. identical shape to input
 
 # A: just the usual matmul
-@pytest.mark.parametrize("backend", ["triton", "cuda"])
+@pytest.mark.parametrize("backend", ["triton", "torch_ext"])
 def test_matmul(backend):
     kerns = KernelBackend(backend)
     B, L, in_dim, out_dim = 8, 4096, 6144, 16384
@@ -141,7 +141,7 @@ def test_matmul(backend):
     # output act. shape [B // dp_size, L, out_dim]
 
 # A: just the usual embed
-@pytest.mark.parametrize("backend", ["triton", "cuda"])
+@pytest.mark.parametrize("backend", ["triton", "torch_ext"])
 def test_embed(backend):
     kerns = KernelBackend(backend)
     B, L, vocab_size, hidden_dim = 8, 4096, 128_000, 6144
@@ -158,7 +158,7 @@ def test_embed(backend):
     # output act. shape [B // dp_size, L, hidden_dim]
 
 # A: just the usual QKV projections
-@pytest.mark.parametrize("backend", ["triton", "cuda"])
+@pytest.mark.parametrize("backend", ["triton", "torch_ext"])
 def test_qkv(backend):
     kerns = KernelBackend(backend)
     B, L, hidden_dim, n_heads, n_kv_heads, head_dim = 8, 4096, 6144, 48, 8, 128
@@ -186,7 +186,7 @@ def test_qkv(backend):
     # output: Q shape [B // dp_size, n_heads, L, head_dim], K and V shape [B // dp_size, n_kv_heads, L, head_dim]
 
 # A: just the usual flash attention
-@pytest.mark.parametrize("backend", ["triton", "cuda"])
+@pytest.mark.parametrize("backend", ["triton", "torch_ext"])
 def test_flash_attn(backend):
     kerns = KernelBackend(backend)
     B, L, hidden_dim, n_heads, n_kv_heads, head_dim = 8, 4096, 6144, 48, 8, 128
@@ -206,7 +206,7 @@ def test_flash_attn(backend):
     # output act. shape [B // dp_size, L, hidden_dim]
 
 # A: just the usual matmul + softmax before topk expert selection
-@pytest.mark.parametrize("backend", ["triton", "cuda"])
+@pytest.mark.parametrize("backend", ["triton", "torch_ext"])
 def test_moe_scoring(backend):
     kerns = KernelBackend(backend)
     B, L, n_experts, hidden_dim = 8, 4096, 8, 6144
@@ -226,7 +226,7 @@ def test_moe_scoring(backend):
     # output act. shape [B // dp_size, L, n_experts]
 
 # A: the usual ffn opn. per expert
-@pytest.mark.parametrize("backend", ["triton", "cuda"])
+@pytest.mark.parametrize("backend", ["triton", "torch_ext"])
 def test_ffn(backend):
     kerns = KernelBackend(backend)
     B, L, hidden_dim, mlp_dim = 8, 4096, 6144, 16384

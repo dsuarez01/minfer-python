@@ -1,26 +1,12 @@
-#include <Python.h>
 #include <torch/library.h>
 #include <ATen/core/Tensor.h>
 #include <c10/util/Exception.h>
 #include "quants_impl.hpp"
 
-extern "C" {
-    PyObject* PyInit__C(void) {
-        static struct PyModuleDef module_def = {
-            PyModuleDef_HEAD_INIT,
-            "_C",
-            NULL,
-            -1,
-            NULL,
-        };
-        return PyModule_Create(&module_def);
-    }
-}
-
 namespace minfer {
 
 template <typename T>
-void dequant_row_(
+void dequant_row_cpu_(
     GGMLQuantizationType qtype,
     const uint8_t* __restrict__ xr,
     T* __restrict__ y,
@@ -54,7 +40,7 @@ void dequant_row_(
     }
 }
 
-void dequant_row(
+void dequant_row_cpu(
     int qtype_int,
     const at::Tensor& x,
     at::Tensor& y,
@@ -63,6 +49,8 @@ void dequant_row(
 ) {
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
     TORCH_CHECK(x.size(0) == y.size(0), "x and y must have the same number of rows");
+    TORCH_CHECK(x.dtype() == at::kByte, "x must be uint8 (byte)");
+    TORCH_CHECK(y.dtype() == at::kFloat || y.dtype() == at::kHalf, "y must be float32 or float16");
     TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
     TORCH_CHECK(y.is_contiguous(), "y must be contiguous");
 
@@ -77,14 +65,14 @@ void dequant_row(
         case at::kFloat: {
             float* __restrict__ y_ptr = y.data_ptr<float>();
             for (int64_t row_idx = 0; row_idx < n_rows; ++row_idx) {
-                dequant_row_<float>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
+                dequant_row_cpu_<float>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
             }
             break;
         }
         case at::kHalf: {
             half_t* __restrict__ y_ptr = y.data_ptr<half_t>();
             for (int64_t row_idx = 0; row_idx < n_rows; ++row_idx) {
-                dequant_row_<half_t>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
+                dequant_row_cpu_<half_t>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
             }
             break;
         }
@@ -92,7 +80,7 @@ void dequant_row(
     }
 }
 
-void quant_row_(
+void quant_row_cpu_(
     GGMLQuantizationType qtype,
     const float* __restrict__ x,
     uint8_t* __restrict__ yr,
@@ -126,7 +114,7 @@ void quant_row_(
     }
 }
 
-void quant_row(
+void quant_row_cpu(
     int qtype_int,
     const at::Tensor& x,
     at::Tensor& y,
@@ -149,7 +137,7 @@ void quant_row(
         case at::kFloat: {
             const float* __restrict__ x_ptr = x.data_ptr<float>();
             for (int64_t row_idx = 0; row_idx < n_rows; ++row_idx) {
-                quant_row_(qtype, x_ptr+row_idx*n, y_ptr+row_idx*b, n);
+                quant_row_cpu_(qtype, x_ptr+row_idx*n, y_ptr+row_idx*b, n);
             }
             break;
         }
@@ -163,8 +151,8 @@ TORCH_LIBRARY(minfer, m) {
 }
 
 TORCH_LIBRARY_IMPL(minfer, CPU, m) {
-    m.impl("dequant_row", &dequant_row);
-    m.impl("quant_row", &quant_row);
+    m.impl("dequant_row", &dequant_row_cpu);
+    m.impl("quant_row", &quant_row_cpu);
 }
 
 static struct Initializer {
