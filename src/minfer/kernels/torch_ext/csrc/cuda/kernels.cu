@@ -125,6 +125,8 @@ void il_rope_cuda(
     TORCH_CHECK(x.dim() == 4);
     TORCH_CHECK(x.is_contiguous());
 
+    TORCH_INTERNAL_ASSERT(x.device().type() == at::DeviceType::CUDA);
+
     half* x_ptr = x.data_ptr<at::Half>();
 
     int B = x.size(0);
@@ -176,6 +178,8 @@ void neox_rope_cuda(
     TORCH_CHECK(x.dim() == 4);
     TORCH_CHECK(x.is_contiguous());
 
+    TORCH_INTERNAL_ASSERT(x.device().type() == at::DeviceType::CUDA);
+
     half* x_ptr = x.data_ptr<at::Half>();
 
     int B = x.size(0);
@@ -189,8 +193,108 @@ void neox_rope_cuda(
     neox_rope_cuda_impl<<<grid, 32, 0, stream>>>(x_ptr, n_heads, rotary_dim, head_dim, start_pos, freq_base);
 }
 
-void matmul_cuda() {
-    TORCH_CHECK(false, "matmul not implemented");
+template <int BLOCK_SIZE>
+__global__ void matmul_cuda_impl(
+    const half* __restrict__ x,
+    half* __restrict__ out,
+    const half* __restrict__ w,
+    int M, int K, int N
+) {
+    constexpr int TILE_M = TILE_N = 128;
+    constexpr int TILE_K = BLOCK_SIZE;
+    constexpr int NUM_SUBTILES = (TILE_M/16)*(TILE_N/16);
+    constexpr int SUBTILE_SIZE = TILE_M/16;
+
+    int warp_id = threadIdx.x / 32;
+    int num_warps = blockDim.x / 32;
+    int tiles_per_warp = NUM_SUBTILES / num_warps;
+
+    __shared__ half x_shared[TILE_M][TILE_K];
+    __shared__ half w_shared[TILE_K][TILE_N];
+
+    wmma::fragment<accumulator, 16, 16, 16, float> acc_frag;
+
+    // iterate over the 64 subtiles (arranged in a grid of 8x8), each of size 16x16.
+    for (int i=0; i<tiles_per_warp; ++i) {
+        int tile_id = warp_id * tiles_per_warp + i;
+        int tile_m = (tile_id/SUBTILE_SIZE)*16;
+        int tile_n = (tile_id%SUBTILE_SIZE)*16;
+        
+        // K-dimension processed in TILE_K chunks
+        for (int k1=0; k1<K; k1+=TILE_K) {
+            // coop koad x tile to shared mem
+            // coop load and dequantize w tile to shared mem
+
+            __syncthreads();
+
+            // process TILE_K with WMMA in chunks of 16
+            for (int k2=0; k2<TILE_K: k2+=16) {
+                wmma::fragment<matrix_a, 16, 16, 16, half> a_frag;
+                wmma::fragment<matrix_b, 16, 16, 16, half> b_frag;
+
+                wmma::load_matrix_sync(a_frag, &x_shared[tile_m][k2], TILE_K);
+                wmma::load_matrix_sync(b_frag, &w_shared[k2][tile_n], TILE_N);
+                wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
+            }
+            __syncthreads();
+        }
+
+        wmma::store_matrix_sync(
+            &out[(blockIdx.x*TILE_M+tile_m)*N+(blockIdx.y*TILE_N+tile_n)],
+            acc_frag,
+            N,
+            wmma::mem_row_major
+        );
+        wmma::fill_fragment(acc_frag, 0.0f);
+    }
+}
+
+void matmul_cuda(
+    const at::Tensor& x,
+    at::Tensor& out,
+    const at::Tensor& w,
+    int dim_in,
+    int dim_out,
+    int block_size
+) {
+    TORCH_CHECK(x.shape(-1) == dim_in);
+    TORCH_CHECK(out.shape(-1) == dim_out);
+    TORCH_CHECK(w.shape(0) == dim_out && w.shape(1) == dim_in);
+
+    TORCH_CHECK(x.dtype() == at::kHalf);
+    TORCH_CHECK(out.dtype() == at::kHalf);
+    TORCH_CHECK(w.dtype() == at::kHalf);
+
+    TORCH_CHECK(x.is_contiguous());
+    TORCH_CHECK(out.is_contiguous());
+    TORCH_CHECK(w.is_contiguous());
+
+    TORCH_CHECK(block_size == 256 || block_size == 32);
+
+    TORCH_INTERNAL_ASSERT(x.device().type() == at::DeviceType::CUDA);
+    TORCH_INTERNAL_ASSERT(out.device().type() == at::DeviceType::CUDA);
+    TORCH_INTERNAL_ASSERT(w.device().type() == at::DeviceType::CUDA);
+
+    const half* x_ptr = x.data_ptr<at::Half>();
+    half* out_ptr = out.data_ptr<at::Half>();
+    const half* w_ptr = w.data_ptr<at::Half>();
+
+    int M = x.numel() / x.size(-1);
+    int K = x.size(-1);
+    int N = w.size(0);
+
+    int TILE_SIZE = 128;
+
+    dim3 grid((M+TILE_SIZE-1)/TILE_SIZE, (N+TILE_SIZE-1)/TILE_SIZE);
+    dim3 block(256);
+
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    if (block_size == 256) {
+        matmul_cuda_impl<256><<<grid, block, 0, stream>>>(x_ptr, out_ptr, w_ptr, M, K, N);
+    } else{
+        matmul_cuda_impl<32><<<grid, block, 0, stream>>>(x_ptr, out_ptr, w_ptr, M, K, N);
+    }
 }
 
 void embed_cuda() {
