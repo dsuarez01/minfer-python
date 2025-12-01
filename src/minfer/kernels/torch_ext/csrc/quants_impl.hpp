@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <c10/util/Half.h>
 
+// TODO: I think this type alias should be changed
 using half_t = c10::Half;
 
 // move these into the global namespace out of convenience

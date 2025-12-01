@@ -2,6 +2,8 @@
 #include <ATen/core/Tensor.h>
 #include <c10/util/Exception.h>
 
+#include <cstdint>
+
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <ATen/cuda/CUDAContext.h>
@@ -197,13 +199,13 @@ template <int BLOCK_SIZE>
 __global__ void matmul_cuda_impl(
     const half* __restrict__ x,
     half* __restrict__ out,
-    const half* __restrict__ w,
+    const uint8_t* __restrict__ w,
     int M, int K, int N
 ) {
     constexpr int TILE_M = TILE_N = 128;
     constexpr int TILE_K = BLOCK_SIZE;
     constexpr int NUM_SUBTILES = (TILE_M/16)*(TILE_N/16);
-    constexpr int SUBTILE_SIZE = TILE_M/16;
+    constexpr int SUBTILE_DIM = TILE_M/16;
 
     int warp_id = threadIdx.x / 32;
     int num_warps = blockDim.x / 32;
@@ -217,13 +219,37 @@ __global__ void matmul_cuda_impl(
     // iterate over the 64 subtiles (arranged in a grid of 8x8), each of size 16x16.
     for (int i=0; i<tiles_per_warp; ++i) {
         int tile_id = warp_id * tiles_per_warp + i;
-        int tile_m = (tile_id/SUBTILE_SIZE)*16;
-        int tile_n = (tile_id%SUBTILE_SIZE)*16;
+        int tile_m = (tile_id/SUBTILE_DIM)*16;
+        int tile_n = (tile_id%SUBTILE_DIM)*16;
         
         // K-dimension processed in TILE_K chunks
         for (int k1=0; k1<K; k1+=TILE_K) {
             // coop koad x tile to shared mem
+            for (int idx = threadIdx.x; idx < TILE_M*TILE_K; idx += blockDim.x) {
+                int m = idx / TILE_K;
+                int k = idx % TILE_K;
+                x_shared[m][k] = x[(blockIdx.x * TILE_M + m) * K + (k1 + k)];
+            }
+
+            
+            // for (int idx = threadIdx.x; idx < TILE_K*TILE_N; idx += blockDim.x) {
+            //     int k = idx / TILE_N;
+            //     int n = idx % TILE_N;
+            //     w_shared[k][n] = w[(blockIdx.y * TILE_N + n) * K + (k1 + k)];
+            // }
+
             // coop load and dequantize w tile to shared mem
+            for (int n=0; n<TILE_N; ++n) {
+                void* q_block = &w[(blockIdx.y*TILE_N+n)*(K/BLOCK_SIZE)+(k1/BLOCK_SIZE)];
+
+                dequant_block(
+                    q_block,
+                    &w_shared[0][n],
+                    TILE_N,
+                    threadIdx.x,
+                    blockDim.x
+                );
+            }
 
             __syncthreads();
 
@@ -250,6 +276,7 @@ __global__ void matmul_cuda_impl(
 }
 
 void matmul_cuda(
+    int qtype_int,
     const at::Tensor& x,
     at::Tensor& out,
     const at::Tensor& w,
@@ -277,7 +304,7 @@ void matmul_cuda(
 
     const half* x_ptr = x.data_ptr<at::Half>();
     half* out_ptr = out.data_ptr<at::Half>();
-    const half* w_ptr = w.data_ptr<at::Half>();
+    const uint8_t* w_ptr = w.data_ptr<at::Half>();
 
     int M = x.numel() / x.size(-1);
     int K = x.size(-1);
