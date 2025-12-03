@@ -2,11 +2,12 @@
 #include <cuda.h>
 #include <cuda_fp16.h>
 
+#include "impl_common.hpp"
 #include "quants_impl.cuh"
 
-// dequant helpers
+// helpers
 
-__device__ inline float E8M0_TO_FP32_HALF(uint8_t x) {
+static __device__ float E8M0_TO_FP32_HALF(uint8_t x) {
     uint32_t bits;
 
     // For x < 2: use precomputed denormal patterns
@@ -26,7 +27,7 @@ __device__ inline float E8M0_TO_FP32_HALF(uint8_t x) {
     return result;
 }
 
-__device__ inline void get_scale_min_k4(int j, const uint8_t * __restrict__ q, uint8_t * __restrict__ d, uint8_t * __restrict__ m) {
+static __device__ void get_scale_min_k4(int j, const uint8_t * __restrict__ q, uint8_t * __restrict__ d, uint8_t * __restrict__ m) {
     if (j < 4) {
         *d = q[j] & 63; *m = q[j + 4] & 63;
     } else {
@@ -743,3 +744,58 @@ __device__ void dequant_block_q8_K(
     
     y[idx*stride] = (T)(block->d * block->qs[idx]);
 }
+
+
+// explicit instantiations of templates:
+
+// block
+
+// float
+template __device__ void dequant_block_q4_0<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q4_1<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q5_0<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q5_1<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q8_0<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_mxfp4<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q2_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q3_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q4_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q5_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q6_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_tq1_0<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_tq2_0<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq2_xxs<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq2_xs<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq2_s<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq3_xxs<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq3_s<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq1_s<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq1_m<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq4_nl<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq4_xs<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q8_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
+
+// half
+template __device__ void dequant_block_q4_0<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q4_1<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q5_0<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q5_1<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q8_0<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_mxfp4<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q2_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q3_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q4_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q5_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q6_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_tq1_0<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_tq2_0<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq2_xxs<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq2_xs<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq2_s<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq3_xxs<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq3_s<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq1_s<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq1_m<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq4_nl<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_iq4_xs<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);
+template __device__ void dequant_block_q8_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int stride, int tid, int n_threads);

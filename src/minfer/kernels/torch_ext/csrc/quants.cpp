@@ -1,12 +1,14 @@
 #include <torch/library.h>
 #include <ATen/core/Tensor.h>
 #include <c10/util/Exception.h>
+
+#include "impl_common.hpp"
 #include "quants_impl.hpp"
 
 namespace minfer {
 
 template <typename T>
-void dequant_row_cpu_(
+void dequant_row_cpu(
     GGMLQuantizationType qtype,
     const uint8_t* __restrict__ xr,
     T* __restrict__ y,
@@ -40,7 +42,7 @@ void dequant_row_cpu_(
     }
 }
 
-void dequant_row_cpu(
+void dequant_cpu(
     int qtype_int,
     const at::Tensor& x,
     at::Tensor& y,
@@ -49,8 +51,8 @@ void dequant_row_cpu(
 ) {
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
     TORCH_CHECK(x.size(0) == y.size(0), "x and y must have the same number of rows");
-    TORCH_CHECK(x.dtype() == at::kByte, "x must be uint8 (byte)");
-    TORCH_CHECK(y.dtype() == at::kFloat || y.dtype() == at::kHalf, "y must be float32 or float16");
+    TORCH_CHECK(x.scalar_type() == at::kByte, "x must be uint8 (byte)");
+    TORCH_CHECK(y.scalar_type() == at::kFloat || y.scalar_type() == at::kHalf, "y must be float32 or float16");
     TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
     TORCH_CHECK(y.is_contiguous(), "y must be contiguous");
 
@@ -59,20 +61,20 @@ void dequant_row_cpu(
 
     GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
     const uint8_t* __restrict__ x_ptr = x.data_ptr<uint8_t>();
-    int64_t n_rows = x.size(0);
+    int n_rows = x.size(0);
 
     switch (y.scalar_type()) {
         case at::kFloat: {
             float* __restrict__ y_ptr = y.data_ptr<float>();
-            for (int64_t row_idx = 0; row_idx < n_rows; ++row_idx) {
-                dequant_row_cpu_<float>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
+            for (int row_idx = 0; row_idx < n_rows; ++row_idx) {
+                dequant_row_cpu<float>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
             }
             break;
         }
         case at::kHalf: {
             half_t* __restrict__ y_ptr = y.data_ptr<half_t>();
-            for (int64_t row_idx = 0; row_idx < n_rows; ++row_idx) {
-                dequant_row_cpu_<half_t>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
+            for (int row_idx = 0; row_idx < n_rows; ++row_idx) {
+                dequant_row_cpu<half_t>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
             }
             break;
         }
@@ -80,7 +82,7 @@ void dequant_row_cpu(
     }
 }
 
-void quant_row_cpu_(
+void quant_row_cpu(
     GGMLQuantizationType qtype,
     const float* __restrict__ x,
     uint8_t* __restrict__ yr,
@@ -114,7 +116,7 @@ void quant_row_cpu_(
     }
 }
 
-void quant_row_cpu(
+void quant_cpu(
     int qtype_int,
     const at::Tensor& x,
     at::Tensor& y,
@@ -123,6 +125,8 @@ void quant_row_cpu(
 ) {
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
     TORCH_CHECK(x.size(0) == y.size(0), "x and y must have same number of rows");
+    TORCH_CHECK(x.scalar_type() == at::kFloat, "x must be float32");
+    TORCH_CHECK(y.scalar_type() == at::kByte, "y must be uint8 (byte)");
     TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
     TORCH_CHECK(y.is_contiguous(), "y must be contiguous");
 
@@ -131,13 +135,13 @@ void quant_row_cpu(
 
     GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
     uint8_t* __restrict__ y_ptr = y.data_ptr<uint8_t>();
-    int64_t n_rows = x.size(0);
+    int n_rows = x.size(0);
 
     switch (x.scalar_type()) {
         case at::kFloat: {
             const float* __restrict__ x_ptr = x.data_ptr<float>();
-            for (int64_t row_idx = 0; row_idx < n_rows; ++row_idx) {
-                quant_row_cpu_(qtype, x_ptr+row_idx*n, y_ptr+row_idx*b, n);
+            for (int row_idx = 0; row_idx < n_rows; ++row_idx) {
+                quant_row_cpu(qtype, x_ptr+row_idx*n, y_ptr+row_idx*b, n);
             }
             break;
         }
@@ -146,13 +150,13 @@ void quant_row_cpu(
 }
 
 TORCH_LIBRARY(minfer, m) {
-    m.def("dequant_row(int qtype, Tensor x, Tensor(a!) Tensor y, int b, int k) -> ()");
-    m.def("quant_row(int qtype, Tensor x, Tensor(a!) Tensor y, int b, int n) -> ()");
+    m.def("dequant(int qtype, Tensor x, Tensor(a!) Tensor y, int b, int k) -> ()");
+    m.def("quant(int qtype, Tensor x, Tensor(a!) Tensor y, int b, int n) -> ()");
 }
 
 TORCH_LIBRARY_IMPL(minfer, CPU, m) {
-    m.impl("dequant_row", &dequant_row_cpu);
-    m.impl("quant_row", &quant_row_cpu);
+    m.impl("dequant", &dequant_cpu);
+    m.impl("quant", &quant_cpu);
 }
 
 static struct Initializer {

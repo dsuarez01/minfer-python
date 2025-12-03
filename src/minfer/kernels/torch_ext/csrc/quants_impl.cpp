@@ -2,7 +2,7 @@
 
 // Adapted from: https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-quants.c (MIT License)
 
-#include "quants_impl.hpp"
+#include "impl_common.hpp"
 
 #include <cmath>
 #include <cstring>
@@ -21,7 +21,8 @@ constexpr float GROUP_MAX_EPS_IQ1_S = 1e-12f;
 // dequant and quant helpers
 
 // dequant
-static inline float E8M0_TO_FP32_HALF(uint8_t x) {
+
+static float E8M0_TO_FP32_HALF(uint8_t x) {
     uint32_t bits;
 
     // For x < 2: use precomputed denormal patterns
@@ -41,7 +42,7 @@ static inline float E8M0_TO_FP32_HALF(uint8_t x) {
     return result;
 }
 
-static inline void get_scale_min_k4(int j, const uint8_t * __restrict__ q, uint8_t * __restrict__ d, uint8_t * __restrict__ m) {
+static void get_scale_min_k4(int j, const uint8_t * __restrict__ q, uint8_t * __restrict__ d, uint8_t * __restrict__ m) {
     if (j < 4) {
         *d = q[j] & 63; *m = q[j + 4] & 63;
     } else {
@@ -52,7 +53,7 @@ static inline void get_scale_min_k4(int j, const uint8_t * __restrict__ q, uint8
 
 // quant
 
-static inline int best_index_int8(int n, const int8_t * val, float x) {
+static int best_index_int8(int n, const int8_t * val, float x) {
     if (x <= val[0]) return 0;
     if (x >= val[n-1]) return n-1;
     int ml = 0, mu = n-1;
@@ -63,7 +64,7 @@ static inline int best_index_int8(int n, const int8_t * val, float x) {
     return x - val[mu-1] < val[mu] - x ? mu-1 : mu;
 }
 
-static inline int best_index_mxfp4(float x, float e) {
+static int best_index_mxfp4(float x, float e) {
     int best_index = 0;
     float best_err = fabsf(kvalues_mxfp4[0]*e - x);
     for (int i = 1; i < 16; i++) {
@@ -76,14 +77,14 @@ static inline int best_index_mxfp4(float x, float e) {
     return best_index;
 }
 
-static inline int nearest_int(float fval) {
+static int nearest_int(float fval) {
     assert(fabsf(fval) <= 4194303.f);
     float val = fval + 12582912.f;
     int i; memcpy(&i, &val, sizeof(int));
     return (i & 0x007fffff) - 0x00400000;
 }
 
-float make_qkx2_quants(int n, int nmax, const float * __restrict__ x, const float * __restrict__ weights,
+static float make_qkx2_quants(int n, int nmax, const float * __restrict__ x, const float * __restrict__ weights,
         uint8_t * __restrict__ L, float * __restrict__ the_min, uint8_t * __restrict__ Laux,
         float rmin, float rdelta, int nstep, bool use_mad) {
     float min = x[0];
@@ -159,7 +160,7 @@ float make_qkx2_quants(int n, int nmax, const float * __restrict__ x, const floa
     return scale;
 }
 
-float make_q3_quants(int n, int nmax, const float * __restrict__ x, int8_t * __restrict__ L, bool do_rmse) {
+static float make_q3_quants(int n, int nmax, const float * __restrict__ x, int8_t * __restrict__ L, bool do_rmse) {
     float max = 0;
     float amax = 0;
     for (int i = 0; i < n; ++i) {
@@ -218,7 +219,7 @@ float make_q3_quants(int n, int nmax, const float * __restrict__ x, int8_t * __r
     return 1/iscale;
 }
 
-float make_qx_quants(int n, int nmax, const float * __restrict__ x, int8_t * __restrict__ L, int rmse_type,
+static float make_qx_quants(int n, int nmax, const float * __restrict__ x, int8_t * __restrict__ L, int rmse_type,
         const float * __restrict__ qw) {
     float max = 0;
     float amax = 0;
@@ -282,7 +283,7 @@ float make_qx_quants(int n, int nmax, const float * __restrict__ x, int8_t * __r
     return scale;
 }
 
-float make_qp_quants(int n, int nmax, const float * __restrict__ x, uint8_t * __restrict__ L, const float * quant_weights) {
+static float make_qp_quants(int n, int nmax, const float * __restrict__ x, uint8_t * __restrict__ L, const float * quant_weights) {
     float max = 0;
     for (int i = 0; i < n; ++i) {
         max = std::max(max, x[i]);
@@ -376,7 +377,7 @@ static iq2_entry_t iq2_data[4] = {
     {NULL, NULL, NULL},
 };
 
-static inline int iq2_data_index(GGMLQuantizationType type) {
+static int iq2_data_index(GGMLQuantizationType type) {
     assert(
         type == GGMLQuantizationType::IQ2_XXS || 
         type == GGMLQuantizationType::IQ2_XS || 
@@ -389,7 +390,7 @@ static inline int iq2_data_index(GGMLQuantizationType type) {
            type == GGMLQuantizationType::IQ1_S || type == GGMLQuantizationType::IQ1_M ? 2 : 3;
 }
 
-static inline int iq2_grid_size(GGMLQuantizationType type) {
+static int iq2_grid_size(GGMLQuantizationType type) {
     assert(
         type == GGMLQuantizationType::IQ2_XXS || 
         type == GGMLQuantizationType::IQ2_XS || 
@@ -574,7 +575,7 @@ static iq3_entry_t iq3_data[2] = {
     {NULL, NULL, NULL},
 };
 
-static inline int iq3_data_index(GGMLQuantizationType type) {
+static int iq3_data_index(GGMLQuantizationType type) {
     assert(type == GGMLQuantizationType::IQ3_XXS || type == GGMLQuantizationType::IQ3_S);
     return type == GGMLQuantizationType::IQ3_XXS ? 0 : 1;
 }
