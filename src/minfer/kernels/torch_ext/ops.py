@@ -4,33 +4,33 @@ from minfer.const import GGMLQuantizationType
 
 # TODO: need to make CUDA/C++ kernels compatible with torch.compile here
 
-def dequant_row(qtype: GGMLQuantizationType, x: Tensor, y: Tensor, b: int, k: int):
+def dequant(qtype: GGMLQuantizationType, x: Tensor, y: Tensor, block_size: int, type_size: int):
     """
     Dequantizes the rows of x into y
     
-    b is bytes per quantized row
-    k is number of elements per (either) row
+    block_size is num dequantized elements per block
+    type_size is byte size of block
     """
-    return torch.ops.minfer.dequant_row.default(qtype, x, y, b, k)
+    return torch.ops.minfer.dequant_row.default(qtype, x, y, block_size, type_size)
 
-@torch.library.register_fake("minfer::dequant_row")
-def _(qtype, x, y, b, k):
+@torch.library.register_fake("minfer::dequant")
+def _(qtype, x, y, block_size, type_size):
     torch._check(x.dtype == torch.uint8)
     torch._check(y.dtype in (torch.float32, torch.float16))
     torch._check(x.device == y.device)
     torch._check(x.size(0) == y.size(0))
 
-def quant_row(qtype: GGMLQuantizationType, x: Tensor, y: Tensor, b: int, n: int):
+def quant(qtype: GGMLQuantizationType, x: Tensor, y: Tensor, block_size: int, type_size: int):
     """
     Quantizes the rows of x into y
     
-    b is bytes per row
-    n is number of elements per (either) row
+    block_size is num dequantized elements per block
+    type_size is byte size of block
     """
-    return torch.ops.minfer.quant_row.default(qtype, x, y, b, n)
+    return torch.ops.minfer.quant_row.default(qtype, x, y, block_size, type_size)
 
-@torch.library.register_fake("minfer::quant_row")
-def _(qtype, x, y, b, k):
+@torch.library.register_fake("minfer::quant")
+def _(qtype, x, y, block_size, type_size):
     torch._check(x.dtype == torch.float32)
     torch._check(y.dtype == torch.uint8)
     torch._check(x.device == y.device)

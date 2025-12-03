@@ -2,13 +2,12 @@
 #include <ATen/core/Tensor.h>
 #include <c10/util/Exception.h>
 
-
-#include <cuda.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-// #include <ATen/cuda/CUDAContext.h>
+#include <ATen/cuda/CUDAContext.h>
 
 #include "impl_common.hpp"
+#include "quants_impl.cuh"
 
 namespace minfer {
 
@@ -17,6 +16,8 @@ __global__ void dequant_cuda_(
     GGMLQuantizationType qtype,
     const uint8_t* __restrict__ xr,
     T* __restrict__ y,
+    int block_size,
+    int type_size,
     int64_t b,
     int64_t k
 ) {
@@ -24,9 +25,6 @@ __global__ void dequant_cuda_(
     int row = blockIdx.x;
     int block_in_row = blockIdx.y;
     int n_blocks_per_row = gridDim.y;
-
-    int type_size = b / n_blocks_per_row;
-    int block_size = k / n_blocks_per_row;
 
     const uint8_t* w = xr + row*b + block_in_row*type_size;
     T* out = y + row*k + block_in_row*block_size;
@@ -66,11 +64,11 @@ void dequant_cuda(
     int qtype_int, 
     const at::Tensor& x, 
     at::Tensor& y, 
-    int64_t b, // num bytes per row
-    int64_t k // num dequantized elements per row
+    int block_size, // num deq elems in block
+    int type_size // byte size of block
 ) {
-    TORCH_CHECK(x.dim() == 2 && y.dim() == 2);
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
+    TORCH_CHECK(x.dim() == 2 && y.dim() == 2);
     TORCH_CHECK(x.size(0) == y.size(0), "x and y must have the same number of rows");
     TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
     TORCH_CHECK(y.is_contiguous(), "y must be contiguous");
@@ -81,31 +79,28 @@ void dequant_cuda(
     TORCH_INTERNAL_ASSERT(y.device().type() == at::DeviceType::CUDA);
     
     GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
-    QuantInfo qtype_info = get_quant_info(qtype); // teh
 
-    TORCH_CHECK((x.size(-1) / qtype_info.type_size) == (y.size(-1) / qtype_info.block_size));
-    int64_t n_rows = x.size(0);
-    int n_blocks_per_row = x.size(-1) / qtype_info.type_size;
+    int n_rows = x.size(0);
+    int n_blocks_per_row = x.size(-1) / type_size;
     dim3 grid(n_rows, n_blocks_per_row);
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
     const uint8_t* __restrict__ x_ptr = x.data_ptr<uint8_t>();
     
     switch (y.scalar_type()) {
         case at::kFloat: {
             float* __restrict__ y_ptr = y.data_ptr<float>();
-            dequant_cuda_<float><<<grid, qtype_info.block_size>>>(qtype, x_ptr, y_ptr, b, k);
+            dequant_cuda_<float><<<grid, qtype_info.block_size, 0, stream>>>(qtype, x_ptr, y_ptr, block_size, type_size, x.size(-1), y.size(-1));
             break;
         }
         case at::kHalf: {
-            half_t* __restrict__ y_ptr = y.data_ptr<half_t>();
-            dequant_cuda_<half_t><<<grid, qtype_info.block_size>>>(qtype, x_ptr, y_ptr, b, k);
+            half* __restrict__ y_ptr = y.data_ptr<half>();
+            dequant_cuda_<half><<<grid, qtype_info.block_size, 0, stream>>>(qtype, x_ptr, y_ptr, block_size, type_size, x.size(-1), y.size(-1));
             break;
         }
         default: TORCH_CHECK(false, "Expected y scalar dtype to be float32 or float16, got ", y.scalar_type()); break;
     }
 }
-
-// dequant_block is only called internally by kernels.cu, not exposed in Python
 
 TORCH_LIBRARY_IMPL(minfer, CUDA, m) {
     m.impl("dequant", &dequant_cuda);

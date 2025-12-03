@@ -1,5 +1,9 @@
-#include <cuda.h>
+#pragma once
+
 #include <cuda_runtime.h>
+
+#include <cstdint>
+using std::uint8_t;
 
 template <typename T> __device__ void dequant_block_q4_0(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);
 template <typename T> __device__ void dequant_block_q4_1(const uint8_t* __restrict__ w, float* __restrict__ y, int stride, int tid, int n_threads);

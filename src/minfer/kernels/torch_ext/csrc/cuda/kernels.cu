@@ -4,7 +4,6 @@
 
 #include <cstdint>
 
-#include <cuda.h>
 #include <cuda_runtime.h>
 #include <ATen/cuda/CUDAContext.h>
 

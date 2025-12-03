@@ -1,5 +1,6 @@
 #include <cstdint>
-#include <cuda.h>
+
+#include <cuda_runtime.h>
 #include <cuda_fp16.h>
 
 #include "impl_common.hpp"

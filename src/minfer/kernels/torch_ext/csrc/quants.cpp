@@ -42,14 +42,17 @@ void dequant_row_cpu(
     }
 }
 
+// NOTE: only call on 2D tensors for right now, 
+// no need for larger since this is just to test the impl
 void dequant_cpu(
     int qtype_int,
     const at::Tensor& x,
     at::Tensor& y,
-    int64_t b,
-    int64_t k
+    int block_size, // num deq elems in block
+    int type_size // byte size of block
 ) {
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
+    TORCH_CHECK(x.dim() == 2 && y.dim() == 2);
     TORCH_CHECK(x.size(0) == y.size(0), "x and y must have the same number of rows");
     TORCH_CHECK(x.scalar_type() == at::kByte, "x must be uint8 (byte)");
     TORCH_CHECK(y.scalar_type() == at::kFloat || y.scalar_type() == at::kHalf, "y must be float32 or float16");
@@ -62,6 +65,8 @@ void dequant_cpu(
     GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
     const uint8_t* __restrict__ x_ptr = x.data_ptr<uint8_t>();
     int n_rows = x.size(0);
+    int b = x.size(-1);
+    int k = y.size(-1);
 
     switch (y.scalar_type()) {
         case at::kFloat: {
@@ -116,14 +121,17 @@ void quant_row_cpu(
     }
 }
 
+// NOTE: only call on 2D tensors for right now, 
+// no need for larger since this is just to test the impl
 void quant_cpu(
     int qtype_int,
     const at::Tensor& x,
     at::Tensor& y,
-    int64_t b,
-    int64_t n
+    int block_size, // num deq elems in block
+    int type_size // byte size of block
 ) {
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
+    TORCH_CHECK(x.dim() == 2 && y.dim() == 2);
     TORCH_CHECK(x.size(0) == y.size(0), "x and y must have same number of rows");
     TORCH_CHECK(x.scalar_type() == at::kFloat, "x must be float32");
     TORCH_CHECK(y.scalar_type() == at::kByte, "y must be uint8 (byte)");
@@ -136,6 +144,8 @@ void quant_cpu(
     GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
     uint8_t* __restrict__ y_ptr = y.data_ptr<uint8_t>();
     int n_rows = x.size(0);
+    int64_t n = x.size(-1);
+    int64_t b = y.size(-1);
 
     switch (x.scalar_type()) {
         case at::kFloat: {
@@ -150,8 +160,8 @@ void quant_cpu(
 }
 
 TORCH_LIBRARY(minfer, m) {
-    m.def("dequant(int qtype, Tensor x, Tensor(a!) Tensor y, int b, int k) -> ()");
-    m.def("quant(int qtype, Tensor x, Tensor(a!) Tensor y, int b, int n) -> ()");
+    m.def("dequant(int qtype, Tensor x, Tensor(a!) Tensor y, int block_size, int type_size) -> ()");
+    m.def("quant(int qtype, Tensor x, Tensor(a!) Tensor y, int block_size, int type_size) -> ()");
 }
 
 TORCH_LIBRARY_IMPL(minfer, CPU, m) {

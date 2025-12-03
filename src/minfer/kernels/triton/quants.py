@@ -6,7 +6,7 @@ from .const import *
 from gguf import GGMLQuantizationType
 
 @triton.jit
-def _dequant_row(qtype : GGMLQuantizationType, x_ptr, y_ptr, b, k):
+def _dequant(qtype : GGMLQuantizationType, x_ptr, y_ptr, b, k):
     
     row_idx = tl.program_id(0)
     

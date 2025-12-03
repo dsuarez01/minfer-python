@@ -24,11 +24,6 @@ using std::uint16_t;
 using std::uint32_t;
 using std::uint64_t;
 
-// QK = number of values after dequantization
-// QK_K = super-block size
-
-constexpr int QK_K = 256;
-
 // NOTE: sometimes llama-cpp will change things on their end
 // Discrepancy will cause errors... Is there a better way to deal w this?
 enum class GGMLQuantizationType : int {
@@ -81,51 +76,10 @@ inline bool is_valid_qtype(int qtype_int) {
     }
 }
 
-struct QuantInfo { 
-    int block_size; 
-    int type_size; 
-};
+// QK = number of values after dequantization
+// QK_K = super-block size
 
-inline QuantInfo get_quant_info(GGMLQuantizationType qtype) {
-    
-    switch (qtype) {
-        case GGMLQuantizationType::F32:     return {1, 4};
-        case GGMLQuantizationType::F16:     return {1, 2};
-        case GGMLQuantizationType::Q4_0:    return {32, 2 + 16};
-        case GGMLQuantizationType::Q4_1:    return {32, 2 + 2 + 16};
-        case GGMLQuantizationType::Q5_0:    return {32, 2 + 4 + 16};
-        case GGMLQuantizationType::Q5_1:    return {32, 2 + 2 + 4 + 16};
-        case GGMLQuantizationType::Q8_0:    return {32, 2 + 32};
-        case GGMLQuantizationType::Q2_K:    return {256, 2 + 2 + QK_K / 16 + QK_K / 4};
-        case GGMLQuantizationType::Q3_K:    return {256, 2 + QK_K / 4 + QK_K / 8 + 12};
-        case GGMLQuantizationType::Q4_K:    return {256, 2 + 2 + QK_K / 2 + 12};
-        case GGMLQuantizationType::Q5_K:    return {256, 2 + 2 + QK_K / 2 + QK_K / 8 + 12};
-        case GGMLQuantizationType::Q6_K:    return {256, 2 + QK_K / 2 + QK_K / 4 + QK_K / 16};
-        case GGMLQuantizationType::Q8_K:    return {256, 4 + QK_K + QK_K / 8};
-        case GGMLQuantizationType::IQ2_XXS: return {256, 2 + QK_K / 4};
-        case GGMLQuantizationType::IQ2_XS:  return {256, 2 + QK_K / 4 + QK_K / 32};
-        case GGMLQuantizationType::IQ3_XXS: return {256, 2 + QK_K / 4 + QK_K / 8};
-        case GGMLQuantizationType::IQ1_S:   return {256, 2 + QK_K / 8 + QK_K / 16};
-        case GGMLQuantizationType::IQ4_NL:  return {32, 2 + 16};
-        case GGMLQuantizationType::IQ3_S:   return {256, 2 + QK_K / 4 + QK_K / 8 + QK_K / 32 + 4};
-        case GGMLQuantizationType::IQ2_S:   return {256, 2 + QK_K / 4 + QK_K / 16};
-        case GGMLQuantizationType::IQ4_XS:  return {256, 2 + 2 + QK_K / 2 + QK_K / 64};
-        case GGMLQuantizationType::I8:      return {1, 1};
-        case GGMLQuantizationType::I16:     return {1, 2};
-        case GGMLQuantizationType::I32:     return {1, 4};
-        case GGMLQuantizationType::I64:     return {1, 8};
-        case GGMLQuantizationType::F64:     return {1, 8};
-        case GGMLQuantizationType::IQ1_M:   return {256, QK_K / 8 + QK_K / 16 + QK_K / 32};
-        case GGMLQuantizationType::BF16:    return {1, 2};
-        case GGMLQuantizationType::TQ1_0:   return {256, 2 + 4 * 13};
-        case GGMLQuantizationType::TQ2_0:   return {256, 2 + 64};
-        case GGMLQuantizationType::MXFP4:   return {32, 1 + 16};
-        default: return {0, 0};
-    }
-}
-
-// defining structs that hold byte data
-
+constexpr int QK_K = 256;
 constexpr int K_SCALE_SIZE = 12;
 
 constexpr int QK4_0 = 32;

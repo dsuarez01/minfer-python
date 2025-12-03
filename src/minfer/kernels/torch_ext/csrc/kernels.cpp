@@ -3,10 +3,6 @@
 #include <ATen/core/Tensor.h>
 #include <c10/util/Exception.h>
 
-#include <cuda.h>
-#include <cuda_runtime.h>
-// #include <ATen/cuda/CUDAContext.h>
-
 extern "C" {
     PyObject* PyInit__C(void) {
         static struct PyModuleDef module_def = {

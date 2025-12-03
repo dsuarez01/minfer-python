@@ -18,13 +18,12 @@ SUPPORTED_QTYPES = [
     "MXFP4"
 ]
 
-@pytest.mark.parametrize("backend", ["triton"]) # TODO: how to incorporate torch_ext here?
+@pytest.mark.parametrize("backend", ["torch_ext"]) # TODO: add triton once fixed
 @pytest.mark.parametrize("shape", [(1024,6144), (16384,6144)])
 @pytest.mark.parametrize("qtype_name", SUPPORTED_QTYPES)
 def test_dequant(backend, qtype_name, shape):
 
-    ref_backend = KernelBackend("_ref")
-    test_backend = KernelBackend(backend)
+    kerns = KernelBackend(backend)
 
     M, N = shape
     qtype = GGMLQuantizationType[qtype_name]
@@ -34,19 +33,19 @@ def test_dequant(backend, qtype_name, shape):
     
     data_A = torch.randn(shape, dtype=torch.float32)
     
-    # Reference round-trip is ground truth
+    # round-trip on CPU is ground truth
     quantized_A = torch.zeros((M, bytes_per_row), dtype=torch.uint8)
     expected_A = torch.zeros(shape, dtype=torch.float32)
     
-    ref_backend._quant_row(qtype, data_A, quantized_A, bytes_per_row, N)
-    ref_backend._dequant_row(qtype, quantized_A, expected_A, bytes_per_row, N)
+    kerns._quant(qtype, data_A, quantized_A, block_size, type_size)
+    kerns._dequant(qtype, quantized_A, expected_A, block_size, type_size)
     
-    # Test dequant
+    # test dequant on GPU
     quantized_A = quantized_A.cuda()
     actual_A = torch.zeros(shape, dtype=torch.float32).cuda()
     
     grid = (M,)
-    test_backend._dequant_row[grid](qtype, quantized_A, actual_A, bytes_per_row, N)
+    kerns._dequant(qtype, quantized_A, actual_A, block_size, type_size)
     
     assert torch.allclose(actual_A.cpu(), expected_A, rtol=1e-2, atol=1e-3)
 
