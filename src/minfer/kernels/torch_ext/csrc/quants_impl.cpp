@@ -3,6 +3,7 @@
 // Adapted from: https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-quants.c (MIT License)
 
 #include "impl_common.hpp"
+#include "quants_impl.hpp"
 
 #include <cmath>
 #include <cstring>

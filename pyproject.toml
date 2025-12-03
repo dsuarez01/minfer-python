@@ -9,6 +9,7 @@ dependencies = [
     "torch >= 2.6.0",
     "triton >= 3.2.0 ; sys_platform == 'linux'",
     "gguf",
+    "setuptools",
     "ninja",
 ]
 
@@ -27,3 +28,6 @@ dev = [
     "pytest>=8.3.5",
     "pytest-randomly>=3.16.0",
 ]
+
+[tool.uv]
+no-build-isolation-package = ["minfer"]

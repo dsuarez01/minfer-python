@@ -25,17 +25,23 @@ def get_extensions():
 
     assert torch.cuda.is_available() and CUDA_HOME is not None, "CUDA not enabled or CUDA_HOME not set"
     
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    extensions_dir = os.path.join(this_dir, "src", library_name, "kernels", "torch_ext", "csrc")
+    include_path = "-I"+os.path.join(extensions_dir)
+
     extra_link_args = []
     extra_compile_args = {
         "cxx": [
             "-std=c++17",
             "-O3" if not debug_mode else "-O0",
             "-fdiagnostics-color=always",
-            "-DPy_LIMITED_API=0x030d0000",  # min CPython v3.13
+            "-DPy_LIMITED_API=0x030d0000",  # min CPython v3.13,
+            include_path,
         ],
         "nvcc": [
             "-O3" if not debug_mode else "-O0",
             "--use_fast_math",
+            include_path,
         ],
     }
     
@@ -43,9 +49,6 @@ def get_extensions():
         extra_compile_args["cxx"].append("-g")
         extra_compile_args["nvcc"].append("-g")
         extra_link_args.extend(["-O0", "-g"])
-
-    this_dir = os.path.dirname(os.path.abspath(__file__))
-    extensions_dir = os.path.join(this_dir, "src", library_name, "kernels", "csrc")
 
     sources = list(glob.glob(os.path.join(extensions_dir, "*.cpp")))
     
@@ -64,15 +67,7 @@ def get_extensions():
     ]
 
 setup(
-    name=library_name,
-    version="0.1.0",
-    packages=find_packages(where="src"),
-    package_dir={"": "src"},
     ext_modules=get_extensions(),
-    install_requires=["torch"],
-    description="Minimal Python (decoder-only) LLM inference engine w/ Triton and CUDA kernels",
-    long_description=open("README.md").read(),
-    long_description_content_type="text/markdown",
     cmdclass={"build_ext": BuildExtension},
     options={"bdist_wheel": {"py_limited_api": "cp313"}} if py_limited_api else {},
 )

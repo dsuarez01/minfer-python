@@ -2,7 +2,9 @@ import torch
 from torch import Tensor
 from minfer.const import GGMLQuantizationType
 
-# TODO: need to make CUDA/C++ kernels compatible with torch.compile here
+# NOTE: needed to make CUDA/C++ kernels compatible with torch.compile here
+
+# TODO: complete
 
 def dequant(qtype: GGMLQuantizationType, x: Tensor, y: Tensor, block_size: int, type_size: int):
     """

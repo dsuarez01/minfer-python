@@ -20,8 +20,4 @@ mkdir -p $LOCAL_DISK/torch_extensions
 export TORCH_EXTENSIONS_DIR=$LOCAL_DISK/torch_extensions
 export TORCH_CUDA_ARCH_LIST="7.0" # NVIDIA V100
 
-# this compiles the kernels as specified in setup.py
-# (compiling may take a few minutes)
-export MAX_JOBS=8
-# (run uv sync --group dev --no-install-project on the login node first)
-uv sync --group dev --no-build-isolation --verbose
+export TORCH_DISTUTILS_DETAIL=1 # comment out if not needed
