@@ -5,7 +5,7 @@
 #ifdef __CUDA_ARCH__
     #include <cuda_fp16.h>
     using half_t = half;
-    #define CONSTANT __device__ __constant__
+    #define CONSTANT static constexpr __device__
 #else
     #include <ATen/ATen.h>
     using half_t = at::Half;
@@ -1006,7 +1006,7 @@ CONSTANT int8_t kvalues_mxfp4[16] = {
     0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12,
 };
 
-CONSTANT int NGRID_IQ1S = 2048;
+constexpr int NGRID_IQ1S = 2048;
 CONSTANT float IQ1S_DELTA = 0.125f;
 CONSTANT float IQ1M_DELTA = 0.125f;
 

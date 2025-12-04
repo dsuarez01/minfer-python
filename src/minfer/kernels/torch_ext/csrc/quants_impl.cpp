@@ -378,30 +378,38 @@ static iq2_entry_t iq2_data[4] = {
     {NULL, NULL, NULL},
 };
 
-static int iq2_data_index(GGMLQuantizationType type) {
+static int iq2_data_index(int qtype_int) {
+    assert(is_valid_qtype(qtype_int) && "invalid qtype_int passed to iq2_data_index");
+    
+    GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
+
     assert(
-        type == GGMLQuantizationType::IQ2_XXS || 
-        type == GGMLQuantizationType::IQ2_XS || 
-        type == GGMLQuantizationType::IQ1_S || 
-        type == GGMLQuantizationType::IQ1_M || 
-        type == GGMLQuantizationType::IQ2_S
+        qtype == GGMLQuantizationType::IQ2_XXS || 
+        qtype == GGMLQuantizationType::IQ2_XS || 
+        qtype == GGMLQuantizationType::IQ1_S || 
+        qtype == GGMLQuantizationType::IQ1_M || 
+        qtype == GGMLQuantizationType::IQ2_S
     );
-    return type == GGMLQuantizationType::IQ2_XXS ? 0 :
-           type == GGMLQuantizationType::IQ2_XS  ? 1 :
-           type == GGMLQuantizationType::IQ1_S || type == GGMLQuantizationType::IQ1_M ? 2 : 3;
+    return qtype == GGMLQuantizationType::IQ2_XXS ? 0 :
+           qtype == GGMLQuantizationType::IQ2_XS  ? 1 :
+           qtype == GGMLQuantizationType::IQ1_S || qtype == GGMLQuantizationType::IQ1_M ? 2 : 3;
 }
 
-static int iq2_grid_size(GGMLQuantizationType type) {
+static int iq2_grid_size(int qtype_int) {
+    assert(is_valid_qtype(qtype_int) && "invalid qtype_int passed to iq2_grid_size");
+    
+    GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
+
     assert(
-        type == GGMLQuantizationType::IQ2_XXS || 
-        type == GGMLQuantizationType::IQ2_XS || 
-        type == GGMLQuantizationType::IQ1_S || 
-        type == GGMLQuantizationType::IQ1_M || 
-        type == GGMLQuantizationType::IQ2_S
+        qtype == GGMLQuantizationType::IQ2_XXS || 
+        qtype == GGMLQuantizationType::IQ2_XS || 
+        qtype == GGMLQuantizationType::IQ1_S || 
+        qtype == GGMLQuantizationType::IQ1_M || 
+        qtype == GGMLQuantizationType::IQ2_S
     );
-    return type == GGMLQuantizationType::IQ2_XXS ? 256 :
-           type == GGMLQuantizationType::IQ2_XS  ? 512 :
-           type == GGMLQuantizationType::IQ1_S || type == GGMLQuantizationType::IQ1_M ? NGRID_IQ1S : 1024;
+    return qtype == GGMLQuantizationType::IQ2_XXS ? 256 :
+           qtype == GGMLQuantizationType::IQ2_XS  ? 512 :
+           qtype == GGMLQuantizationType::IQ1_S || qtype == GGMLQuantizationType::IQ1_M ? NGRID_IQ1S : 1024;
 }
 
 static int iq2_compare_func(const void * left, const void * right) {
@@ -410,9 +418,12 @@ static int iq2_compare_func(const void * left, const void * right) {
     return l[0] < r[0] ? -1 : l[0] > r[0] ? 1 : l[1] < r[1] ? -1 : l[1] > r[1] ? 1 : 0;
 }
 
-void iq2xs_init_impl(GGMLQuantizationType type) {
-    const int gindex = iq2_data_index(type);
-    const int grid_size = iq2_grid_size(type);
+void iq2xs_init_impl(int qtype_int) {
+    assert(is_valid_qtype(qtype_int) && "invalid qtype_int passed to iq2xs_init_impl");
+
+    GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
+    const int gindex = iq2_data_index(qtype_int);
+    const int grid_size = iq2_grid_size(qtype_int);
     // if (iq2_data[gindex].grid) { // not necessary
     //     return;
     // }
@@ -420,11 +431,11 @@ void iq2xs_init_impl(GGMLQuantizationType type) {
     // NOTE: moved initialization of grid arrays to header
 
     const int kmap_size = 43692;
-    //const int nwant = type == GGMLQuantizationType::IQ1_S ? 3 : 2;
-    const int nwant = type == GGMLQuantizationType::IQ1_S || type == GGMLQuantizationType::IQ1_M ? 3 : type == GGMLQuantizationType::IQ2_S ? 1 : 2;
-    const uint16_t * kgrid = type == GGMLQuantizationType::IQ2_XXS ? kgrid_2bit_256 :
-                             type == GGMLQuantizationType::IQ2_XS  ? kgrid_2bit_512 :
-                             type == GGMLQuantizationType::IQ1_S || type == GGMLQuantizationType::IQ1_M ? kgrid_1bit_2048 : kgrid_2bit_1024;
+    //const int nwant = qtype == GGMLQuantizationType::IQ1_S ? 3 : 2;
+    const int nwant = qtype == GGMLQuantizationType::IQ1_S || qtype == GGMLQuantizationType::IQ1_M ? 3 : qtype == GGMLQuantizationType::IQ2_S ? 1 : 2;
+    const uint16_t * kgrid = qtype == GGMLQuantizationType::IQ2_XXS ? kgrid_2bit_256 :
+                             qtype == GGMLQuantizationType::IQ2_XS  ? kgrid_2bit_512 :
+                             qtype == GGMLQuantizationType::IQ1_S || qtype == GGMLQuantizationType::IQ1_M ? kgrid_1bit_2048 : kgrid_2bit_1024;
     uint64_t * kgrid_q2xs;
     int      * kmap_q2xs;
     uint16_t * kneighbors_q2xs;
@@ -520,15 +531,19 @@ void iq2xs_init_impl(GGMLQuantizationType type) {
     free(dist2);
 }
 
-void iq2xs_free_impl(GGMLQuantizationType type) {
+void iq2xs_free_impl(int qtype_int) {
+    assert(is_valid_qtype(qtype_int) && "invalid qtype_int passed to iq2xs_free_impl");
+
+    GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
+    
     assert(
-        type == GGMLQuantizationType::IQ2_XXS || 
-        type == GGMLQuantizationType::IQ2_XS || 
-        type == GGMLQuantizationType::IQ1_S || 
-        type == GGMLQuantizationType::IQ1_M || 
-        type == GGMLQuantizationType::IQ2_S
+        qtype == GGMLQuantizationType::IQ2_XXS || 
+        qtype == GGMLQuantizationType::IQ2_XS || 
+        qtype == GGMLQuantizationType::IQ1_S || 
+        qtype == GGMLQuantizationType::IQ1_M || 
+        qtype == GGMLQuantizationType::IQ2_S
     );
-    const int gindex = iq2_data_index(type);
+    const int gindex = iq2_data_index(qtype_int);
     if (iq2_data[gindex].grid) {
         free(iq2_data[gindex].grid);       iq2_data[gindex].grid = NULL;
         free(iq2_data[gindex].map);        iq2_data[gindex].map  = NULL;
@@ -576,9 +591,13 @@ static iq3_entry_t iq3_data[2] = {
     {NULL, NULL, NULL},
 };
 
-static int iq3_data_index(GGMLQuantizationType type) {
-    assert(type == GGMLQuantizationType::IQ3_XXS || type == GGMLQuantizationType::IQ3_S);
-    return type == GGMLQuantizationType::IQ3_XXS ? 0 : 1;
+static int iq3_data_index(int qtype_int) {
+    assert(is_valid_qtype(qtype_int) && "invalid qtype_int passed to iq3_data_index");
+
+    GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
+    
+    assert(qtype == GGMLQuantizationType::IQ3_XXS || qtype == GGMLQuantizationType::IQ3_S);
+    return qtype == GGMLQuantizationType::IQ3_XXS ? 0 : 1;
 }
 
 static int iq3_compare_func(const void * left, const void * right) {
@@ -587,9 +606,13 @@ static int iq3_compare_func(const void * left, const void * right) {
     return l[0] < r[0] ? -1 : l[0] > r[0] ? 1 : l[1] < r[1] ? -1 : l[1] > r[1] ? 1 : 0;
 }
 
-void iq3xs_init_impl(GGMLQuantizationType type) {
-    const int gindex = iq3_data_index(type); // this asserts down to 2 types
-    const int grid_size = type == GGMLQuantizationType::IQ3_XXS ? 256 : 512;
+void iq3xs_init_impl(int qtype_int) {
+    assert(is_valid_qtype(qtype_int) && "invalid qtype_int passed to iq3xs_init_impl");
+
+    GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
+    
+    const int gindex = iq3_data_index(qtype_int); // this asserts down to 2 types
+    const int grid_size = qtype == GGMLQuantizationType::IQ3_XXS ? 256 : 512;
     // if (iq3_data[gindex].grid) {
     //     return;
     // }
@@ -694,8 +717,12 @@ void iq3xs_init_impl(GGMLQuantizationType type) {
     free(dist2);
 }
 
-void iq3xs_free_impl(GGMLQuantizationType type) {
-    const int gindex = iq3_data_index(type);
+void iq3xs_free_impl(int qtype_int) {
+    assert(is_valid_qtype(qtype_int) && "invalid qtype_int passed to iq3xs_free_impl");
+
+    GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
+
+    const int gindex = iq3_data_index(qtype_int);
     if (iq3_data[gindex].grid) {
         free(iq3_data[gindex].grid);       iq3_data[gindex].grid = NULL;
         free(iq3_data[gindex].map);        iq3_data[gindex].map  = NULL;
@@ -903,7 +930,7 @@ void quant_row_q4_0(const float * __restrict__ x, uint8_t * __restrict__ yr, int
         const float d  = max / -8;
         const float id = d ? 1.0f/d : 0.0f;
 
-        y[i].d = (half_t) d;
+        y[i].d = (at::Half) d;
 
         for (int j = 0; j < qk/2; ++j) {
             const float x0 = x[i*qk + 0    + j]*id;
@@ -961,8 +988,8 @@ void quant_row_q4_1(const float * __restrict__ x, uint8_t * __restrict__ yr, int
         const float d  = (max - min) / ((1 << 4) - 1);
         const float id = d ? 1.0f/d : 0.0f;
 
-        y[i].d = (half_t) d;
-        y[i].m = (half_t) min;
+        y[i].d = (at::Half) d;
+        y[i].m = (at::Half) min;
 
         for (int j = 0; j < qk/2; ++j) {
             const float x0 = (x[i*qk + 0    + j] - min)*id;
@@ -1026,7 +1053,7 @@ void quant_row_q5_0(const float * __restrict__ x, uint8_t * __restrict__ yr, int
         const float d  = max / -16;
         const float id = d ? 1.0f/d : 0.0f;
 
-        y[i].d = (half_t) d;
+        y[i].d = (at::Half) d;
 
         uint32_t qh = 0;
 
@@ -1097,8 +1124,8 @@ void quant_row_q5_1(const float * __restrict__ x, uint8_t * __restrict__ yr, int
         const float d  = (max - min) / ((1 << 5) - 1);
         const float id = d ? 1.0f/d : 0.0f;
 
-        y[i].d = (half_t) d;
-        y[i].m = (half_t) min;
+        y[i].d = (at::Half) d;
+        y[i].m = (at::Half) min;
 
         uint32_t qh = 0;
 
@@ -1155,7 +1182,7 @@ void quant_row_q8_0(const float * __restrict__ x, uint8_t * __restrict__ yr, int
         const float d = amax / ((1 << 7) - 1);
         const float id = d ? 1.0f/d : 0.0f;
 
-        y[i].d = (half_t) d;
+        y[i].d = (at::Half) d;
 
         for (int j = 0; j < qk; ++j) {
             const float x0 = x[i*qk + j]*id;
@@ -1297,10 +1324,10 @@ void quant_row_q2_K(const float * __restrict__ x, uint8_t * __restrict__ yr, int
                 int l = nearest_int(iscale*scales[j]);
                 y[i].scales[j] = l;
             }
-            y[i].d = (half_t) (max_scale/q4scale);
+            y[i].d = (at::Half) (max_scale/q4scale);
         } else {
             for (int j = 0; j < QK_K/16; ++j) y[i].scales[j] = 0;
-            y[i].d = (half_t) 0.f;
+            y[i].d = (at::Half) 0.f;
         }
         if (max_min > 0) {
             float iscale = q4scale/max_min;
@@ -1308,9 +1335,9 @@ void quant_row_q2_K(const float * __restrict__ x, uint8_t * __restrict__ yr, int
                 int l = nearest_int(iscale*mins[j]);
                 y[i].scales[j] |= (l << 4);
             }
-            y[i].dmin = (half_t) (max_min/q4scale);
+            y[i].dmin = (at::Half) (max_min/q4scale);
         } else {
-            y[i].dmin = (half_t) 0.f;
+            y[i].dmin = (at::Half) 0.f;
         }
         for (int j = 0; j < QK_K/16; ++j) {
             const float d = (float) (y[i].d) * (y[i].scales[j] & 0xF);
@@ -1421,9 +1448,9 @@ void quant_row_q3_K(const float * __restrict__ x, uint8_t * __restrict__ yr, int
                 l >>= 4;
                 y[i].scales[j%4 + 8] |= (l << (2*(j/4)));
             }
-            y[i].d = (half_t) (1/iscale);
+            y[i].d = (at::Half) (1/iscale);
         } else {
-            y[i].d = (half_t) 0.f;
+            y[i].d = (at::Half) 0.f;
         }
 
         int8_t sc;
@@ -1539,8 +1566,8 @@ void quant_row_q4_K(const float * __restrict__ x, uint8_t * __restrict__ yr, int
                 y[i].scales[j-0] |= ((lm >> 4) << 6);
             }
         }
-        y[i].d = (half_t) (max_scale/63.f);
-        y[i].dmin = (half_t) (max_min/63.f);
+        y[i].d = (at::Half) (max_scale/63.f);
+        y[i].dmin = (at::Half) (max_min/63.f);
 
         uint8_t sc, m;
         for (int j = 0; j < QK_K/32; ++j) {
@@ -1643,8 +1670,8 @@ void quant_row_q5_K(const float * __restrict__ x, uint8_t * __restrict__ yr, int
                 y[i].scales[j-0] |= ((lm >> 4) << 6);
             }
         }
-        y[i].d = (half_t) (max_scale/63.f);
-        y[i].dmin = (half_t) (max_min/63.f);
+        y[i].d = (at::Half) (max_scale/63.f);
+        y[i].dmin = (at::Half) (max_min/63.f);
 
         uint8_t sc, m;
         for (int j = 0; j < QK_K/32; ++j) {
@@ -1747,13 +1774,13 @@ void quant_row_q6_K(const float * __restrict__ x, uint8_t * __restrict__ yr, int
 
         if (max_abs_scale < GROUP_MAX_EPS) {
             memset(&y[i], 0, sizeof(block_q6_K));
-            y[i].d = (half_t) 0.f;
+            y[i].d = (at::Half) 0.f;
             x += QK_K;
             continue;
         }
 
         float iscale = -128.f/max_scale;
-        y[i].d = (half_t) (1/iscale);
+        y[i].d = (at::Half) (1/iscale);
         for (int ib = 0; ib < QK_K/16; ++ib) {
             y[i].scales[ib] = std::min((int8_t) 127, (int8_t) nearest_int(iscale*scales[ib]));
         }
@@ -1851,7 +1878,7 @@ void quant_row_tq1_0(const float * __restrict__ x, uint8_t * __restrict__ yr, in
         const float d = amax;
         const float id = d ? 1.0f/d : 0.0f;
 
-        y[i].d = (half_t) d;
+        y[i].d = (at::Half) d;
 
         // 5 elements per byte, along 32 bytes
         for (size_t j = 0; j < sizeof(y->qs) - sizeof(y->qs) % 32; j += 32) {
@@ -1941,7 +1968,7 @@ void quant_row_tq2_0(const float * __restrict__ x, uint8_t * __restrict__ yr, in
         const float d = amax;
         const float id = d ? 1.0f/d : 0.0f;
 
-        y[i].d = (half_t) d;
+        y[i].d = (at::Half) d;
 
         for (size_t j = 0; j < sizeof(y->qs); j += 32) {
             for (size_t m = 0; m < 32; ++m) {
@@ -1996,7 +2023,7 @@ void quant_row_iq2_xxs(const float * __restrict__ x, uint8_t * __restrict__ yr, 
     // });
 
     block_iq2_xxs * __restrict__ y = reinterpret_cast<block_iq2_xxs *>(yr);
-    const int gindex = iq2_data_index(GGMLQuantizationType::IQ2_XXS);
+    const int gindex = iq2_data_index(static_cast<int>(GGMLQuantizationType::IQ2_XXS));
 
     const uint64_t * kgrid_q2xs      = iq2_data[gindex].grid;
     const int      * kmap_q2xs       = iq2_data[gindex].map;
@@ -2022,7 +2049,7 @@ void quant_row_iq2_xxs(const float * __restrict__ x, uint8_t * __restrict__ yr, 
 
     for (int ibl = 0; ibl < nbl; ++ibl) {
 
-        y[ibl].d = half_t(0.f);
+        y[ibl].d = at::Half(0.f);
         memset(q2, 0, QK_K/4);
 
         float max_scale = 0;
@@ -2157,7 +2184,7 @@ void quant_row_iq2_xxs(const float * __restrict__ x, uint8_t * __restrict__ yr, 
         }
 
         float d = max_scale/31;
-        y[ibl].d = half_t(d);
+        y[ibl].d = at::Half(d);
         float id = 1/d;
         for (int ib = 0; ib < QK_K/32; ++ib) {
             int l = nearest_int(0.5f*(id*scales[ib]-1));
@@ -2205,7 +2232,7 @@ void quant_row_iq2_xs(const float * __restrict__ x, uint8_t * __restrict__ yr, i
     // });
 
     block_iq2_xs * __restrict__ y = reinterpret_cast<block_iq2_xs *>(yr);
-    const int gindex = iq2_data_index(GGMLQuantizationType::IQ2_XS);
+    const int gindex = iq2_data_index(static_cast<int>(GGMLQuantizationType::IQ2_XS));
 
     const uint64_t * kgrid_q2xs      = iq2_data[gindex].grid;
     const int      * kmap_q2xs       = iq2_data[gindex].map;
@@ -2233,7 +2260,7 @@ void quant_row_iq2_xs(const float * __restrict__ x, uint8_t * __restrict__ yr, i
 
     for (int ibl = 0; ibl < nbl; ++ibl) {
 
-        y[ibl].d = half_t(0.f);
+        y[ibl].d = at::Half(0.f);
         memset(q2, 0, QK_K/4);
         memset(y[ibl].scales, 0, QK_K/32);
 
@@ -2371,7 +2398,7 @@ void quant_row_iq2_xs(const float * __restrict__ x, uint8_t * __restrict__ yr, i
         }
 
         float d = max_scale/31;
-        y[ibl].d = half_t(d);
+        y[ibl].d = at::Half(d);
         float id = 1/d;
         for (int ib = 0; ib < QK_K/16; ++ib) {
             int l = nearest_int(0.5f*(id*scales[ib]-1));
@@ -2426,7 +2453,7 @@ void quant_row_iq2_s(const float * __restrict__ x, uint8_t * __restrict__ yr, in
     // });
 
     block_iq2_s * __restrict__ y = reinterpret_cast<block_iq2_s *>(yr);
-    const int gindex = iq2_data_index(GGMLQuantizationType::IQ2_S);
+    const int gindex = iq2_data_index(static_cast<int>(GGMLQuantizationType::IQ2_S));
 
     const uint64_t * kgrid_q2xs      = iq2_data[gindex].grid;
     const int      * kmap_q2xs       = iq2_data[gindex].map;
@@ -2454,7 +2481,7 @@ void quant_row_iq2_s(const float * __restrict__ x, uint8_t * __restrict__ yr, in
     for (int ibl = 0; ibl < nbl; ++ibl) {
 
         memset(&y[ibl], 0, sizeof(block_iq2_s));
-        y[ibl].d = half_t(0.f);
+        y[ibl].d = at::Half(0.f);
 
         float max_scale = 0;
 
@@ -2580,7 +2607,7 @@ void quant_row_iq2_s(const float * __restrict__ x, uint8_t * __restrict__ yr, in
         }
 
         float d = max_scale/31;
-        y[ibl].d = half_t(d * 0.9875f);
+        y[ibl].d = at::Half(d * 0.9875f);
         float id = 1/d;
         for (int ib = 0; ib < QK_K/16; ++ib) {
             int l = nearest_int(0.5f*(id*scales[ib]-1));
@@ -2632,7 +2659,7 @@ void quant_row_iq3_xxs(const float * __restrict__ x, uint8_t * __restrict__ yr, 
     // });
 
     block_iq3_xxs * __restrict__ y = reinterpret_cast<block_iq3_xxs *>(yr);
-    const int gindex = iq3_data_index(GGMLQuantizationType::IQ3_XXS);
+    const int gindex = iq3_data_index(static_cast<int>(GGMLQuantizationType::IQ3_XXS));
 
     const uint32_t * kgrid_q3xs      = iq3_data[gindex].grid;
     const int      * kmap_q3xs       = iq3_data[gindex].map;
@@ -2648,10 +2675,10 @@ void quant_row_iq3_xxs(const float * __restrict__ x, uint8_t * __restrict__ yr, 
 
     const int64_t nbl = n/QK_K;
     
-    half_t * dh = &y->d;
+    at::Half * dh = &y->d;
     uint8_t* qs = y->qs;
     int block_size = sizeof(block_iq3_xxs);
-    int quant_size = block_size - sizeof(half_t);
+    int quant_size = block_size - sizeof(at::Half);
     // NOTE: why is this even in the original code?
     // if (grid_size == 256) {
     //     block_iq3_xxs * y = vy;
@@ -2682,7 +2709,7 @@ void quant_row_iq3_xxs(const float * __restrict__ x, uint8_t * __restrict__ yr, 
 
     for (int ibl = 0; ibl < nbl; ++ibl) {
 
-        dh[0] = half_t(0.f);
+        dh[0] = at::Half(0.f);
         memset(q3, 0, 3*QK_K/8+QK_K/32);
 
         float max_scale = 0;
@@ -2820,13 +2847,13 @@ void quant_row_iq3_xxs(const float * __restrict__ x, uint8_t * __restrict__ yr, 
 
         if (!max_scale) {
             memset(qs, 0, quant_size);
-            dh += block_size/sizeof(half_t);
+            dh += block_size/sizeof(at::Half);
             qs += block_size;
             continue;
         }
 
         float d = max_scale/31;
-        dh[0] = half_t(d * 1.0125f);  // small improvement via this fudge factor
+        dh[0] = at::Half(d * 1.0125f);  // small improvement via this fudge factor
         float id = 1/d;
         for (int ib = 0; ib < QK_K/32; ++ib) {
             int l = nearest_int(0.5f*(id*scales[ib]-1));
@@ -2835,7 +2862,7 @@ void quant_row_iq3_xxs(const float * __restrict__ x, uint8_t * __restrict__ yr, 
         }
         memcpy(qs, q3, quant_size);
 
-        dh += block_size/sizeof(half_t);
+        dh += block_size/sizeof(at::Half);
         qs += block_size;
 
     }
@@ -2896,7 +2923,7 @@ void quant_row_iq3_s(const float * __restrict__ x, uint8_t * __restrict__ yr, in
     // });
 
     block_iq3_s * __restrict__ y = reinterpret_cast<block_iq3_s *>(yr);
-    const int gindex = iq3_data_index(GGMLQuantizationType::IQ3_S);
+    const int gindex = iq3_data_index(static_cast<int>(GGMLQuantizationType::IQ3_S));
 
     const uint32_t * kgrid_q3xs      = iq3_data[gindex].grid;
     const int      * kmap_q3xs       = iq3_data[gindex].map;
@@ -2928,7 +2955,7 @@ void quant_row_iq3_s(const float * __restrict__ x, uint8_t * __restrict__ yr, in
     for (int ibl = 0; ibl < nbl; ++ibl) {
 
         memset(&y[ibl], 0, sizeof(block_iq3_s));
-        y[ibl].d = half_t(0.f);
+        y[ibl].d = at::Half(0.f);
 
         uint8_t * qs = y[ibl].qs;
         uint8_t * qh = y[ibl].qh;
@@ -3061,7 +3088,7 @@ void quant_row_iq3_s(const float * __restrict__ x, uint8_t * __restrict__ yr, in
         }
 
         float d = max_scale/31;
-        y[ibl].d = half_t(d * 1.033f);
+        y[ibl].d = at::Half(d * 1.033f);
         float id = 1/d;
         for (int ib = 0; ib < QK_K/block_size; ib += 2) {
             int l1 = nearest_int(0.5f*(id*scales[ib+0]-1));
@@ -3111,7 +3138,7 @@ void quant_row_iq1_s(const float * __restrict__ x, uint8_t * __restrict__ yr, in
     // });
 
     block_iq1_s * __restrict__ y = reinterpret_cast<block_iq1_s *>(yr);
-    const int gindex = iq2_data_index(GGMLQuantizationType::IQ1_S);
+    const int gindex = iq2_data_index(static_cast<int>(GGMLQuantizationType::IQ1_S));
 
     const uint64_t * kgrid_q2xs      = iq2_data[gindex].grid;
     const int      * kmap_q2xs       = iq2_data[gindex].map;
@@ -3143,7 +3170,7 @@ void quant_row_iq1_s(const float * __restrict__ x, uint8_t * __restrict__ yr, in
 
     for (int ibl = 0; ibl < nbl; ++ibl) {
 
-        y[ibl].d = half_t(0.f);
+        y[ibl].d = at::Half(0.f);
         memset(y[ibl].qs, 0, QK_K/8);
         memset(y[ibl].qh, 0, QK_K/16);
 
@@ -3260,7 +3287,7 @@ void quant_row_iq1_s(const float * __restrict__ x, uint8_t * __restrict__ yr, in
         }
 
         float d = max_scale/15;
-        y[ibl].d = half_t(d*1.125f); // 1.125f is another fudge factor. Don't ask me why it is needed.
+        y[ibl].d = at::Half(d*1.125f); // 1.125f is another fudge factor. Don't ask me why it is needed.
         float id = 1/d;
         for (int ib = 0; ib < QK_K/block_size; ++ib) {
             int l = nearest_int(0.5f*(id*scales[ib]-1));
@@ -3332,7 +3359,7 @@ void quant_row_iq1_m(const float * __restrict__ x, uint8_t * __restrict__ yr, in
     // });
 
     block_iq1_m * __restrict__ y = reinterpret_cast<block_iq1_m *>(yr);
-    const int gindex = iq2_data_index(GGMLQuantizationType::IQ1_M);
+    const int gindex = iq2_data_index(static_cast<int>(GGMLQuantizationType::IQ1_M));
 
     const uint64_t * kgrid_q2xs      = iq2_data[gindex].grid;
     const int      * kmap_q2xs       = iq2_data[gindex].map;
@@ -3568,7 +3595,7 @@ void quant_row_iq1_m(const float * __restrict__ x, uint8_t * __restrict__ yr, in
             }
         }
         if (sumq2_f > 0) d = sumqx_f/sumq2_f;
-        s.f16 = half_t(d*1.1125f); // 1.1125f is another fudge factor. Don't ask me why it is needed.
+        s.f16 = at::Half(d*1.1125f); // 1.1125f is another fudge factor. Don't ask me why it is needed.
         sc[0] |= ((s.u16 & 0x000f) << 12);
         sc[1] |= ((s.u16 & 0x00f0) <<  8);
         sc[2] |= ((s.u16 & 0x0f00) <<  4);
@@ -3602,127 +3629,86 @@ void quant_row_iq4_nl(const float * __restrict__ x, uint8_t * __restrict__ yr, i
     assert(n % QK4_NL == 0);
     int64_t nblock = n / QK4_NL;
 
-    const int super_block_size = QK4_NL;
-    const int block_size = 32;
+    const int block_size = QK4_NL;
     const int8_t* values = kvalues_iq4_nl;
     const int ntry = 7;
     
-    float scales[super_block_size/block_size];
-    float weight[super_block_size];
-    uint8_t L[super_block_size];
-    uint16_t scales_h_unused;
-    uint16_t* scales_h = &scales_h_unused;
-    uint8_t* scales_l;
+    float scale;
+    float weight[block_size];
+    uint8_t L[block_size];
 
     for (int ibl = 0; ibl < nblock; ++ibl) {
 
-        half_t* dh = &y[ibl].d;
+        at::Half* dh = &y[ibl].d;
         uint8_t* q4 = y[ibl].qs;
         
         const float* x_block = x + ibl * QK4_NL;
         const float* qw_block = quant_weights ? quant_weights + ibl * QK4_NL : nullptr;
         
         float sigma2 = 0;
-        for (int j = 0; j < super_block_size; ++j) sigma2 += x_block[j]*x_block[j];
-        sigma2 *= 2.f/super_block_size;
+        for (int j = 0; j < block_size; ++j) sigma2 += x_block[j]*x_block[j];
+        sigma2 *= 2.f/block_size;
 
-        memset(q4, 0, super_block_size/2);
-        dh[0] = half_t(0.f);
+        memset(q4, 0, block_size/2);
+        dh[0] = at::Half(0.f);
 
-        float max_scale = 0, amax_scale = 0;
-        for (int ib = 0; ib < super_block_size/block_size; ++ib) {
-            const float * xb = x_block + ib*block_size;
-            uint8_t * Lb = L + ib*block_size;
-            if (qw_block) {
-                const float * qw = qw_block + ib*block_size;
-                for (int j = 0; j < block_size; ++j) weight[j] = qw[j] * sqrtf(sigma2 + xb[j]*xb[j]);
-            } else {
-                for (int j = 0; j < block_size; ++j) weight[j] = xb[j]*xb[j];
+        if (qw_block) {
+            for (int j = 0; j < block_size; ++j) weight[j] = qw_block[j] * sqrtf(sigma2 + x_block[j]*x_block[j]);
+        } else {
+            for (int j = 0; j < block_size; ++j) weight[j] = x_block[j]*x_block[j];
+        }
+        float amax = 0, max = 0;
+        for (int j = 0; j < block_size; ++j) {
+            float ax = fabsf(x_block[j]);
+            if (ax > amax) {
+                amax = ax; max = x_block[j];
             }
-            float amax = 0, max = 0;
+        }
+        if (amax < GROUP_MAX_EPS) {
+            scale = 0;
+            continue;
+        }
+        float d = ntry > 0 ? -max/values[0] : max/values[0];
+        float id = 1/d;
+        float sumqx = 0, sumq2 = 0;
+        for (int j = 0; j < block_size; ++j) {
+            float al = id*x_block[j];
+            int l = best_index_int8(16, values, al);
+            L[j] = l;
+            float q = values[l];
+            float w = weight[j];
+            sumqx += w*q*x_block[j];
+            sumq2 += w*q*q;
+        }
+        d = sumqx/sumq2;
+        float best = d*sumqx;
+        for (int itry = -ntry; itry <= ntry; ++itry) {
+            id = (itry + values[0])/max;
+            sumqx = sumq2 = 0;
             for (int j = 0; j < block_size; ++j) {
-                float ax = fabsf(xb[j]);
-                if (ax > amax) {
-                    amax = ax; max = xb[j];
-                }
-            }
-            if (amax < GROUP_MAX_EPS) {
-                scales[ib] = 0;
-                continue;
-            }
-            float d = ntry > 0 ? -max/values[0] : max/values[0];
-            float id = 1/d;
-            float sumqx = 0, sumq2 = 0;
-            for (int j = 0; j < block_size; ++j) {
-                float al = id*xb[j];
+                float al = id*x_block[j];
                 int l = best_index_int8(16, values, al);
-                Lb[j] = l;
                 float q = values[l];
                 float w = weight[j];
-                sumqx += w*q*xb[j];
+                sumqx += w*q*x_block[j];
                 sumq2 += w*q*q;
             }
-            d = sumqx/sumq2;
-            float best = d*sumqx;
-            for (int itry = -ntry; itry <= ntry; ++itry) {
-                id = (itry + values[0])/max;
-                sumqx = sumq2 = 0;
-                for (int j = 0; j < block_size; ++j) {
-                    float al = id*xb[j];
-                    int l = best_index_int8(16, values, al);
-                    float q = values[l];
-                    float w = weight[j];
-                    sumqx += w*q*xb[j];
-                    sumq2 += w*q*q;
-                }
-                if (sumq2 > 0 && sumqx*sumqx > best*sumq2) {
-                    d = sumqx/sumq2; best = d * sumqx;
-                }
+            if (sumq2 > 0 && sumqx*sumqx > best*sumq2) {
+                d = sumqx/sumq2; best = d * sumqx;
             }
-            scales[ib] = d;
-            float abs_d = fabsf(d);
-            if (abs_d > amax_scale) {
-                amax_scale = abs_d; max_scale = d;
+        }
+        scale = d;
+
+        dh[0] = at::Half(scale);
+        if (ntry > 0) {
+            float id = scale ? 1/scale : 0;
+            for (int j = 0; j < block_size; ++j) {
+                L[j] = best_index_int8(16, values, id*x_block[j]);
             }
         }
 
-        if (super_block_size/block_size > 1) {
-            int nb = super_block_size/block_size;
-            memset(scales_h, 0, ((nb+7)/8)*sizeof(uint16_t));
-            float d = -max_scale/32;
-            dh[0] = half_t(d);
-            float id = d ? 1/d : 0.f;
-            for (int ib = 0; ib < super_block_size/block_size; ++ib) {
-                int l = nearest_int(id*scales[ib]);
-                l = std::max(-32, std::min(31, l));
-                float dl = d * l;
-                float idl = dl ? 1/dl : 0.f;
-                uint8_t * Lb = L + ib*block_size;
-                const float * xb = x_block + ib*block_size;
-                for (int j = 0; j < block_size; ++j) {
-                    Lb[j] = best_index_int8(16, values, idl*xb[j]);
-                }
-                l += 32;
-                uint8_t l_l = l & 0xf;
-                uint8_t l_h = l >>  4;
-                if (ib%2 == 0) scales_l[ib/2] = l_l;
-                else scales_l[ib/2] |= (l_l << 4);
-                scales_h[ib/8] |= (l_h << 2*(ib%8));
-            }
-        } else {
-            dh[0] = half_t(scales[0]);
-            if (ntry > 0) {
-                float id = scales[0] ? 1/scales[0] : 0;
-                for (int j = 0; j < super_block_size; ++j) {
-                    L[j] = best_index_int8(16, values, id*x_block[j]);
-                }
-            }
-        }
-
-        for (int i = 0; i < super_block_size/32; ++i) {
-            for (int j = 0; j < 16; ++j) {
-                q4[16*i + j] = L[32*i + j] | (L[32*i + 16 + j] << 4);
-            }
+        for (int j = 0; j < 16; ++j) {
+            q4[j] = L[j] | (L[16 + j] << 4);
         }
     }
 }
@@ -3756,11 +3742,11 @@ void dequant_row_iq4_xs(const uint8_t * __restrict__ xr, T * __restrict__ y, int
 void quant_row_iq4_xs(const float * __restrict__ x, uint8_t * __restrict__ yr, int64_t n, const float * quant_weights) {
     block_iq4_xs * __restrict__ y = reinterpret_cast<block_iq4_xs *>(yr);
 
-    assert(n % QK4_NL == 0);
-    int64_t nblock = n / QK4_NL;
+    assert(n % QK_K == 0);
+    int64_t nblock = n / QK_K;
 
-    const int super_block_size = QK4_NL;
-    const int block_size = 32;
+    const int super_block_size = QK_K;
+    const int block_size = QK4_NL;
     const int8_t* values = kvalues_iq4_nl;
     const int ntry = 7;
     
@@ -3770,7 +3756,7 @@ void quant_row_iq4_xs(const float * __restrict__ x, uint8_t * __restrict__ yr, i
 
     for (int ibl = 0; ibl < nblock; ++ibl) {
 
-        half_t* dh = &y[ibl].d;
+        at::Half* dh = &y[ibl].d;
         uint8_t* q4 = y[ibl].qs;
         uint16_t* scales_h = &y[ibl].scales_h;
         uint8_t* scales_l = y[ibl].scales_l;
@@ -3783,7 +3769,7 @@ void quant_row_iq4_xs(const float * __restrict__ x, uint8_t * __restrict__ yr, i
         sigma2 *= 2.f/super_block_size;
 
         memset(q4, 0, super_block_size/2);
-        dh[0] = half_t(0.f);
+        dh[0] = at::Half(0.f);
 
         float max_scale = 0, amax_scale = 0;
         for (int ib = 0; ib < super_block_size/block_size; ++ib) {
@@ -3846,7 +3832,7 @@ void quant_row_iq4_xs(const float * __restrict__ x, uint8_t * __restrict__ yr, i
             int nb = super_block_size/block_size;
             memset(scales_h, 0, ((nb+7)/8)*sizeof(uint16_t));
             float d = -max_scale/32;
-            dh[0] = half_t(d);
+            dh[0] = at::Half(d);
             float id = d ? 1/d : 0.f;
             for (int ib = 0; ib < super_block_size/block_size; ++ib) {
                 int l = nearest_int(id*scales[ib]);
@@ -3866,7 +3852,7 @@ void quant_row_iq4_xs(const float * __restrict__ x, uint8_t * __restrict__ yr, i
                 scales_h[ib/8] |= (l_h << 2*(ib%8));
             }
         } else {
-            dh[0] = half_t(scales[0]);
+            dh[0] = at::Half(scales[0]);
             if (ntry > 0) {
                 float id = scales[0] ? 1/scales[0] : 0;
                 for (int j = 0; j < super_block_size; ++j) {
@@ -3968,26 +3954,26 @@ template void dequant_row_iq4_xs<float>(const uint8_t* __restrict__ xr, float* _
 template void dequant_row_q8_K<float>(const uint8_t* __restrict__ xr, float* __restrict__ y, int64_t k);
 
 // half 
-template void dequant_row_q4_0<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_q4_1<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_q5_0<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_q5_1<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_q8_0<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_mxfp4<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_q2_K<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_q3_K<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_q4_K<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_q5_K<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_q6_K<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_tq1_0<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_tq2_0<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_iq2_xxs<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_iq2_xs<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_iq2_s<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_iq3_xxs<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_iq3_s<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_iq1_s<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_iq1_m<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_iq4_nl<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_iq4_xs<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-template void dequant_row_q8_K<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
+template void dequant_row_q4_0<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_q4_1<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_q5_0<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_q5_1<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_q8_0<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_mxfp4<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_q2_K<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_q3_K<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_q4_K<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_q5_K<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_q6_K<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_tq1_0<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_tq2_0<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_iq2_xxs<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_iq2_xs<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_iq2_s<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_iq3_xxs<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_iq3_s<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_iq1_s<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_iq1_m<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_iq4_nl<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_iq4_xs<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
+template void dequant_row_q8_K<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);

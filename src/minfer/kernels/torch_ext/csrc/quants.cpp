@@ -2,6 +2,8 @@
 #include <ATen/core/Tensor.h>
 #include <c10/util/Exception.h>
 
+#include <cassert>
+
 #include "impl_common.hpp"
 #include "quants_impl.hpp"
 
@@ -38,18 +40,18 @@ void dequant_row_cpu(
         case GGMLQuantizationType::IQ4_NL: dequant_row_iq4_nl<T>(xr, y, k); break;
         case GGMLQuantizationType::IQ4_XS: dequant_row_iq4_xs<T>(xr, y, k); break;
         case GGMLQuantizationType::Q8_K: dequant_row_q8_K<T>(xr, y, k); break;
-        default: TORCH_CHECK(false, "Unsupported dtype");
+        default: assert(false && "Unsupported dtype");
     }
 }
 
 // NOTE: only call on 2D tensors for right now, 
 // no need for larger since this is just to test the impl
 void dequant_cpu(
-    int qtype_int,
+    int64_t qtype_int,
     const at::Tensor& x,
     at::Tensor& y,
-    int block_size, // num deq elems in block
-    int type_size // byte size of block
+    int64_t block_size, // num deq elems in block
+    int64_t type_size // byte size of block
 ) {
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
     TORCH_CHECK(x.dim() == 2 && y.dim() == 2);
@@ -77,9 +79,9 @@ void dequant_cpu(
             break;
         }
         case at::kHalf: {
-            half_t* __restrict__ y_ptr = y.data_ptr<half_t>();
+            at::Half* __restrict__ y_ptr = y.data_ptr<at::Half>();
             for (int row_idx = 0; row_idx < n_rows; ++row_idx) {
-                dequant_row_cpu<half_t>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
+                dequant_row_cpu<at::Half>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
             }
             break;
         }
@@ -117,18 +119,18 @@ void quant_row_cpu(
         case GGMLQuantizationType::IQ4_NL: quant_row_iq4_nl(x, yr, n); break;
         case GGMLQuantizationType::IQ4_XS: quant_row_iq4_xs(x, yr, n); break;
         case GGMLQuantizationType::Q8_K: quant_row_q8_K(x, yr, n); break;
-        default: TORCH_CHECK(false, "Unsupported dtype");
+        default: assert(false && "Unsupported dtype");
     }
 }
 
 // NOTE: only call on 2D tensors for right now, 
 // no need for larger since this is just to test the impl
 void quant_cpu(
-    int qtype_int,
+    int64_t qtype_int,
     const at::Tensor& x,
     at::Tensor& y,
-    int block_size, // num deq elems in block
-    int type_size // byte size of block
+    int64_t block_size, // num deq elems in block
+    int64_t type_size // byte size of block
 ) {
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
     TORCH_CHECK(x.dim() == 2 && y.dim() == 2);
@@ -159,11 +161,6 @@ void quant_cpu(
     }
 }
 
-TORCH_LIBRARY(minfer, m) {
-    m.def("dequant(int qtype, Tensor x, Tensor(a!) Tensor y, int block_size, int type_size) -> ()");
-    m.def("quant(int qtype, Tensor x, Tensor(a!) Tensor y, int block_size, int type_size) -> ()");
-}
-
 TORCH_LIBRARY_IMPL(minfer, CPU, m) {
     m.impl("dequant", &dequant_cpu);
     m.impl("quant", &quant_cpu);
@@ -172,22 +169,22 @@ TORCH_LIBRARY_IMPL(minfer, CPU, m) {
 static struct Initializer {
     Initializer() {
         // NOTE: 2-3 min to initialize upon first import
-        iq2xs_init_impl(GGMLQuantizationType::IQ2_XXS);
-        iq2xs_init_impl(GGMLQuantizationType::IQ2_XS);
-        iq2xs_init_impl(GGMLQuantizationType::IQ2_S);
-        iq2xs_init_impl(GGMLQuantizationType::IQ1_S);
-        iq2xs_init_impl(GGMLQuantizationType::IQ1_M);
-        iq3xs_init_impl(GGMLQuantizationType::IQ3_XXS); 
-        iq3xs_init_impl(GGMLQuantizationType::IQ3_S);
+        iq2xs_init_impl(static_cast<int>(GGMLQuantizationType::IQ2_XXS));
+        iq2xs_init_impl(static_cast<int>(GGMLQuantizationType::IQ2_XS));
+        iq2xs_init_impl(static_cast<int>(GGMLQuantizationType::IQ2_S));
+        iq2xs_init_impl(static_cast<int>(GGMLQuantizationType::IQ1_S));
+        iq2xs_init_impl(static_cast<int>(GGMLQuantizationType::IQ1_M));
+        iq3xs_init_impl(static_cast<int>(GGMLQuantizationType::IQ3_XXS));
+        iq3xs_init_impl(static_cast<int>(GGMLQuantizationType::IQ3_S));
     }
     ~Initializer() {
-        iq2xs_free_impl(GGMLQuantizationType::IQ2_XXS);
-        iq2xs_free_impl(GGMLQuantizationType::IQ2_XS);
-        iq2xs_free_impl(GGMLQuantizationType::IQ1_S);
-        iq2xs_free_impl(GGMLQuantizationType::IQ1_M);
-        iq2xs_free_impl(GGMLQuantizationType::IQ2_S);
-        iq3xs_free_impl(GGMLQuantizationType::IQ3_XXS);
-        iq3xs_free_impl(GGMLQuantizationType::IQ3_S);
+        iq2xs_free_impl(static_cast<int>(GGMLQuantizationType::IQ2_XXS));
+        iq2xs_free_impl(static_cast<int>(GGMLQuantizationType::IQ2_XS));
+        iq2xs_free_impl(static_cast<int>(GGMLQuantizationType::IQ1_S));
+        iq2xs_free_impl(static_cast<int>(GGMLQuantizationType::IQ1_M));
+        iq2xs_free_impl(static_cast<int>(GGMLQuantizationType::IQ2_S));
+        iq3xs_free_impl(static_cast<int>(GGMLQuantizationType::IQ3_XXS));
+        iq3xs_free_impl(static_cast<int>(GGMLQuantizationType::IQ3_S));
     }
 
 } init;

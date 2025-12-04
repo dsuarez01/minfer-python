@@ -26,8 +26,8 @@ def get_extensions():
     assert torch.cuda.is_available() and CUDA_HOME is not None, "CUDA not enabled or CUDA_HOME not set"
     
     this_dir = os.path.dirname(os.path.abspath(__file__))
-    extensions_dir = os.path.join(this_dir, "src", library_name, "kernels", "torch_ext", "csrc")
-    include_path = "-I"+os.path.join(extensions_dir)
+    extensions_dir = os.path.join("src", library_name, "kernels", "torch_ext", "csrc")
+    include_path = "-I"+os.path.join(this_dir, extensions_dir)
 
     extra_link_args = []
     extra_compile_args = {
@@ -41,6 +41,8 @@ def get_extensions():
         "nvcc": [
             "-O3" if not debug_mode else "-O0",
             "--use_fast_math",
+            "-rdc=true",
+            "-gencode=arch=compute_70,code=lto_70",
             include_path,
         ],
     }
@@ -63,6 +65,7 @@ def get_extensions():
             extra_compile_args=extra_compile_args,
             extra_link_args=extra_link_args,
             py_limited_api=py_limited_api,
+            dlink=True,
         )
     ]
 

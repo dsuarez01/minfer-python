@@ -13,7 +13,7 @@ def dequant(qtype: GGMLQuantizationType, x: Tensor, y: Tensor, block_size: int, 
     block_size is num dequantized elements per block
     type_size is byte size of block
     """
-    return torch.ops.minfer.dequant_row.default(qtype, x, y, block_size, type_size)
+    return torch.ops.minfer.dequant.default(qtype, x, y, block_size, type_size)
 
 @torch.library.register_fake("minfer::dequant")
 def _(qtype, x, y, block_size, type_size):
@@ -29,7 +29,7 @@ def quant(qtype: GGMLQuantizationType, x: Tensor, y: Tensor, block_size: int, ty
     block_size is num dequantized elements per block
     type_size is byte size of block
     """
-    return torch.ops.minfer.quant_row.default(qtype, x, y, block_size, type_size)
+    return torch.ops.minfer.quant.default(qtype, x, y, block_size, type_size)
 
 @torch.library.register_fake("minfer::quant")
 def _(qtype, x, y, block_size, type_size):

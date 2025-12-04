@@ -12,9 +12,6 @@ using std::uint16_t;
 using std::uint32_t;
 using std::uint64_t;
 
-// this assumes impl_common.hpp is in the translation unit from the source file
-enum class GGMLQuantizationType : int; 
-
 ////////////////////////////////////////////////////////////////////////////////
 // (De)quant Impls.
 ////////////////////////////////////////////////////////////////////////////////
@@ -68,7 +65,7 @@ void quant_row_iq4_xs(const float* __restrict__ x, uint8_t* __restrict__ yr, int
 void quant_row_q8_K(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
 
 // fcns for init. and clean-up (called in quants.cpp)
-void iq2xs_init_impl(GGMLQuantizationType type);
-void iq3xs_init_impl(GGMLQuantizationType type);
-void iq2xs_free_impl(GGMLQuantizationType type);
-void iq3xs_free_impl(GGMLQuantizationType type);
+void iq2xs_init_impl(int qtype_int);
+void iq3xs_init_impl(int qtype_int);
+void iq2xs_free_impl(int qtype_int);
+void iq3xs_free_impl(int qtype_int);

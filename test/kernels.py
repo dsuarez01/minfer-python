@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 import pytest
 
-from minfer.kernels import KernelBackend, RefKernelBackend
+from minfer.kernels import KernelBackend
 from minfer.const import GGMLQuantizationType, GGML_QUANT_SIZES
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")

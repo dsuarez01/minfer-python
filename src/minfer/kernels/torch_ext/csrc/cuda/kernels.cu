@@ -6,11 +6,32 @@
 
 #include <cuda_runtime.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <mma.h>
+
+#include <cassert>
 
 #include "quants_impl.cuh"
+#include "impl_common.hpp"
+
+using namespace nvcuda;
 
 // TODO: complete me!
 namespace minfer {
+
+// helpers for warp-level reductions
+static __device__ float warp_reduce_sum(float v) {
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        v += __shfl_down_sync(0xffffffff, v, offset);
+    }
+    return v;
+}
+
+static __device__ float warp_reduce_max(float v) {
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        v = fmaxf(v, __shfl_down_sync(0xffffffff, v, offset));
+    }
+    return v;
+}
 
 // helper for dispatch in matmul_cuda_impl
 template <typename T>
@@ -18,7 +39,7 @@ static __device__ void dequant_block(
     int qtype_int,
     const uint8_t* __restrict__ w,
     T* __restrict__ y,
-    int stride,
+    int64_t stride,
     int tid,
     int n_threads
 ) {
@@ -48,7 +69,7 @@ static __device__ void dequant_block(
         case GGMLQuantizationType::IQ4_NL: dequant_block_iq4_nl<T>(w, y, stride, tid, n_threads); break;
         case GGMLQuantizationType::IQ4_XS: dequant_block_iq4_xs<T>(w, y, stride, tid, n_threads); break;
         case GGMLQuantizationType::Q8_K: dequant_block_q8_K<T>(w, y, stride, tid, n_threads); break;
-        default: TORCH_CHECK(false, "Unsupported dtype");
+        default: assert(false && "Unsupported dtype");
     }
 }
 
@@ -99,10 +120,10 @@ __global__ void rmsnorm_cuda_impl(
     }
 }
 
-void rmsnorm_cuda(const at::Tensor& in, at::Tensor& out, const at::Tensor& w, float eps) {
+void rmsnorm_cuda(const at::Tensor& in, at::Tensor& out, const at::Tensor& w, double eps) {
     // checks
-    TORCH_CHECK(in.shape() == out.shape());
-    TORCH_CHECK(in.dims() == 3 || in.dims() == 4);
+    TORCH_CHECK(in.sizes().equals(out.sizes()));
+    TORCH_CHECK(in.dim() == 3 || in.dim() == 4);
     TORCH_CHECK(in.size(-1) == w.size(0) || in.size(-1) % w.size(0) == 0); // per-head or per-entire vector
     
     TORCH_CHECK(in.dtype() == at::kHalf);
@@ -116,9 +137,9 @@ void rmsnorm_cuda(const at::Tensor& in, at::Tensor& out, const at::Tensor& w, fl
     TORCH_CHECK(out.is_contiguous());
     TORCH_CHECK(w.is_contiguous());
 
-    const half* in_ptr = in.data_ptr<at::Half>();
-    half* out_ptr = out.data_ptr<at::Half>();
-    const half* w_ptr = w.data_ptr<at::Half>();
+    const half* in_ptr = reinterpret_cast<const half*>(in.data_ptr<at::Half>());
+    half* out_ptr = reinterpret_cast<half*>(out.data_ptr<at::Half>());
+    const half* w_ptr = reinterpret_cast<const half*>(w.data_ptr<at::Half>());
 
     // handles both [B,L,D] and [B,L,n_heads,head_dim]
     int dim = w.size(0);
@@ -133,7 +154,7 @@ __global__ void il_rope_cuda_impl (
     int n_heads,
     int rotary_dim,
     int head_dim,
-    int start_pos,
+    int64_t start_pos,
     float freq_base
 ) {
     int head_idx = blockIdx.z % n_heads;
@@ -158,19 +179,18 @@ __global__ void il_rope_cuda_impl (
 
 void il_rope_cuda(
     at::Tensor& x, // [B,L,n_heads,head_dim]
-    int rotary_dim,
-    int head_dim,
-    int start_pos,
-    float freq_base
+    int64_t rotary_dim,
+    int64_t start_pos,
+    double freq_base
 ) {
-    TORCH_CHECK(rotary_dim <= head_dim);
+    TORCH_CHECK(rotary_dim <= x.size(3));
     TORCH_CHECK(x.dtype() == at::kHalf);
     TORCH_CHECK(x.dim() == 4);
     TORCH_CHECK(x.is_contiguous());
 
     TORCH_INTERNAL_ASSERT(x.device().type() == at::DeviceType::CUDA);
 
-    half* x_ptr = x.data_ptr<at::Half>();
+    half* x_ptr = reinterpret_cast<half*>(x.data_ptr<at::Half>());
 
     int B = x.size(0);
     int L = x.size(1);
@@ -188,7 +208,7 @@ __global__ void neox_rope_cuda_impl(
     int n_heads,
     int rotary_dim,
     int head_dim,
-    int start_pos,
+    int64_t start_pos,
     float freq_base
 ) {
     int head_idx = blockIdx.z % n_heads;
@@ -211,19 +231,18 @@ __global__ void neox_rope_cuda_impl(
 
 void neox_rope_cuda(
     at::Tensor& x, // [B,L,n_heads,head_dim]
-    int rotary_dim,
-    int head_dim,
-    int start_pos,
-    float freq_base
+    int64_t rotary_dim,
+    int64_t start_pos,
+    double freq_base
 ) {
-    TORCH_CHECK(rotary_dim <= head_dim);
+    TORCH_CHECK(rotary_dim <= x.size(3));
     TORCH_CHECK(x.dtype() == at::kHalf);
     TORCH_CHECK(x.dim() == 4);
     TORCH_CHECK(x.is_contiguous());
 
     TORCH_INTERNAL_ASSERT(x.device().type() == at::DeviceType::CUDA);
 
-    half* x_ptr = x.data_ptr<at::Half>();
+    half* x_ptr = reinterpret_cast<half*>(x.data_ptr<at::Half>());
 
     int B = x.size(0);
     int L = x.size(1);
@@ -238,12 +257,14 @@ void neox_rope_cuda(
 
 template <int BLOCK_SIZE>
 __global__ void matmul_cuda_impl(
+    int qtype_int,
     const half* __restrict__ x,
     half* __restrict__ out,
     const uint8_t* __restrict__ w,
-    int M, int K, int N
+    int64_t M, int64_t K, int64_t N
 ) {
-    constexpr int TILE_M = TILE_N = 128;
+    constexpr int TILE_M = 32;
+    constexpr int TILE_N = 32;
     constexpr int TILE_K = BLOCK_SIZE;
     constexpr int NUM_SUBTILES = (TILE_M/16)*(TILE_N/16);
     constexpr int SUBTILE_DIM = TILE_M/16;
@@ -255,7 +276,7 @@ __global__ void matmul_cuda_impl(
     __shared__ half x_shared[TILE_M][TILE_K];
     __shared__ half w_shared[TILE_K][TILE_N];
 
-    wmma::fragment<accumulator, 16, 16, 16, float> acc_frag;
+    wmma::fragment<wmma::accumulator, 16, 16, 16, half> acc_frag;
 
     // iterate over the 64 subtiles (arranged in a grid of 8x8), each of size 16x16.
     for (int i=0; i<tiles_per_warp; ++i) {
@@ -264,7 +285,7 @@ __global__ void matmul_cuda_impl(
         int tile_n = (tile_id%SUBTILE_DIM)*16;
         
         // K-dimension processed in TILE_K chunks
-        for (int k1=0; k1<K; k1+=TILE_K) {
+        for (int64_t k1=0; k1<K; k1+=TILE_K) {
             // coop koad x tile to shared mem
             for (int idx = threadIdx.x; idx < TILE_M*TILE_K; idx += blockDim.x) {
                 int m = idx / TILE_K;
@@ -281,9 +302,10 @@ __global__ void matmul_cuda_impl(
 
             // coop load and dequantize w tile to shared mem
             for (int n=0; n<TILE_N; ++n) {
-                void* q_block = &w[(blockIdx.y*TILE_N+n)*(K/BLOCK_SIZE)+(k1/BLOCK_SIZE)];
+                const uint8_t* q_block = &w[(blockIdx.y*TILE_N+n)*(K/BLOCK_SIZE)+(k1/BLOCK_SIZE)];
 
                 dequant_block<half>( // this kernel is half-specific
+                    qtype_int,
                     q_block,
                     &w_shared[0][n],
                     TILE_N,
@@ -295,9 +317,9 @@ __global__ void matmul_cuda_impl(
             __syncthreads();
 
             // process TILE_K with WMMA in chunks of 16
-            for (int k2=0; k2<TILE_K: k2+=16) {
-                wmma::fragment<matrix_a, 16, 16, 16, half> a_frag;
-                wmma::fragment<matrix_b, 16, 16, 16, half> b_frag;
+            for (int k2=0; k2<TILE_K; k2+=16) {
+                wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a_frag;
+                wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b_frag;
 
                 wmma::load_matrix_sync(a_frag, &x_shared[tile_m][k2], TILE_K);
                 wmma::load_matrix_sync(b_frag, &w_shared[k2][tile_n], TILE_N);
@@ -312,22 +334,22 @@ __global__ void matmul_cuda_impl(
             N,
             wmma::mem_row_major
         );
-        wmma::fill_fragment(acc_frag, 0.0f);
+        wmma::fill_fragment(acc_frag, __float2half(0.0f));
     }
 }
 
 void matmul_cuda(
-    int qtype_int,
+    int64_t qtype_int,
     const at::Tensor& x,
     at::Tensor& out,
     const at::Tensor& w,
-    int dim_in,
-    int dim_out,
-    int block_size
+    int64_t dim_in,
+    int64_t dim_out,
+    int64_t block_size
 ) {
-    TORCH_CHECK(x.shape(-1) == dim_in);
-    TORCH_CHECK(out.shape(-1) == dim_out);
-    TORCH_CHECK(w.shape(0) == dim_out && w.shape(1) == dim_in);
+    TORCH_CHECK(x.size(-1) == dim_in);
+    TORCH_CHECK(out.size(-1) == dim_out);
+    TORCH_CHECK(w.size(0) == dim_out && w.size(1) == dim_in);
 
     TORCH_CHECK(x.dtype() == at::kHalf);
     TORCH_CHECK(out.dtype() == at::kHalf);
@@ -343,13 +365,13 @@ void matmul_cuda(
     TORCH_INTERNAL_ASSERT(out.device().type() == at::DeviceType::CUDA);
     TORCH_INTERNAL_ASSERT(w.device().type() == at::DeviceType::CUDA);
 
-    const half* x_ptr = x.data_ptr<at::Half>();
-    half* out_ptr = out.data_ptr<at::Half>();
-    const uint8_t* w_ptr = w.data_ptr<at::Half>();
+    const half* x_ptr = reinterpret_cast<const half*>(x.data_ptr<at::Half>());
+    half* out_ptr = reinterpret_cast<half*>(out.data_ptr<at::Half>());
+    const uint8_t* w_ptr = w.data_ptr<uint8_t>();
 
-    int M = x.numel() / x.size(-1);
-    int K = x.size(-1);
-    int N = w.size(0);
+    int64_t M = x.numel() / x.size(-1);
+    int64_t K = x.size(-1);
+    int64_t N = w.size(0);
 
     int TILE_SIZE = 128;
 
@@ -359,9 +381,9 @@ void matmul_cuda(
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
     if (block_size == 256) {
-        matmul_cuda_impl<256><<<grid, block, 0, stream>>>(x_ptr, out_ptr, w_ptr, M, K, N);
+        matmul_cuda_impl<256><<<grid, block, 0, stream>>>(qtype_int, x_ptr, out_ptr, w_ptr, M, K, N);
     } else{
-        matmul_cuda_impl<32><<<grid, block, 0, stream>>>(x_ptr, out_ptr, w_ptr, M, K, N);
+        matmul_cuda_impl<32><<<grid, block, 0, stream>>>(qtype_int, x_ptr, out_ptr, w_ptr, M, K, N);
     }
 }
 
@@ -385,16 +407,17 @@ void ffn_cuda() {
     TORCH_CHECK(false, "ffn not implemented");
 }
 
-TORCH_LIBRARY_IMPL(minfer, CUDA, m) {
-    m.impl("rmsnorm", &rmsnorm_cuda);
-    m.impl("il_rope", &il_rope_cuda);
-    m.impl("neox_rope", &neox_rope_cuda);
-    m.impl("matmul", &matmul_cuda);
-    m.impl("embed", &embed_cuda);
-    m.impl("qkv", &qkv_cuda);
-    m.impl("flash_attn", &flash_attn_cuda);
-    m.impl("moe_scoring", &moe_scoring_cuda);
-    m.impl("ffn", &ffn_cuda);
-}
+// TODO: add this back in once finished
+// TORCH_LIBRARY_IMPL(minfer, CUDA, m) {
+//     m.impl("rmsnorm", &rmsnorm_cuda);
+//     m.impl("il_rope", &il_rope_cuda);
+//     m.impl("neox_rope", &neox_rope_cuda);
+//     m.impl("matmul", &matmul_cuda);
+//     m.impl("embed", &embed_cuda);
+//     m.impl("qkv", &qkv_cuda);
+//     m.impl("flash_attn", &flash_attn_cuda);
+//     m.impl("moe_scoring", &moe_scoring_cuda);
+//     m.impl("ffn", &ffn_cuda);
+// }
 
 }

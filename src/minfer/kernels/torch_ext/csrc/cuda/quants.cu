@@ -6,6 +6,8 @@
 #include <cuda_fp16.h>
 #include <ATen/cuda/CUDAContext.h>
 
+#include <cassert>
+
 #include "impl_common.hpp"
 #include "quants_impl.cuh"
 
@@ -16,15 +18,14 @@ __global__ void dequant_cuda_(
     GGMLQuantizationType qtype,
     const uint8_t* __restrict__ xr,
     T* __restrict__ y,
-    int block_size,
-    int type_size,
+    int64_t block_size,
+    int64_t type_size,
     int64_t b,
     int64_t k
 ) {
 
     int row = blockIdx.x;
     int block_in_row = blockIdx.y;
-    int n_blocks_per_row = gridDim.y;
 
     const uint8_t* w = xr + row*b + block_in_row*type_size;
     T* out = y + row*k + block_in_row*block_size;
@@ -53,7 +54,7 @@ __global__ void dequant_cuda_(
         case GGMLQuantizationType::IQ4_NL: dequant_block_iq4_nl<T>(w, out, 1, threadIdx.x, blockDim.x); break;
         case GGMLQuantizationType::IQ4_XS: dequant_block_iq4_xs<T>(w, out, 1, threadIdx.x, blockDim.x); break;
         case GGMLQuantizationType::Q8_K: dequant_block_q8_K<T>(w, out, 1, threadIdx.x, blockDim.x); break;
-        default: TORCH_CHECK(false, "Unsupported dtype");
+        default: assert(false && "Unsupported dtype");
     }
 }
 
@@ -61,11 +62,11 @@ __global__ void dequant_cuda_(
 // only call on 2D tensors for right now, 
 // no need for larger since this is just to test the impl
 void dequant_cuda(
-    int qtype_int, 
+    int64_t qtype_int, 
     const at::Tensor& x, 
     at::Tensor& y, 
-    int block_size, // num deq elems in block
-    int type_size // byte size of block
+    int64_t block_size, // num deq elems in block
+    int64_t type_size // byte size of block
 ) {
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
     TORCH_CHECK(x.dim() == 2 && y.dim() == 2);
@@ -90,12 +91,12 @@ void dequant_cuda(
     switch (y.scalar_type()) {
         case at::kFloat: {
             float* __restrict__ y_ptr = y.data_ptr<float>();
-            dequant_cuda_<float><<<grid, qtype_info.block_size, 0, stream>>>(qtype, x_ptr, y_ptr, block_size, type_size, x.size(-1), y.size(-1));
+            dequant_cuda_<float><<<grid, block_size, 0, stream>>>(qtype, x_ptr, y_ptr, block_size, type_size, x.size(-1), y.size(-1));
             break;
         }
         case at::kHalf: {
-            half* __restrict__ y_ptr = y.data_ptr<half>();
-            dequant_cuda_<half><<<grid, qtype_info.block_size, 0, stream>>>(qtype, x_ptr, y_ptr, block_size, type_size, x.size(-1), y.size(-1));
+            half* __restrict__ y_ptr = reinterpret_cast<half*>(y.data_ptr<at::Half>());
+            dequant_cuda_<half><<<grid, block_size, 0, stream>>>(qtype, x_ptr, y_ptr, block_size, type_size, x.size(-1), y.size(-1));
             break;
         }
         default: TORCH_CHECK(false, "Expected y scalar dtype to be float32 or float16, got ", y.scalar_type()); break;

@@ -18,6 +18,3 @@ LOCAL_DISK=/state/partition1/user/$USER
 mkdir -p $LOCAL_DISK/torch_extensions
 
 export TORCH_EXTENSIONS_DIR=$LOCAL_DISK/torch_extensions
-export TORCH_CUDA_ARCH_LIST="7.0" # NVIDIA V100
-
-export TORCH_DISTUTILS_DETAIL=1 # comment out if not needed
