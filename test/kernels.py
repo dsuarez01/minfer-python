@@ -49,6 +49,8 @@ def test_dequant(backend, qtype_name, shape):
     
     assert torch.allclose(actual_A.cpu(), expected_A, rtol=1e-2, atol=1e-3)
 
+    torch.cuda.empty_cache()
+
 ## NOTE: for the rest of the tests FP16 dtype tensors are used (as appropriate)
 ## since dequant already tests the relevant usage patterns in the other kernels
 ## dp_size is used throughout but not actually factored in since it doesn't affect kernel usage
