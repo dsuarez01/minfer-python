@@ -50,8 +50,8 @@ void dequant_cpu(
     int64_t qtype_int,
     const at::Tensor& x,
     at::Tensor& y,
-    int64_t block_size, // num deq elems in block
-    int64_t type_size // byte size of block
+    int64_t qblock_size, // num deq elems in block
+    int64_t qtype_size // byte size of block
 ) {
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
     TORCH_CHECK(x.dim() == 2 && y.dim() == 2);
@@ -73,6 +73,7 @@ void dequant_cpu(
     switch (y.scalar_type()) {
         case at::kFloat: {
             float* __restrict__ y_ptr = y.data_ptr<float>();
+            // NOTE: could add threading here to speed things along
             for (int row_idx = 0; row_idx < n_rows; ++row_idx) {
                 dequant_row_cpu<float>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
             }
@@ -80,6 +81,7 @@ void dequant_cpu(
         }
         case at::kHalf: {
             at::Half* __restrict__ y_ptr = y.data_ptr<at::Half>();
+            // NOTE: could add threading here to speed things along
             for (int row_idx = 0; row_idx < n_rows; ++row_idx) {
                 dequant_row_cpu<at::Half>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
             }
@@ -129,8 +131,8 @@ void quant_cpu(
     int64_t qtype_int,
     const at::Tensor& x,
     at::Tensor& y,
-    int64_t block_size, // num deq elems in block
-    int64_t type_size // byte size of block
+    int64_t qblock_size, // num deq elems in block
+    int64_t qtype_size // byte size of block
 ) {
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
     TORCH_CHECK(x.dim() == 2 && y.dim() == 2);

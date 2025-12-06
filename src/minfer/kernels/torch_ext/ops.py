@@ -6,33 +6,33 @@ from minfer.const import GGMLQuantizationType
 
 # TODO: complete
 
-def dequant(qtype: GGMLQuantizationType, x: Tensor, y: Tensor, block_size: int, type_size: int):
+def dequant(qtype: GGMLQuantizationType, x: Tensor, y: Tensor, qblock_size: int, qtype_size: int):
     """
     Dequantizes the rows of x into y
     
-    block_size is num dequantized elements per block
-    type_size is byte size of block
+    qblock_size is num dequantized elements per block
+    qtype_size is byte size of block
     """
-    return torch.ops.minfer.dequant.default(qtype, x, y, block_size, type_size)
+    return torch.ops.minfer.dequant.default(qtype, x, y, qblock_size, qtype_size)
 
 @torch.library.register_fake("minfer::dequant")
-def _(qtype, x, y, block_size, type_size):
+def _(qtype, x, y, qblock_size, qtype_size):
     torch._check(x.dtype == torch.uint8)
     torch._check(y.dtype in (torch.float32, torch.float16))
     torch._check(x.device == y.device)
     torch._check(x.size(0) == y.size(0))
 
-def quant(qtype: GGMLQuantizationType, x: Tensor, y: Tensor, block_size: int, type_size: int):
+def quant(qtype: GGMLQuantizationType, x: Tensor, y: Tensor, qblock_size: int, qtype_size: int):
     """
     Quantizes the rows of x into y
     
-    block_size is num dequantized elements per block
-    type_size is byte size of block
+    qblock_size is num dequantized elements per block
+    qtype_size is byte size of block
     """
-    return torch.ops.minfer.quant.default(qtype, x, y, block_size, type_size)
+    return torch.ops.minfer.quant.default(qtype, x, y, qblock_size, qtype_size)
 
 @torch.library.register_fake("minfer::quant")
-def _(qtype, x, y, block_size, type_size):
+def _(qtype, x, y, qblock_size, qtype_size):
     torch._check(x.dtype == torch.float32)
     torch._check(y.dtype == torch.uint8)
     torch._check(x.device == y.device)

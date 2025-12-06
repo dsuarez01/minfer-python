@@ -28,8 +28,8 @@ def test_dequant(backend, qtype_name, shape):
     M, N = shape
     qtype = GGMLQuantizationType[qtype_name]
     
-    block_size, type_size = GGML_QUANT_SIZES[qtype]
-    bytes_per_row = (N//block_size)*type_size
+    qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
+    bytes_per_row = (N//qblock_size)*qtype_size
     
     data_A = torch.randn(shape, dtype=torch.float32)
     
@@ -37,15 +37,15 @@ def test_dequant(backend, qtype_name, shape):
     quantized_A = torch.zeros((M, bytes_per_row), dtype=torch.uint8)
     expected_A = torch.zeros(shape, dtype=torch.float32)
     
-    kerns._quant(qtype, data_A, quantized_A, block_size, type_size)
-    kerns._dequant(qtype, quantized_A, expected_A, block_size, type_size)
+    kerns._quant(qtype, data_A, quantized_A, qblock_size, qtype_size)
+    kerns._dequant(qtype, quantized_A, expected_A, qblock_size, qtype_size)
     
     # test dequant on GPU
     quantized_A = quantized_A.cuda()
     actual_A = torch.zeros(shape, dtype=torch.float32).cuda()
     
     grid = (M,)
-    kerns._dequant(qtype, quantized_A, actual_A, block_size, type_size)
+    kerns._dequant(qtype, quantized_A, actual_A, qblock_size, qtype_size)
     
     assert torch.allclose(actual_A.cpu(), expected_A, rtol=1e-2, atol=1e-3)
 

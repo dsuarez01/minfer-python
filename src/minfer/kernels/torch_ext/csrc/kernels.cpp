@@ -56,8 +56,8 @@ void ffn_cpu() {
 }
 
 TORCH_LIBRARY(minfer, m) {
-    m.def("dequant(int qtype, Tensor x, Tensor(a!) y, int block_size, int type_size) -> ()");
-    m.def("quant(int qtype, Tensor x, Tensor(a!) y, int block_size, int type_size) -> ()");
+    m.def("dequant(int qtype, Tensor x, Tensor(a!) y, int qblock_size, int qtype_size) -> ()");
+    m.def("quant(int qtype, Tensor x, Tensor(a!) y, int qblock_size, int qtype_size) -> ()");
     m.def("rmsnorm() -> ()");
     m.def("il_rope() -> ()");
     m.def("neox_rope() -> ()");

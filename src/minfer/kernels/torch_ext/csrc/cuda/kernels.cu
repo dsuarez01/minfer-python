@@ -68,7 +68,7 @@ static __device__ void dequant_block(
         case GGMLQuantizationType::IQ4_NL: dequant_block_iq4_nl<T>(w, y, stride, tid); break;
         case GGMLQuantizationType::IQ4_XS: dequant_block_iq4_xs<T>(w, y, stride, tid); break;
         case GGMLQuantizationType::Q8_K: dequant_block_q8_K<T>(w, y, stride, tid); break;
-        default: assert(false && "Unsupported dtype");
+        default: assert(false && "Unsupported dtype"); // this gets compiled out in non-debug builds...
     }
 }
 
@@ -254,7 +254,7 @@ void neox_rope_cuda(
     neox_rope_cuda_impl<<<grid, 32, 0, stream>>>(x_ptr, n_heads, rotary_dim, head_dim, start_pos, freq_base);
 }
 
-template <int BLOCK_SIZE>
+template <int TILE_SIZE, int QBLOCK_SIZE>
 __global__ void matmul_cuda_impl(
     int qtype_int,
     const half* __restrict__ x,
@@ -262,10 +262,10 @@ __global__ void matmul_cuda_impl(
     const uint8_t* __restrict__ w,
     int64_t M, int64_t K, int64_t N
 ) {
-    constexpr int TILE_M = 32;
-    constexpr int TILE_N = 32;
-    constexpr int TILE_K = BLOCK_SIZE;
-    constexpr int NUM_SUBTILES = (TILE_M/16)*(TILE_N/16);
+    constexpr int TILE_M = TILE_SIZE;
+    constexpr int TILE_N = TILE_SIZE;
+    constexpr int TILE_K = QBLOCK_SIZE; // we have to dequant this many elems at a time
+    constexpr int NUM_SUBTILES = (TILE_M/16)*(TILE_N/16); // wmma operates on 16x16 subtiles
     constexpr int SUBTILE_DIM = TILE_M/16;
 
     int warp_id = threadIdx.x / 32;
@@ -277,7 +277,7 @@ __global__ void matmul_cuda_impl(
 
     wmma::fragment<wmma::accumulator, 16, 16, 16, half> acc_frag;
 
-    // iterate over the 64 subtiles (arranged in a grid of 8x8), each of size 16x16.
+    // split work over the subtiles (arranged in a grid of TILE_SIZE/16xTILE_SIZE/16), each of size 16x16.
     for (int i=0; i<tiles_per_warp; ++i) {
         int tile_id = warp_id * tiles_per_warp + i;
         int tile_m = (tile_id/SUBTILE_DIM)*16;
@@ -292,16 +292,9 @@ __global__ void matmul_cuda_impl(
                 x_shared[m][k] = x[(blockIdx.x * TILE_M + m) * K + (k1 + k)];
             }
 
-            
-            // for (int idx = threadIdx.x; idx < TILE_K*TILE_N; idx += blockDim.x) {
-            //     int k = idx / TILE_N;
-            //     int n = idx % TILE_N;
-            //     w_shared[k][n] = w[(blockIdx.y * TILE_N + n) * K + (k1 + k)];
-            // }
-
             // coop load and dequantize w tile to shared mem
             for (int n=0; n<TILE_N; ++n) {
-                const uint8_t* q_block = &w[(blockIdx.y*TILE_N+n)*(K/BLOCK_SIZE)+(k1/BLOCK_SIZE)];
+                const uint8_t* q_block = &w[(blockIdx.y*TILE_N+n)*(K/QBLOCK_SIZE)+(k1/QBLOCK_SIZE)];
 
                 dequant_block<half>( // this kernel is half-specific
                     qtype_int,
@@ -343,7 +336,7 @@ void matmul_cuda(
     const at::Tensor& w,
     int64_t dim_in,
     int64_t dim_out,
-    int64_t block_size
+    int64_t qblock_size
 ) {
     TORCH_CHECK(x.size(-1) == dim_in);
     TORCH_CHECK(out.size(-1) == dim_out);
@@ -351,13 +344,13 @@ void matmul_cuda(
 
     TORCH_CHECK(x.dtype() == at::kHalf);
     TORCH_CHECK(out.dtype() == at::kHalf);
-    TORCH_CHECK(w.dtype() == at::kHalf);
+    TORCH_CHECK(w.dtype() == at::kByte);
 
     TORCH_CHECK(x.is_contiguous());
     TORCH_CHECK(out.is_contiguous());
     TORCH_CHECK(w.is_contiguous());
 
-    TORCH_CHECK(block_size == 256 || block_size == 32);
+    TORCH_CHECK(qblock_size == 256 || qblock_size == 32);
 
     TORCH_INTERNAL_ASSERT(x.device().type() == at::DeviceType::CUDA);
     TORCH_INTERNAL_ASSERT(out.device().type() == at::DeviceType::CUDA);
@@ -371,22 +364,92 @@ void matmul_cuda(
     int64_t K = x.size(-1);
     int64_t N = w.size(0);
 
-    int TILE_SIZE = 128;
-
-    dim3 grid((M+TILE_SIZE-1)/TILE_SIZE, (N+TILE_SIZE-1)/TILE_SIZE);
-    dim3 block(256);
-
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    dim3 block(256); // TODO: tune this or adjust as needed
 
-    if (block_size == 256) {
-        matmul_cuda_impl<256><<<grid, block, 0, stream>>>(qtype_int, x_ptr, out_ptr, w_ptr, M, K, N);
+    if (qblock_size == 256) {
+        dim3 grid((M+32-1)/32, (N+32-1)/32);
+        matmul_cuda_impl<32,256><<<grid, block, 0, stream>>>(qtype_int, x_ptr, out_ptr, w_ptr, M, K, N);
     } else{
-        matmul_cuda_impl<32><<<grid, block, 0, stream>>>(qtype_int, x_ptr, out_ptr, w_ptr, M, K, N);
+        dim3 grid((M+256-1)/256, (N+256-1)/256);
+        matmul_cuda_impl<256,32><<<grid, block, 0, stream>>>(qtype_int, x_ptr, out_ptr, w_ptr, M, K, N);
     }
 }
 
-void embed_cuda() {
-    TORCH_CHECK(false, "embed not implemented");
+template <typename T>
+__global__ void embed_cuda_impl(
+    int qtype_int,
+    const int64_t* __restrict__ token_ids,
+    const uint8_t* __restrict__ w,
+    T* __restrict__ x,
+    int64_t qblock_size,
+    int64_t qtype_size,
+    int b, // bytes per row
+    int k // dequant elems per row
+) {
+    int B = gridDim.x;
+    int L = gridDim.y;
+
+    int iB = blockIdx.x;
+    int iL = blockIdx.y;
+    int block_in_row = blockIdx.z;
+    int token_id = token_ids[iB*L+iL];
+
+    const uint8_t* w_block = w + token_id*b + block_in_row*qtype_size;
+    T* x_block = x + iB*L*k + iL*k + block_in_row*qblock_size;
+
+    dequant_block(qtype_int, w_block, x_block, 1, threadIdx.x);
+}
+
+void embed_cuda(
+    int64_t qtype_int,
+    const at::Tensor& token_ids, // [B,L]
+    const at::Tensor& w, // [vocab_size,bytes_per_row]
+    at::Tensor& x, // [B,L,D]
+    int64_t qblock_size,
+    int64_t qtype_size
+) {
+
+    TORCH_CHECK(token_ids.dim() == 2);
+    TORCH_CHECK(w.dim() == 2);
+    TORCH_CHECK(x.dim() == 3);
+
+    TORCH_CHECK(token_ids.dtype() == at::kLong);
+    TORCH_CHECK(w.dtype() == at::kByte);
+    TORCH_CHECK(x.dtype() == at::kHalf);
+
+    TORCH_CHECK(x.size(0) == token_ids.size(0) && x.size(1) == token_ids.size(1));
+
+    TORCH_CHECK(token_ids.is_contiguous());
+    TORCH_CHECK(w.is_contiguous());
+    TORCH_CHECK(x.is_contiguous());
+
+    TORCH_INTERNAL_ASSERT(x.device().type() == at::DeviceType::CUDA);
+    TORCH_INTERNAL_ASSERT(w.device().type() == at::DeviceType::CUDA);
+
+    const int64_t * token_ids_ptr = token_ids.data_ptr<int64_t>();
+    const uint8_t * w_ptr = w.data_ptr<uint8_t>();
+
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    int n_qblocks_per_row = x.size(-1) / qblock_size;
+    dim3 grid(x.size(0), x.size(1), n_qblocks_per_row);
+
+    switch (x.scalar_type()) {
+        case at::kFloat: {
+            float* x_ptr = x.data_ptr<float>();
+            embed_cuda_impl<float><<<grid, qblock_size, 0, stream>>>(qtype_int, token_ids_ptr, w_ptr, x_ptr, qblock_size, qtype_size, w.size(-1), x.size(-1));
+            break;
+        }
+
+        case at::kHalf: {
+            half* x_ptr = reinterpret_cast<half*>(x.data_ptr<at::Half>());
+            embed_cuda_impl<half><<<grid, qblock_size, 0, stream>>>(qtype_int, token_ids_ptr, w_ptr, x_ptr, qblock_size, qtype_size, w.size(-1), x.size(-1));
+            break;
+        }
+
+        default: TORCH_CHECK(false && "Unsupported activation (x) dtype"); break;
+    }
 }
 
 void qkv_cuda() {
