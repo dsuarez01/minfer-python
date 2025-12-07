@@ -18,16 +18,7 @@ using namespace nvcuda;
 // TODO: complete me!
 namespace minfer {
 
-template <typename T>
-static __device__ T convert_float(float v) {
-    if constexpr (std::is_same_v<T, half>) {
-        return __float2half(v);
-    } else {
-        return v;
-    }
-}
-
-// helpers for warp-level reductions
+    // helpers for warp-level reductions
 static __device__ float warp_reduce_sum(float v) {
     for (int offset = 16; offset > 0; offset >>= 1) {
         v += __shfl_down_sync(0xffffffff, v, offset);
@@ -157,7 +148,7 @@ void rmsnorm_cuda(double eps, const at::Tensor& in, at::Tensor& out, const at::T
     rmsnorm_cuda_impl<<<n_blocks, 1024, 0, stream>>>(dim, eps, in_ptr, out_ptr, w_ptr);
 }
 
-__global__ void il_rope_cuda_impl (
+__global__ void il_rope_cuda_impl(
     int n_heads,
     int rotary_dim,
     int head_dim,
@@ -264,7 +255,7 @@ void neox_rope_cuda(
 }
 
 // helper to compute TILE_M x TILE_N portion of result
-template <typename T, int TILE_M, int TILE_N, int TILE_K>
+template <int TILE_M, int TILE_N, int TILE_K>
 static __device__ void compute_tile(
     int qtype_int,
     int qblock_size,
@@ -277,14 +268,14 @@ static __device__ void compute_tile(
     int block_dim,
     int warp_id,
     int tiles_per_warp,
-    T (&x_shared)[TILE_M][TILE_K],
-    T (&w_shared)[TILE_K][TILE_N],
-    T* __restrict__ x,
-    T* __restrict__ out,
+    half (&x_shared)[TILE_M][TILE_K],
+    half (&w_shared)[TILE_K][TILE_N],
+    half* __restrict__ x,
+    half* __restrict__ out,
     const uint8_t* __restrict__ w
 ) {
     constexpr int SUBTILE_DIM = TILE_M / 16;
-    wmma::fragment<wmma::accumulator, 16, 16, 16, T> acc_frag;
+    wmma::fragment<wmma::accumulator, 16, 16, 16, half> acc_frag;
 
     // split work over the subtiles (arranged in a grid of TILE_SIZE/16xTILE_SIZE/16), each of size 16x16.
     for (int i=0; i<tiles_per_warp; ++i) {
@@ -305,7 +296,7 @@ static __device__ void compute_tile(
             for (int n=0; n<TILE_N; ++n) {
                 const uint8_t* __restrict__ w_block = w+((block_idx_y*TILE_N+n)*(K/TILE_K)+(k1/TILE_K))*qtype_size;
 
-                dequant_block<T>( // this kernel is half-specific
+                dequant_block<half>(
                     qtype_int,
                     TILE_N,
                     thread_idx,
@@ -318,8 +309,8 @@ static __device__ void compute_tile(
 
             // process TILE_K with WMMA in chunks of 16
             for (int k2=0; k2<TILE_K; k2+=16) {
-                wmma::fragment<wmma::matrix_a, 16, 16, 16, T, wmma::row_major> a_frag;
-                wmma::fragment<wmma::matrix_b, 16, 16, 16, T, wmma::col_major> b_frag;
+                wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a_frag;
+                wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b_frag;
 
                 wmma::load_matrix_sync(a_frag, x_shared[tile_m]+k2, TILE_K);
                 wmma::load_matrix_sync(b_frag, w_shared[k2]+tile_n, TILE_N);
@@ -334,7 +325,7 @@ static __device__ void compute_tile(
             N,
             wmma::mem_row_major
         );
-        wmma::fill_fragment(acc_frag, convert_float<T>(0.0f));
+        wmma::fill_fragment(acc_frag, __float2half(0.0f));
     }
 }
 
@@ -359,7 +350,7 @@ __global__ void matmul_cuda_impl(
     __shared__ half x_shared[TILE_M][TILE_K];
     __shared__ half w_shared[TILE_K][TILE_N];
 
-    compute_tile<half, TILE_M, TILE_N, TILE_K>(
+    compute_tile<TILE_M, TILE_N, TILE_K>(
         qtype_int,
         QBLOCK_SIZE,
         qtype_size,
@@ -535,7 +526,7 @@ __global__ void qkv_cuda_impl(
     __shared__ half w_shared[TILE_K][TILE_N];
 
     if (blockIdx.y * TILE_N < N_Q) {
-        compute_tile<half, TILE_M, TILE_N, TILE_K>(
+        compute_tile<TILE_M, TILE_N, TILE_K>(
             q_qtype_int, q_qblock_size, q_qtype_size,
             K, N_Q,
             blockIdx.x, blockIdx.y, threadIdx.x, blockDim.x,
@@ -546,7 +537,7 @@ __global__ void qkv_cuda_impl(
     }
 
     if (blockIdx.y * TILE_N < N_KV) {
-        compute_tile<half, TILE_M, TILE_N, TILE_K>(
+        compute_tile<TILE_M, TILE_N, TILE_K>(
             k_qtype_int, k_qblock_size, k_qtype_size,
             K, N_KV,
             blockIdx.x, blockIdx.y, threadIdx.x, blockDim.x,
@@ -557,7 +548,7 @@ __global__ void qkv_cuda_impl(
     }
 
     if (blockIdx.y * TILE_N < N_KV) {
-        compute_tile<half, TILE_M, TILE_N, TILE_K>(
+        compute_tile<TILE_M, TILE_N, TILE_K>(
             v_qtype_int, v_qblock_size, v_qtype_size,
             K, N_KV,
             blockIdx.x, blockIdx.y, threadIdx.x, blockDim.x,
