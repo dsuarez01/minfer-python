@@ -18,6 +18,15 @@ using namespace nvcuda;
 // TODO: complete me!
 namespace minfer {
 
+template <typename T>
+static __device__ T convert_float(float v) {
+    if constexpr (std::is_same_v<T, half>) {
+        return __float2half(v);
+    } else {
+        return v;
+    }
+}
+
 // helpers for warp-level reductions
 static __device__ float warp_reduce_sum(float v) {
     for (int offset = 16; offset > 0; offset >>= 1) {
@@ -36,11 +45,11 @@ static __device__ float warp_reduce_max(float v) {
 // helper for dispatch in matmul_cuda_impl
 template <typename T>
 static __device__ void dequant_block(
-    int qtype_int,
-    const uint8_t* __restrict__ w,
-    T* __restrict__ y,
+    int64_t qtype_int,
     int64_t stride,
-    int tid
+    int64_t tid,
+    T* __restrict__ y,
+    const uint8_t* __restrict__ w
 ) {
     GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
 
@@ -89,11 +98,11 @@ __device__ float blockreduce_max(float* vs, float v, int tid) {
 }
 
 __global__ void rmsnorm_cuda_impl(
+    int dim,
+    float eps,
     const half* __restrict__ in,
     half* __restrict__ out,
-    const half* __restrict__ w,
-    int dim,
-    float eps
+    const half* __restrict__ w
 ) {
 
     const half* vec_in = in + blockIdx.x * dim;
@@ -119,7 +128,7 @@ __global__ void rmsnorm_cuda_impl(
     }
 }
 
-void rmsnorm_cuda(const at::Tensor& in, at::Tensor& out, const at::Tensor& w, double eps) {
+void rmsnorm_cuda(double eps, const at::Tensor& in, at::Tensor& out, const at::Tensor& w) {
     // checks
     TORCH_CHECK(in.sizes().equals(out.sizes()));
     TORCH_CHECK(in.dim() == 3 || in.dim() == 4);
@@ -145,16 +154,16 @@ void rmsnorm_cuda(const at::Tensor& in, at::Tensor& out, const at::Tensor& w, do
     int n_blocks = in.numel() / dim;
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    rmsnorm_cuda_impl<<<n_blocks, 1024, 0, stream>>>(in_ptr, out_ptr, w_ptr, dim, eps);
+    rmsnorm_cuda_impl<<<n_blocks, 1024, 0, stream>>>(dim, eps, in_ptr, out_ptr, w_ptr);
 }
 
 __global__ void il_rope_cuda_impl (
-    half* __restrict__ x,
     int n_heads,
     int rotary_dim,
     int head_dim,
     int64_t start_pos,
-    float freq_base
+    float freq_base,
+    half* __restrict__ x
 ) {
     int head_idx = blockIdx.z % n_heads;
     int pair_idx = (blockIdx.z / n_heads) * 32 + threadIdx.x;
@@ -177,10 +186,10 @@ __global__ void il_rope_cuda_impl (
 }
 
 void il_rope_cuda(
-    at::Tensor& x, // [B,L,n_heads,head_dim]
     int64_t rotary_dim,
     int64_t start_pos,
-    double freq_base
+    double freq_base,
+    at::Tensor& x // [B,L,n_heads,head_dim]
 ) {
     TORCH_CHECK(rotary_dim <= x.size(3));
     TORCH_CHECK(x.dtype() == at::kHalf);
@@ -199,16 +208,16 @@ void il_rope_cuda(
     dim3 grid(B, L, n_heads*(rotary_dim/2+31)/32);
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    il_rope_cuda_impl<<<grid, 32, 0, stream>>>(x_ptr, n_heads, rotary_dim, head_dim, start_pos, freq_base);
+    il_rope_cuda_impl<<<grid, 32, 0, stream>>>(n_heads, rotary_dim, head_dim, start_pos, freq_base, x_ptr);
 }
 
 __global__ void neox_rope_cuda_impl(
-    half* __restrict__ x,
     int n_heads,
     int rotary_dim,
     int head_dim,
     int64_t start_pos,
-    float freq_base
+    float freq_base,
+    half* __restrict__ x
 ) {
     int head_idx = blockIdx.z % n_heads;
     int pair_idx = (blockIdx.z / n_heads) * 32 + threadIdx.x;
@@ -229,10 +238,10 @@ __global__ void neox_rope_cuda_impl(
 }
 
 void neox_rope_cuda(
-    at::Tensor& x, // [B,L,n_heads,head_dim]
     int64_t rotary_dim,
     int64_t start_pos,
-    double freq_base
+    double freq_base,
+    at::Tensor& x // [B,L,n_heads,head_dim]
 ) {
     TORCH_CHECK(rotary_dim <= x.size(3));
     TORCH_CHECK(x.dtype() == at::kHalf);
@@ -251,31 +260,31 @@ void neox_rope_cuda(
     dim3 grid(B, L, n_heads*(rotary_dim/2+31)/32);
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    neox_rope_cuda_impl<<<grid, 32, 0, stream>>>(x_ptr, n_heads, rotary_dim, head_dim, start_pos, freq_base);
+    neox_rope_cuda_impl<<<grid, 32, 0, stream>>>(n_heads, rotary_dim, head_dim, start_pos, freq_base, x_ptr);
 }
 
-template <int TILE_SIZE, int QBLOCK_SIZE>
-__global__ void matmul_cuda_impl(
+// helper to compute TILE_M x TILE_N portion of result
+template <typename T, int TILE_M, int TILE_N, int TILE_K>
+static __device__ void compute_tile(
     int qtype_int,
-    const half* __restrict__ x,
-    half* __restrict__ out,
-    const uint8_t* __restrict__ w,
-    int64_t M, int64_t K, int64_t N
+    int qblock_size,
+    int qtype_size,
+    int64_t K,
+    int64_t N,
+    int block_idx_x,
+    int block_idx_y,
+    int thread_idx,
+    int block_dim,
+    int warp_id,
+    int tiles_per_warp,
+    T (&x_shared)[TILE_M][TILE_K],
+    T (&w_shared)[TILE_K][TILE_N],
+    T* __restrict__ x,
+    T* __restrict__ out,
+    const uint8_t* __restrict__ w
 ) {
-    constexpr int TILE_M = TILE_SIZE;
-    constexpr int TILE_N = TILE_SIZE;
-    constexpr int TILE_K = QBLOCK_SIZE; // we have to dequant this many elems at a time
-    constexpr int NUM_SUBTILES = (TILE_M/16)*(TILE_N/16); // wmma operates on 16x16 subtiles
-    constexpr int SUBTILE_DIM = TILE_M/16;
-
-    int warp_id = threadIdx.x / 32;
-    int num_warps = blockDim.x / 32;
-    int tiles_per_warp = NUM_SUBTILES / num_warps;
-
-    __shared__ half x_shared[TILE_M][TILE_K];
-    __shared__ half w_shared[TILE_K][TILE_N];
-
-    wmma::fragment<wmma::accumulator, 16, 16, 16, half> acc_frag;
+    constexpr int SUBTILE_DIM = TILE_M / 16;
+    wmma::fragment<wmma::accumulator, 16, 16, 16, T> acc_frag;
 
     // split work over the subtiles (arranged in a grid of TILE_SIZE/16xTILE_SIZE/16), each of size 16x16.
     for (int i=0; i<tiles_per_warp; ++i) {
@@ -286,22 +295,22 @@ __global__ void matmul_cuda_impl(
         // K-dimension processed in TILE_K chunks
         for (int64_t k1=0; k1<K; k1+=TILE_K) {
             // coop koad x tile to shared mem
-            for (int idx = threadIdx.x; idx < TILE_M*TILE_K; idx += blockDim.x) {
+            for (int idx = thread_idx; idx < TILE_M*TILE_K; idx += block_dim) {
                 int m = idx / TILE_K;
                 int k = idx % TILE_K;
-                x_shared[m][k] = x[(blockIdx.x * TILE_M + m) * K + (k1 + k)];
+                x_shared[m][k] = x[(block_idx_x * TILE_M + m) * K + (k1 + k)];
             }
 
             // coop load and dequantize w tile to shared mem
             for (int n=0; n<TILE_N; ++n) {
-                const uint8_t* q_block = &w[(blockIdx.y*TILE_N+n)*(K/QBLOCK_SIZE)+(k1/QBLOCK_SIZE)];
+                const uint8_t* __restrict__ w_block = w+((block_idx_y*TILE_N+n)*(K/TILE_K)+(k1/TILE_K))*qtype_size;
 
-                dequant_block<half>( // this kernel is half-specific
+                dequant_block<T>( // this kernel is half-specific
                     qtype_int,
-                    q_block,
-                    &w_shared[0][n],
                     TILE_N,
-                    threadIdx.x
+                    thread_idx,
+                    w_shared[0]+n,
+                    w_block
                 );
             }
 
@@ -309,38 +318,78 @@ __global__ void matmul_cuda_impl(
 
             // process TILE_K with WMMA in chunks of 16
             for (int k2=0; k2<TILE_K; k2+=16) {
-                wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a_frag;
-                wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b_frag;
+                wmma::fragment<wmma::matrix_a, 16, 16, 16, T, wmma::row_major> a_frag;
+                wmma::fragment<wmma::matrix_b, 16, 16, 16, T, wmma::col_major> b_frag;
 
-                wmma::load_matrix_sync(a_frag, &x_shared[tile_m][k2], TILE_K);
-                wmma::load_matrix_sync(b_frag, &w_shared[k2][tile_n], TILE_N);
+                wmma::load_matrix_sync(a_frag, x_shared[tile_m]+k2, TILE_K);
+                wmma::load_matrix_sync(b_frag, w_shared[k2]+tile_n, TILE_N);
                 wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
             }
             __syncthreads();
         }
 
         wmma::store_matrix_sync(
-            &out[(blockIdx.x*TILE_M+tile_m)*N+(blockIdx.y*TILE_N+tile_n)],
+            out + (block_idx_x*TILE_M+tile_m)*N + (block_idx_y*TILE_N+tile_n),
             acc_frag,
             N,
             wmma::mem_row_major
         );
-        wmma::fill_fragment(acc_frag, __float2half(0.0f));
+        wmma::fill_fragment(acc_frag, convert_float<T>(0.0f));
     }
+}
+
+template <int TILE_SIZE, int QBLOCK_SIZE>
+__global__ void matmul_cuda_impl(
+    int qtype_int,
+    int qtype_size,
+    int64_t M, int64_t K, int64_t N,
+    const half* __restrict__ x,
+    half* __restrict__ out,
+    const uint8_t* __restrict__ w
+) {
+    constexpr int TILE_M = TILE_SIZE;
+    constexpr int TILE_N = TILE_SIZE;
+    constexpr int TILE_K = QBLOCK_SIZE; // we have to dequant this many elems at a time
+    constexpr int NUM_SUBTILES = (TILE_M/16)*(TILE_N/16); // wmma operates on 16x16 subtiles
+
+    int warp_id = threadIdx.x / 32;
+    int num_warps = blockDim.x / 32;
+    int tiles_per_warp = NUM_SUBTILES / num_warps;
+
+    __shared__ half x_shared[TILE_M][TILE_K];
+    __shared__ half w_shared[TILE_K][TILE_N];
+
+    compute_tile<half, TILE_M, TILE_N, TILE_K>(
+        qtype_int,
+        QBLOCK_SIZE,
+        qtype_size,
+        K,
+        N,
+        blockIdx.x,
+        blockIdx.y,
+        threadIdx.x,
+        blockDim.x,
+        warp_id,
+        tiles_per_warp,
+        x_shared,
+        w_shared,
+        x,
+        out,
+        w
+    );
 }
 
 void matmul_cuda(
     int64_t qtype_int,
+    int64_t qblock_size,
+    int64_t qtype_size,
     const at::Tensor& x,
     at::Tensor& out,
-    const at::Tensor& w,
-    int64_t dim_in,
-    int64_t dim_out,
-    int64_t qblock_size
+    const at::Tensor& w
 ) {
-    TORCH_CHECK(x.size(-1) == dim_in);
-    TORCH_CHECK(out.size(-1) == dim_out);
-    TORCH_CHECK(w.size(0) == dim_out && w.size(1) == dim_in);
+    TORCH_CHECK(w.size(1) == (x.size(-1) / qblock_size) * qtype_size);
+    TORCH_CHECK(w.size(0) == out.size(-1));
+    TORCH_CHECK(x.numel() / x.size(-1) == out.numel() / out.size(-1));
 
     TORCH_CHECK(x.dtype() == at::kHalf);
     TORCH_CHECK(out.dtype() == at::kHalf);
@@ -369,45 +418,45 @@ void matmul_cuda(
 
     if (qblock_size == 256) {
         dim3 grid((M+32-1)/32, (N+32-1)/32);
-        matmul_cuda_impl<32,256><<<grid, block, 0, stream>>>(qtype_int, x_ptr, out_ptr, w_ptr, M, K, N);
+        matmul_cuda_impl<32,256><<<grid, block, 0, stream>>>(qtype_int, qtype_size, M, K, N, x_ptr, out_ptr, w_ptr);
     } else{
         dim3 grid((M+256-1)/256, (N+256-1)/256);
-        matmul_cuda_impl<256,32><<<grid, block, 0, stream>>>(qtype_int, x_ptr, out_ptr, w_ptr, M, K, N);
+        matmul_cuda_impl<256,32><<<grid, block, 0, stream>>>(qtype_int, qtype_size, M, K, N, x_ptr, out_ptr, w_ptr);
     }
 }
 
 template <typename T>
 __global__ void embed_cuda_impl(
-    int qtype_int,
-    const int64_t* __restrict__ token_ids,
-    const uint8_t* __restrict__ w,
-    T* __restrict__ x,
+    int64_t qtype_int,
     int64_t qblock_size,
     int64_t qtype_size,
-    int b, // bytes per row
-    int k // dequant elems per row
+    int64_t b, // bytes per row
+    int64_t k, // dequant elems per row
+    T* __restrict__ x,
+    const int64_t* __restrict__ token_ids,
+    const uint8_t* __restrict__ w
 ) {
-    int B = gridDim.x;
-    int L = gridDim.y;
+    int64_t B = gridDim.x;
+    int64_t L = gridDim.y;
 
-    int iB = blockIdx.x;
-    int iL = blockIdx.y;
-    int block_in_row = blockIdx.z;
-    int token_id = token_ids[iB*L+iL];
+    int64_t iB = blockIdx.x;
+    int64_t iL = blockIdx.y;
+    int64_t block_in_row = blockIdx.z;
+    int64_t token_id = token_ids[iB*L+iL];
 
     const uint8_t* w_block = w + token_id*b + block_in_row*qtype_size;
     T* x_block = x + iB*L*k + iL*k + block_in_row*qblock_size;
 
-    dequant_block(qtype_int, w_block, x_block, 1, threadIdx.x);
+    dequant_block<T>(qtype_int, 1, threadIdx.x, x_block, w_block); // this might be possible?
 }
 
 void embed_cuda(
     int64_t qtype_int,
-    const at::Tensor& token_ids, // [B,L]
-    const at::Tensor& w, // [vocab_size,bytes_per_row]
-    at::Tensor& x, // [B,L,D]
     int64_t qblock_size,
-    int64_t qtype_size
+    int64_t qtype_size,
+    at::Tensor& x, // [B,L,D]
+    const at::Tensor& token_ids, // [B,L]
+    const at::Tensor& w // [vocab_size,bytes_per_row]
 ) {
 
     TORCH_CHECK(token_ids.dim() == 2);
@@ -427,24 +476,24 @@ void embed_cuda(
     TORCH_INTERNAL_ASSERT(x.device().type() == at::DeviceType::CUDA);
     TORCH_INTERNAL_ASSERT(w.device().type() == at::DeviceType::CUDA);
 
-    const int64_t * token_ids_ptr = token_ids.data_ptr<int64_t>();
-    const uint8_t * w_ptr = w.data_ptr<uint8_t>();
+    const int64_t* token_ids_ptr = token_ids.data_ptr<int64_t>();
+    const uint8_t* w_ptr = w.data_ptr<uint8_t>();
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-    int n_qblocks_per_row = x.size(-1) / qblock_size;
+    int64_t n_qblocks_per_row = x.size(-1) / qblock_size;
     dim3 grid(x.size(0), x.size(1), n_qblocks_per_row);
 
     switch (x.scalar_type()) {
         case at::kFloat: {
             float* x_ptr = x.data_ptr<float>();
-            embed_cuda_impl<float><<<grid, qblock_size, 0, stream>>>(qtype_int, token_ids_ptr, w_ptr, x_ptr, qblock_size, qtype_size, w.size(-1), x.size(-1));
+            embed_cuda_impl<float><<<grid, qblock_size, 0, stream>>>(qtype_int, qblock_size, qtype_size, w.size(-1), x.size(-1), x_ptr, token_ids_ptr, w_ptr);
             break;
         }
 
         case at::kHalf: {
             half* x_ptr = reinterpret_cast<half*>(x.data_ptr<at::Half>());
-            embed_cuda_impl<half><<<grid, qblock_size, 0, stream>>>(qtype_int, token_ids_ptr, w_ptr, x_ptr, qblock_size, qtype_size, w.size(-1), x.size(-1));
+            embed_cuda_impl<half><<<grid, qblock_size, 0, stream>>>(qtype_int, qblock_size, qtype_size, w.size(-1), x.size(-1), x_ptr, token_ids_ptr, w_ptr);
             break;
         }
 
@@ -452,8 +501,197 @@ void embed_cuda(
     }
 }
 
-void qkv_cuda() {
-    TORCH_CHECK(false, "qkv not implemented");
+template <int TILE_SIZE, int MAX_QBLOCK_SIZE>
+__global__ void qkv_cuda_impl(
+    int64_t q_qtype_int,
+    int64_t k_qtype_int,
+    int64_t v_qtype_int,
+    int64_t q_qblock_size,
+    int64_t q_qtype_size,
+    int64_t k_qblock_size,
+    int64_t k_qtype_size,
+    int64_t v_qblock_size,
+    int64_t v_qtype_size,
+    int64_t M, int64_t K, int64_t N_Q, int64_t N_KV,
+    const half* __restrict__ x,
+    half* __restrict__ q_out,
+    half* __restrict__ k_out,
+    half* __restrict__ v_out,
+    const uint8_t* __restrict__ wq,
+    const uint8_t* __restrict__ wk,
+    const uint8_t* __restrict__ wv
+) {
+    constexpr int TILE_M = TILE_SIZE;
+    constexpr int TILE_N = TILE_SIZE;
+    constexpr int TILE_K = MAX_QBLOCK_SIZE; // we have to dequant this many elems at a time
+    constexpr int NUM_SUBTILES = (TILE_M/16)*(TILE_N/16); // wmma operates on 16x16 subtiles
+    constexpr int SUBTILE_DIM = TILE_M/16;
+
+    int warp_id = threadIdx.x / 32;
+    int num_warps = blockDim.x / 32;
+    int tiles_per_warp = NUM_SUBTILES / num_warps;
+
+    __shared__ half x_shared[TILE_M][TILE_K];
+    __shared__ half w_shared[TILE_K][TILE_N];
+
+    if (blockIdx.y * TILE_N < N_Q) {
+        compute_tile<half, TILE_M, TILE_N, TILE_K>(
+            q_qtype_int, q_qblock_size, q_qtype_size,
+            K, N_Q,
+            blockIdx.x, blockIdx.y, threadIdx.x, blockDim.x,
+            warp_id, tiles_per_warp,
+            x_shared, w_shared,
+            x, q_out, wq
+        );
+    }
+
+    if (blockIdx.y * TILE_N < N_KV) {
+        compute_tile<half, TILE_M, TILE_N, TILE_K>(
+            k_qtype_int, k_qblock_size, k_qtype_size,
+            K, N_KV,
+            blockIdx.x, blockIdx.y, threadIdx.x, blockDim.x,
+            warp_id, tiles_per_warp,
+            x_shared, w_shared,
+            x, k_out, wk
+        );
+    }
+
+    if (blockIdx.y * TILE_N < N_KV) {
+        compute_tile<half, TILE_M, TILE_N, TILE_K>(
+            v_qtype_int, v_qblock_size, v_qtype_size,
+            K, N_KV,
+            blockIdx.x, blockIdx.y, threadIdx.x, blockDim.x,
+            warp_id, tiles_per_warp,
+            x_shared, w_shared,
+            x, v_out, wv
+        );
+    }
+
+    // write TILE to KV cache
+}
+
+void qkv_cuda(
+    int64_t q_qtype_int,
+    int64_t k_qtype_int,
+    int64_t v_qtype_int,
+    int64_t q_qblock_size,
+    int64_t q_qtype_size,
+    int64_t k_qblock_size,
+    int64_t k_qtype_size,
+    int64_t v_qblock_size,
+    int64_t v_qtype_size,
+    const at::Tensor& x, // [B, L, hidden_dim]
+    at::Tensor& q_out, // [B, L, q_dim] 
+    at::Tensor& k_out, // [B, L, kv_dim]
+    at::Tensor& v_out, // [B, L, kv_dim]
+    const at::Tensor& wq, // [hidden_dim, q_dim]
+    const at::Tensor& wk, // [hidden_dim, kv_dim]
+    const at::Tensor& wv // [hidden_dim, kv_dim]
+) {
+    // validation
+
+    //dim
+    TORCH_CHECK(
+        (x.dim() == 3) && 
+        (q_out.dim() == 3) && (k_out.dim() == 3) && (v_out.dim() == 3) &&
+        (wq.dim() == 2) && (wk.dim() == 2) && (wv.dim() == 2)
+    );
+
+    //size
+    TORCH_CHECK(
+        (wq.size(1) == (x.size(-1) / q_qblock_size) * q_qtype_size) &&
+        (wk.size(1) == (x.size(-1) / k_qblock_size) * k_qtype_size) &&
+        (wv.size(1) == (x.size(-1) / v_qblock_size) * v_qtype_size) &&
+        (wq.size(0) == q_out.size(-1)) &&
+        (wk.size(0) == k_out.size(-1)) &&
+        (wv.size(0) == v_out.size(-1)) &&
+        (wk.size(-1) == wv.size(-1))
+    );
+
+    TORCH_CHECK(
+        (x.numel() / x.size(-1) == q_out.numel() / q_out.size(-1)) &&
+        (x.numel() / x.size(-1) == k_out.numel() / k_out.size(-1)) &&
+        (x.numel() / x.size(-1) == v_out.numel() / v_out.size(-1)) &&
+        (k_out.size(-1) == v_out.size(-1))
+    );
+
+
+    //dtypes
+    TORCH_CHECK(
+        (x.dtype() == at::kHalf) && 
+        (q_out.dtype() == at::kHalf) && (k_out.dtype() == at::kHalf) && (v_out.dtype() == at::kHalf) &&
+        (wq.dtype() == at::kByte) && (wk.dtype() == at::kByte) && (wv.dtype() == at::kByte)
+    );
+
+    TORCH_CHECK(
+        x.is_contiguous() &&
+        q_out.is_contiguous() && k_out.is_contiguous() && v_out.is_contiguous() &&
+        wq.is_contiguous() && wk.is_contiguous() && wv.is_contiguous()
+    );
+
+    //qblock sizes
+    TORCH_CHECK(
+        (q_qblock_size == 256 || q_qblock_size == 32) && 
+        (k_qblock_size == 256 || k_qblock_size == 32) && 
+        (v_qblock_size == 256 || v_qblock_size == 32)
+    );
+
+    TORCH_INTERNAL_ASSERT(
+        (x.device().type() == at::DeviceType::CUDA) &&
+        (q_out.device().type() == at::DeviceType::CUDA) &&
+        (k_out.device().type() == at::DeviceType::CUDA) && 
+        (v_out.device().type() == at::DeviceType::CUDA) &&
+        (wq.device().type() == at::DeviceType::CUDA) &&
+        (wk.device().type() == at::DeviceType::CUDA) &&
+        (wv.device().type() == at::DeviceType::CUDA)
+    );
+
+    const half* x_ptr = reinterpret_cast<const half*>(x.data_ptr<at::Half>());
+    
+    half* q_out_ptr = reinterpret_cast<half*>(q_out.data_ptr<at::Half>());
+    half* k_out_ptr = reinterpret_cast<half*>(k_out.data_ptr<at::Half>());
+    half* v_out_ptr = reinterpret_cast<half*>(v_out.data_ptr<at::Half>());
+
+    const uint8_t* wq_ptr = wq.data_ptr<uint8_t>();
+    const uint8_t* wk_ptr = wk.data_ptr<uint8_t>();
+    const uint8_t* wv_ptr = wv.data_ptr<uint8_t>();
+
+    int64_t M = x.numel() / x.size(-1);
+    int64_t K = x.size(-1);
+    int64_t N_Q = wq.size(0);
+    int64_t N_KV = wk.size(0);
+    int64_t N = max(N_Q, N_KV);
+    
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    dim3 block(256); // TODO: tune this or adjust as needed
+
+    int64_t qblock_size = max(q_qblock_size, k_qblock_size, v_qblock_size);
+
+    if (qblock_size == 256) {
+        dim3 grid((M+32-1)/32, (N+32-1)/32);
+        qkv_cuda_impl<32,256><<<grid, block, 0, stream>>>(
+            q_qtype_int, k_qtype_int, v_qtype_int,
+            q_qblock_size, q_qtype_size,
+            k_qblock_size, k_qtype_size,
+            v_qblock_size, v_qtype_size,
+            M, K, N_Q, N_KV,
+            x,
+            q_out, k_out, v_out,
+            wq, wk, wv
+        );
+    } else {
+        dim3 grid((M+256-1)/256, (N+256-1)/256);
+        qkv_cuda_impl<256,32><<<grid, block, 0, stream>>>(
+            q_qtype_int, k_qtype_int, v_qtype_int,
+            q_qblock_size, q_qtype_size,
+            k_qblock_size, k_qtype_size,
+            v_qblock_size, v_qtype_size,
+            M, K, N_Q, N_KV,
+            x,
+            q_out, k_out, v_out,
+            wq, wk, wv
+        );
+    }
 }
 
 void flash_attn_cuda() {
