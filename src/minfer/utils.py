@@ -247,9 +247,7 @@ class BufPool(nn.Module):
         self.register_buffer("xb2", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.hidden_dim), dtype=params.act_dtype))
         
         # attn
-        self.register_buffer("q", torch.zeros((params.batch_size // params.dp_size, params.n_heads, params.max_seq_len, params.head_dim), dtype=params.act_dtype))
-        self.register_buffer("k", torch.zeros((params.batch_size // params.dp_size, params.n_kv_heads, params.max_seq_len, params.head_dim), dtype=params.act_dtype))
-        self.register_buffer("v", torch.zeros((params.batch_size // params.dp_size, params.n_kv_heads, params.max_seq_len, params.head_dim), dtype=params.act_dtype))
+        self.register_buffer("q", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.n_heads, params.head_dim), dtype=params.act_dtype))
 
         # moe routing
         self.register_buffer("moe_scores", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.n_exps), dtype=params.act_dtype))
