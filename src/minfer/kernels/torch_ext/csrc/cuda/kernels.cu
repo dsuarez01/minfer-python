@@ -47,10 +47,9 @@ static __device__ void compute_dm_tile(
     float* __restrict__ tiles_d,
     float* __restrict__ tiles_m,
     int* __restrict__ row_visit_cnt,
-    int block_idx_x,
-    int block_idx_y,
-    int TILE_SIZE,
-    int thread_idx_x,
+    const T* __restrict__ out,
+    int M,
+    int grid_dim_x
 ) {
 
 }
