@@ -18,7 +18,16 @@ using namespace nvcuda;
 // TODO: complete me!
 namespace minfer {
 
-    // helpers for warp-level reductions
+template <typename T>
+static __device__ T convert_float(float v) {
+    if constexpr (std::is_same_v<T, half>) {
+        return __float2half(v);
+    } else {
+        return v;
+    }
+}
+
+// helpers for warp-level reductions
 static __device__ float warp_reduce_sum(float v) {
     for (int offset = 16; offset > 0; offset >>= 1) {
         v += __shfl_down_sync(0xffffffff, v, offset);
@@ -33,8 +42,21 @@ static __device__ float warp_reduce_max(float v) {
     return v;
 }
 
+template <typename T, int M, int N>
+static __device__ void compute_dm_tile(
+    float* __restrict__ tiles_d,
+    float* __restrict__ tiles_m,
+    int* __restrict__ row_visit_cnt,
+    int block_idx_x,
+    int block_idx_y,
+    int TILE_SIZE,
+    int thread_idx_x,
+) {
+
+}
+
 // helper for dispatch in matmul_cuda_impl
-template <typename T>
+template <typename T, int TILE_SIZE>
 static __device__ void dequant_block(
     int64_t qtype_int,
     int64_t stride,
@@ -712,6 +734,9 @@ __global__ void moe_scoring_cuda_impl(
     int qtype_int,
     int qtype_size,
     int64_t M, int64_t K, int64_t N,
+    float* __restrict__ tiles_d,
+    float* __restrict__ tiles_m,
+    int* __restrict__ row_visit_cnt,
     const half* __restrict__ x,
     half* __restrict__ out,
     const T* __restrict__ w
@@ -748,6 +773,9 @@ __global__ void moe_scoring_cuda_impl(
     );
 
     // TODO: update(?) online softmax using computed tile here
+    compute_dm_tile(
+        
+    );
 }
 
 // NOTE: ffn_gate_inp seems to be kept in half precision.
@@ -789,12 +817,31 @@ void moe_scoring_cuda(
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     dim3 block(256); // TODO: tune this or adjust as needed
 
+    constexpr int TILE_SIZE = (qblock_size == 256) ? 32 : 256;
+    dim3 grid((M+TILE_SIZE-1)/TILE_SIZE, (N+TILE_SIZE-1)/TILE_SIZE);
+
+    if (!scratch.init) {
+        size_t scratch_size = grid.x*grid.y*TILE_SIZE; // TILE_SIZE entries per block (due to each row)
+        cudaMalloc(&moe_scratch.tiles_d, scratch_size*sizeof(float));
+        cudaMalloc(&moe_scratch.tiles_m, scratch_size*sizeof(float));
+        cudaMalloc(&moe_scratch.row_visit_cnt, M*sizeof(int));
+        moe_scratch.init = true;
+    }
+
     if (qblock_size == 256) {
-        dim3 grid((M+32-1)/32, (N+32-1)/32);
-        moe_scoring_cuda_impl<32,256><<<grid, block, 0, stream>>>(qtype_int, qtype_size, M, K, N, x_ptr, out_ptr, w_ptr);
+        moe_scoring_cuda_impl<32,256><<<grid, block, 0, stream>>>(
+            qtype_int, qtype_size, 
+            M, K, N, 
+            moe_scratch.tiles_d, moe_scratch.tiles_m, moe_scratch.row_visit_cnt, 
+            x_ptr, out_ptr, w_ptr
+        );
     } else{
-        dim3 grid((M+256-1)/256, (N+256-1)/256);
-        moe_scoring_cuda_impl<256,32><<<grid, block, 0, stream>>>(qtype_int, qtype_size, M, K, N, x_ptr, out_ptr, w_ptr);
+        moe_scoring_cuda_impl<256,32><<<grid, block, 0, stream>>>(
+            qtype_int, qtype_size,
+            M, K, N,
+            moe_scratch.tiles_d, moe_scratch.tiles_m, moe_scratch.row_visit_cnt, 
+            x_ptr, out_ptr, w_ptr
+        );
     }
 }
 
@@ -814,5 +861,25 @@ void ffn_cuda() {
 //     m.impl("moe_scoring", &moe_scoring_cuda);
 //     m.impl("ffn", &ffn_cuda);
 // }
+
+// for computing online softmax in moe scoring
+static struct MoeScoring {
+    float* tiles_d;
+    float* tiles_m;
+    int* row_visit_cnt;
+    bool init;
+    
+    MoeScoring() { // these are lazily init in moe_scoring_cuda
+        tiles_d = nullptr;
+        tiles_m = nullptr;
+        row_visit_cnt = nullptr;
+        init = false;
+    }
+    ~MoeScoring() {
+        if (tiles_d) cudaFree(tiles_d);
+        if (tiles_m) cudaFree(tiles_m);
+        if (row_visit_cnt) cudaFree(row_visit_cnt);
+    }
+} moe_scratch;
 
 }
