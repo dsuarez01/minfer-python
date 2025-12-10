@@ -60,6 +60,7 @@ enum class GGMLQuantizationType : int {
     MXFP4   = 39
 };
 
+// here, "qtype" just means GGMLQuantizationType
 inline bool is_valid_qtype(int qtype_int) {
     switch (qtype_int) {
         case 0: case 1: case 2: case 3: 
