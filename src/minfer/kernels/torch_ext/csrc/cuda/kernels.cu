@@ -855,8 +855,78 @@ void qkv_cuda(
     );
 }
 
-void flash_attn_cuda() {
-    TORCH_CHECK(false, "flash_attn not implemented");
+template <int TILE_SIZE>
+__global__ void flash_attn_cuda_impl(
+    int64_t M, int64_t K, int64_t N,
+    half* __restrict__ out,
+    const half* __restrict__ q,
+    const half* __restrict__ k,
+    const half* __restrict__ v
+) {
+
+}
+
+void flash_attn_cuda(
+    at::Tensor& out,     // [B n_heads, L, head_dim]
+    const at::Tensor& q, // [B, n_heads, L, head_dim]
+    const at::Tensor& k, // [B, n_kv_heads, L, head_dim]
+    const at::Tensor& v, // [B, n_kv_heads, L, head_dim]
+) {
+    // validation
+
+    // dims
+    TORCH_CHECK(
+        (q.dim() == 4) && (k.dim() == 4) && (v.dim() == 4) && (out.dim() == 4)
+    );
+
+
+    // checks btwn different dims
+    TORCH_CHECK(q.sizes().equals(out.sizes()));
+    TORCH_CHECK(k.sizes().equals(v.sizes()));
+    TORCH_CHECK(q.numel() / q.size(1) == k.numel() / k.size(1));
+
+    // dtypes
+    TORCH_CHECK(
+        (q.dtype() == at::kHalf) &&
+        (k.dtype() == at::kHalf) &&
+        (v.dtype() == at::kHalf) &&
+        (out.dtype() == at::kHalf)
+    );
+
+    // contiguity in the last dimension
+    TORCH_CHECK(
+        (q.stride(-1) == 1) &&
+        (k.stride(-1) == 1) &&
+        (v.stride(-1) == 1) &&
+        (out.stride(-1) == 1)
+    );
+
+    TORCH_INTERNAL_ASSERT(
+        (q.device().type() == at::DeviceType::CUDA) &&
+        (k.device().type() == at::DeviceType::CUDA) && 
+        (v.device().type() == at::DeviceType::CUDA) &&
+        (out.device().type() == at::DeviceType::CUDA)
+    );
+
+    const half* q_ptr = reinterpret_cast<const half*>(q.data_ptr<at::Half>());
+    const half* k_ptr = reinterpret_cast<const half*>(k.data_ptr<at::Half>());
+    const half* v_ptr = reinterpret_cast<const half*>(v.data_ptr<at::Half>());
+    half* out_ptr = reinterpret_cast<half*>(out.data_ptr<at::Half>());
+
+    // not quite right lol, will figure out
+    constexpr int TILE_SIZE = "yes";
+    int64_t M = k.size(0) * k.size(1);
+    int64_t K = k.size(-1);
+    int64_t N = k.size(2);
+
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    
+    dim3 block(512); // TODO: tune this or adjust as needed
+    dim3 grid((M+TILE_SIZE-1)/TILE_SIZE, (N+TILE_SIZE-1)/TILE_SIZE);
+
+    flash_attn_cuda_impl<TILE_SIZE><<<grid, block, 0, stream>>>(
+        M, K, N, out_ptr, q_ptr, k_ptr, v_ptr
+    );
 }
 
 // little difference to matmul_cuda_impl, except computing softmax with tile at end (online version)
@@ -1013,8 +1083,8 @@ __global__ void ffn_cuda_impl(
     __shared__ half w_shared[TILE_K][TILE_N];
     
     // gate proj stored in hb
-    bool gate_is_fp16 = static_cast<GGMLQuantizationType>(gate_qtype_int) == GGMLQuantizationType::F16;
-    if (gate_is_fp16) {
+    bool gate_is_half = static_cast<GGMLQuantizationType>(gate_qtype_int) == GGMLQuantizationType::F16;
+    if (gate_is_half) {
         compute_tile<TILE_M, TILE_N, TILE_K, true>(
             gate_qtype_int, gate_qblock_size, gate_qtype_size,
             K_GU, N_GU, warp_id, tiles_per_warp,
@@ -1038,8 +1108,8 @@ __global__ void ffn_cuda_impl(
     __syncthreads();
     
     // up proj stored in hb2
-    bool up_is_fp16 = static_cast<GGMLQuantizationType>(up_qtype_int) == GGMLQuantizationType::F16;
-    if (up_is_fp16) {
+    bool up_is_half = static_cast<GGMLQuantizationType>(up_qtype_int) == GGMLQuantizationType::F16;
+    if (up_is_half) {
         compute_tile<TILE_M, TILE_N, TILE_K, true>(
             up_qtype_int, up_qblock_size, up_qtype_size,
             K_GU, N_GU, warp_id, tiles_per_warp,
@@ -1063,8 +1133,8 @@ __global__ void ffn_cuda_impl(
     }
     __syncthreads();
     
-    bool down_is_fp16 = static_cast<GGMLQuantizationType>(down_qtype_int) == GGMLQuantizationType::F16;
-    if (down_is_fp16) {
+    bool down_is_half = static_cast<GGMLQuantizationType>(down_qtype_int) == GGMLQuantizationType::F16;
+    if (down_is_half) {
         compute_tile<TILE_M, TILE_N, TILE_K, true>(
             down_qtype_int, down_qblock_size, down_qtype_size,
             K_DOWN, N_DOWN, warp_id, tiles_per_warp,
@@ -1077,7 +1147,6 @@ __global__ void ffn_cuda_impl(
             x_shared, w_shared, hb2, out, ws_down
         );
     }
-
 }
 
 // elementwise multiplication of up proj tile with swiglu (tile of swish(gate(x))), then apply downproj
@@ -1113,6 +1182,12 @@ void ffn_cuda(
         (in.dtype() == at::kHalf) && (out.dtype() == at::kHalf) && 
         (hb.dtype() == at::kHalf) && (hb2.dtype() == at::kHalf) &&
         (ws_up.dtype() == at::kByte) && (ws_gate.dtype() == at::kByte) && (ws_down.dtype() == at::kByte)
+    );
+
+    //contiguity
+    TORCH_CHECK(
+        in.is_contiguous() && out.is_contiguous() && hb.is_contiguous() && hb2.is_contiguous() && 
+        ws_up.is_contiguous() && ws_gate.is_contiguous() && ws_down.is_contiguous()
     );
 
     TORCH_INTERNAL_ASSERT(in.device().type() == at::DeviceType::CUDA);
