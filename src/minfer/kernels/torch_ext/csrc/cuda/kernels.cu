@@ -9,6 +9,7 @@
 #include <mma.h>
 
 #include <cassert>
+#include <algorithm>
 
 #include "quants_impl.cuh"
 #include "impl_common.hpp"
@@ -658,15 +659,9 @@ void embed_cuda(
 
 template <int TILE_M, int TILE_N, int TILE_K>
 __global__ void qkv_cuda_impl(
-    int64_t q_qtype_int,
-    int64_t k_qtype_int,
-    int64_t v_qtype_int,
-    int64_t q_qblock_size,
-    int64_t q_qtype_size,
-    int64_t k_qblock_size,
-    int64_t k_qtype_size,
-    int64_t v_qblock_size,
-    int64_t v_qtype_size,
+    int64_t q_qtype_int, int64_t k_qtype_int, int64_t v_qtype_int,
+    int64_t q_qblock_size,  int64_t k_qblock_size, int64_t v_qblock_size,
+    int64_t q_qtype_size, int64_t k_qtype_size, int64_t v_qtype_size,
     int64_t M, int64_t K, int64_t N_Q, int64_t N_KV,
     const half* __restrict__ x,
     half* __restrict__ q_out,
@@ -756,15 +751,9 @@ __global__ void qkv_cuda_impl(
 
 // NOTE: this kernel assumes that wq,wk,wv are actually quantized and not half
 void qkv_cuda(
-    int64_t q_qtype_int,
-    int64_t k_qtype_int,
-    int64_t v_qtype_int,
-    int64_t q_qblock_size,
-    int64_t q_qtype_size,
-    int64_t k_qblock_size,
-    int64_t k_qtype_size,
-    int64_t v_qblock_size,
-    int64_t v_qtype_size,
+    int64_t q_qtype_int, int64_t k_qtype_int, int64_t v_qtype_int,
+    int64_t q_qblock_size, int64_t k_qblock_size, int64_t v_qblock_size,
+    int64_t q_qtype_size, int64_t k_qtype_size, int64_t v_qtype_size,
     const at::Tensor& x, // [B, L, hidden_dim]
     at::Tensor& q_out, // [B, L, q_dim]
     at::Tensor& k_out, // [B, L, kv_dim]
@@ -845,7 +834,7 @@ void qkv_cuda(
     int64_t K = x.size(-1);
     int64_t N_Q = wq.size(0);
     int64_t N_KV = wk.size(0);
-    int64_t N = max(N_Q, N_KV);
+    int64_t N = std::max(N_Q, N_KV);
     
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     
@@ -855,13 +844,10 @@ void qkv_cuda(
     dim3 block(512); // TODO: tune this or adjust as needed
     dim3 grid((M+TILE_SIZE-1)/TILE_SIZE, (N+TILE_SIZE-1)/TILE_SIZE);
 
-    int64_t qblock_size = max(q_qblock_size, k_qblock_size, v_qblock_size);
-
     qkv_cuda_impl<TILE_SIZE, TILE_SIZE, TILE_K><<<grid, block, 0, stream>>>(
         q_qtype_int, k_qtype_int, v_qtype_int,
-        q_qblock_size, q_qtype_size,
-        k_qblock_size, k_qtype_size,
-        v_qblock_size, v_qtype_size,
+        q_qblock_size, k_qblock_size, v_qblock_size, 
+        q_qtype_size, k_qtype_size, v_qtype_size,
         M, K, N_Q, N_KV,
         x,
         q_out, k_out, v_out,
@@ -891,10 +877,10 @@ __global__ void moe_scoring_cuda_impl(
     constexpr int TILE_SIZE = TILE_M;
     constexpr int THR_PER_ROW = BLOCK_SIZE / TILE_M;
     constexpr int NUM_SUBTILES = (TILE_M/16)*(TILE_N/16); // wmma operates on 16x16 subtiles
+    constexpr int num_warps = BLOCK_SIZE / 32;
+    constexpr int tiles_per_warp = NUM_SUBTILES / num_warps;
 
     int warp_id = threadIdx.x / 32;
-    int num_warps = blockDim.x / 32;
-    int tiles_per_warp = NUM_SUBTILES / num_warps;
     int row_in_tile = threadIdx.x / THR_PER_ROW;
 
     __shared__ half x_shared[TILE_M][TILE_K];
@@ -924,7 +910,7 @@ __global__ void moe_scoring_cuda_impl(
     // does tree reduction to get one d and m per row
     // applies softmax over TILE_M x N subsection using d and m
 
-    if (cnt == (gridDim.y - 1)) {
+    if (cnt == (gridDim.y-1)) {
         reduce_dm_tiles<TILE_M>(
             tiles_d, tiles_m,
             reduce_scratch,
@@ -977,7 +963,7 @@ void moe_scoring_cuda(
     int64_t N = w.size(0);
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    constexpr int TILE_SIZE=32;
+    constexpr int TILE_SIZE=64;
     constexpr int TILE_K=256;
     constexpr int BLOCK_SIZE=512;
 
@@ -1002,8 +988,175 @@ void moe_scoring_cuda(
     );
 }
 
-void ffn_cuda() {
-    TORCH_CHECK(false, "ffn not implemented");
+template <int TILE_M, int TILE_N, int TILE_K, int BLOCK_SIZE>
+__global__ void ffn_cuda_impl(
+    int up_qtype_int, int gate_qtype_int, int down_qtype_int,
+    int up_qblock_size, int gate_qblock_size, int down_qblock_size,
+    int up_qtype_size, int gate_qtype_size, int down_qtype_size,
+    int64_t M, int64_t K_GU, int64_t N_GU, int64_t K_DOWN, int64_t N_DOWN,
+    const half* __restrict__ in,
+    half* __restrict__ out,
+    half* __restrict__ hb,
+    half* __restrict__ hb2,
+    const uint8_t* __restrict__ ws_up,
+    const uint8_t* __restrict__ ws_gate,
+    const uint8_t* __restrict__ ws_down
+) {
+
+    constexpr int NUM_SUBTILES = (TILE_M/16)*(TILE_N/16);
+    constexpr int num_warps = BLOCK_SIZE / 32;
+    constexpr int tiles_per_warp = NUM_SUBTILES / num_warps;
+    
+    int warp_id = threadIdx.x / 32;
+    
+    __shared__ half x_shared[TILE_M][TILE_K];
+    __shared__ half w_shared[TILE_K][TILE_N];
+    
+    // gate proj stored in hb
+    bool gate_is_fp16 = static_cast<GGMLQuantizationType>(gate_qtype_int) == GGMLQuantizationType::F16;
+    if (gate_is_fp16) {
+        compute_tile<TILE_M, TILE_N, TILE_K, true>(
+            gate_qtype_int, gate_qblock_size, gate_qtype_size,
+            K_GU, N_GU, warp_id, tiles_per_warp,
+            x_shared, w_shared, in, hb, ws_gate
+        );
+    } else {
+        compute_tile<TILE_M, TILE_N, TILE_K, false>(
+            gate_qtype_int, gate_qblock_size, gate_qtype_size,
+            K_GU, N_GU, warp_id, tiles_per_warp,
+            x_shared, w_shared, in, hb, ws_gate
+        );
+    }
+    __syncthreads();
+    
+    // apply swish to hb (swish(x) = x*sigmoid(beta*x), beta taken to be 1 here)
+    for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=BLOCK_SIZE) {
+        float val = __half2float(hb[blockIdx.x*TILE_M*N_GU + blockIdx.y*TILE_N + idx]);
+        val = val / (1.0f+expf(-val));
+        hb[blockIdx.x*TILE_M*N_GU + blockIdx.y*TILE_N + idx] = __float2half(val);
+    }
+    __syncthreads();
+    
+    // up proj stored in hb2
+    bool up_is_fp16 = static_cast<GGMLQuantizationType>(up_qtype_int) == GGMLQuantizationType::F16;
+    if (up_is_fp16) {
+        compute_tile<TILE_M, TILE_N, TILE_K, true>(
+            up_qtype_int, up_qblock_size, up_qtype_size,
+            K_GU, N_GU, warp_id, tiles_per_warp,
+            x_shared, w_shared, in, hb2, ws_up
+        );
+    } else {
+        compute_tile<TILE_M, TILE_N, TILE_K, false>(
+            up_qtype_int, up_qblock_size, up_qtype_size,
+            K_GU, N_GU, warp_id, tiles_per_warp,
+            x_shared, w_shared, in, hb2, ws_up
+        );
+    }
+    __syncthreads();
+    
+    // element-wise mul of hb and hb2, stored in hb2
+    for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=BLOCK_SIZE) {
+        int tile_idx = blockIdx.x*TILE_M*N_GU + blockIdx.y*TILE_N + idx;
+        float a = __half2float(hb[tile_idx]);
+        float b = __half2float(hb2[tile_idx]);
+        hb2[tile_idx] = __float2half(a*b);
+    }
+    __syncthreads();
+    
+    bool down_is_fp16 = static_cast<GGMLQuantizationType>(down_qtype_int) == GGMLQuantizationType::F16;
+    if (down_is_fp16) {
+        compute_tile<TILE_M, TILE_N, TILE_K, true>(
+            down_qtype_int, down_qblock_size, down_qtype_size,
+            K_DOWN, N_DOWN, warp_id, tiles_per_warp,
+            x_shared, w_shared, hb2, out, ws_down
+        );
+    } else {
+        compute_tile<TILE_M, TILE_N, TILE_K, false>(
+            down_qtype_int, down_qblock_size, down_qtype_size,
+            K_DOWN, N_DOWN, warp_id, tiles_per_warp,
+            x_shared, w_shared, hb2, out, ws_down
+        );
+    }
+
+}
+
+// elementwise multiplication of up proj tile with swiglu (tile of swish(gate(x))), then apply downproj
+void ffn_cuda(
+    int64_t up_qtype_int, int64_t gate_qtype_int, int64_t down_qtype_int,
+    int64_t up_qblock_size, int64_t gate_qblock_size, int64_t down_qblock_size,
+    int64_t up_qtype_size, int64_t gate_qtype_size, int64_t down_qtype_size,
+    const at::Tensor& in, // [B,L,hidden_dim]
+    at::Tensor& out, // [B,L,hidden_dim]
+    at::Tensor& hb, // [B,L,n_local_exps,mlp_dim]
+    at::Tensor& hb2, // [B,L,n_local_exps,mlp_dim]
+    const at::Tensor& ws_up, // [n_local_exps, mlp_dim, hidden_dim]
+    const at::Tensor& ws_gate, // // [n_local_exps, mlp_dim, hidden_dim]
+    const at::Tensor& ws_down // [n_local_exps, hidden_dim, mlp_dim]
+) {
+    //validation 
+
+    //dims
+    TORCH_CHECK((in.dim() == 3) && (out.dim() == 3));
+    TORCH_CHECK((hb.dim() == 4) && (hb2.dim() == 4));
+    TORCH_CHECK((ws_up.dim() == 3) && (ws_gate.dim() == 3) && (ws_down.dim() == 3));
+
+    //checks between dimensions
+    TORCH_CHECK(in.sizes().equals(out.sizes()));
+    TORCH_CHECK(hb.sizes().equals(hb2.sizes()));
+    TORCH_CHECK(
+        (ws_up.numel() / ws_up.size(1) == ws_down.numel() / ws_down.size(-1)) &&
+        (ws_gate.numel() / ws_gate.size(1) == ws_down.numel() / ws_down.size(-1))
+    );
+
+    //dtypes
+    TORCH_CHECK(
+        (in.dtype() == at::kHalf) && (out.dtype() == at::kHalf) && 
+        (hb.dtype() == at::kHalf) && (hb2.dtype() == at::kHalf) &&
+        (ws_up.dtype() == at::kByte) && (ws_gate.dtype() == at::kByte) && (ws_down.dtype() == at::kByte)
+    );
+
+    TORCH_INTERNAL_ASSERT(in.device().type() == at::DeviceType::CUDA);
+    TORCH_INTERNAL_ASSERT(out.device().type() == at::DeviceType::CUDA);
+    TORCH_INTERNAL_ASSERT(hb.device().type() == at::DeviceType::CUDA);
+    TORCH_INTERNAL_ASSERT(hb2.device().type() == at::DeviceType::CUDA);
+    TORCH_INTERNAL_ASSERT(ws_up.device().type() == at::DeviceType::CUDA);
+    TORCH_INTERNAL_ASSERT(ws_gate.device().type() == at::DeviceType::CUDA);
+    TORCH_INTERNAL_ASSERT(ws_down.device().type() == at::DeviceType::CUDA);
+
+    const half* in_ptr = reinterpret_cast<const half*>(in.data_ptr<at::Half>());
+    half* out_ptr = reinterpret_cast<half*>(out.data_ptr<at::Half>());
+    half* hb_ptr = reinterpret_cast<half*>(hb.data_ptr<at::Half>());
+    half* hb2_ptr = reinterpret_cast<half*>(hb2.data_ptr<at::Half>());
+
+    const uint8_t* ws_up_ptr = ws_up.data_ptr<uint8_t>();
+    const uint8_t* ws_gate_ptr = ws_gate.data_ptr<uint8_t>();
+    const uint8_t* ws_down_ptr = ws_down.data_ptr<uint8_t>();
+
+    int64_t M = in.numel() / in.size(-1);
+    int64_t N_GU = hb.size(2) * hb.size(3);
+    int64_t N_DOWN = in.size(-1);
+    int64_t N = std::max(N_GU, N_DOWN);
+
+    int64_t K_GU = in.size(-1);
+    int64_t K_DOWN = hb.size(2) * hb.size(3);
+    
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    
+    constexpr int TILE_SIZE=64;
+    constexpr int TILE_K=256;
+    constexpr int BLOCK_SIZE=512;
+    
+    dim3 block(512); // TODO: tune this or adjust as needed
+    dim3 grid((M+TILE_SIZE-1)/TILE_SIZE, (N+TILE_SIZE-1)/TILE_SIZE);
+
+    ffn_cuda_impl<TILE_SIZE, TILE_SIZE, TILE_K, BLOCK_SIZE><<<grid, block, 0, stream>>>(
+        up_qtype_int, gate_qtype_int, down_qtype_int,
+        up_qblock_size, gate_qblock_size, down_qblock_size,
+        up_qtype_size, gate_qtype_size,down_qtype_size,
+        M, K_GU, N_GU, K_DOWN, N_DOWN,
+        in_ptr, out_ptr, hb_ptr, hb2_ptr,
+        ws_up_ptr, ws_gate_ptr, ws_down_ptr
+    );
 }
 
 // TODO: add this back in once finished
