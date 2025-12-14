@@ -63,19 +63,19 @@ def test_rmsnorm(backend):
     B, L, hidden_dim, n_heads, head_dim, eps = 8, 4096, 6144, 48, 128, 1e-6 # adjust as needed
     
     # test for rmsnorm applied across entire vector (act. shape [B // dp_size, L, hidden_dim], weight shape [hidden_dim,])
-    input_A = torch.randn((B*L,hidden_dim), dtype=torch.float16).cuda()
+    input_A = torch.randn((B,L,hidden_dim), dtype=torch.float16).cuda()
     actual_A = torch.zeros_like(input_A)
     weight_A = torch.randn((hidden_dim), dtype=torch.float16).cuda()
     expected_A = F.rms_norm(input=input_A, weight=weight_A, normalized_shape=(hidden_dim,),  eps=eps)
-    # TODO: add rmsnorm call on actual_A here
+    kerns.rmsnorm(eps, input_A, actual_A, weight_A)
     assert torch.allclose(expected_A, actual_A), "rmsnorm: over entire vec"
 
     # test for rmsnorm applied across heads (act. shape [B // dp_size, n_heads, L, head_dim], weight shape [head_dim,])
-    input_B = torch.randn((B*n_heads,L,head_dim), dtype=torch.float16).cuda()
+    input_B = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
     actual_B = torch.zeros_like(input_B)
     weight_B = torch.randn((head_dim,), dtype=torch.float16).cuda()
     expected_B = F.rms_norm(input=input_B, weight=weight_B, normalized_shape=(head_dim,),  eps=eps)
-    # TODO: add rmsnorm call on actual_B here
+    kerns.rmsnorm(eps, input_B, actual_B, weight_B)
     assert torch.allclose(expected_B.cpu(), actual_B.cpu()), "rmsnorm: per head"
 
     # output act. identical shape to input in both cases
@@ -101,7 +101,7 @@ def test_rope(backend):
     input_A = torch.view_as_complex(input_A.reshape(*input_A.shape[:-1], -1, 2))
     expected_A = torch.view_as_real(input_A * freqs_A).flatten(-2)
 
-    # TODO: add rope call on actual_A here
+    kerns.il_rope(rotary_dim, 0, base_freq, actual_A)
     assert torch.allclose(expected_A, actual_A), "rope: interleaved"
 
     # test for neox rope (act. shape [B // dp_size, n_heads, L, head_dim])
@@ -119,10 +119,11 @@ def test_rope(backend):
     expected_B = torch.view_as_real(input_B * freqs_B)
     expected_B = torch.cat([expected_B[...,0], expected_B[...,1]], dim=-1)
 
-    # TODO: add rope call on actual_B here
+    kerns.neox_rope(rotary_dim, 0, base_freq, actual_B)
     assert torch.allclose(expected_B.cpu(), actual_B.cpu()), "rope: neox"
 
     # output act. identical shape to input
+    # TODO: need to add test where start pos is not zero
 
 # A: just the usual matmul
 @pytest.mark.parametrize("backend", ["torch_ext"])
@@ -136,7 +137,7 @@ def test_matmul(backend):
     weight_A = torch.randn((out_dim, in_dim), dtype=torch.float16).cuda()
 
     expected_A = input_A @ weight_A.T
-    # TODO: add matmul call on actual_A here
+    kerns.matmul(qtype_int, qblock_size, qtype_size, input_A, actual_A, weight_A.view(torch.uint8))
     assert torch.allclose(expected_A.cpu(), actual_A.cpu()), "matmul"
 
     # output act. shape [B // dp_size, L, out_dim]
@@ -153,7 +154,7 @@ def test_embed(backend):
     weight_A = torch.randn((vocab_size, hidden_dim), dtype=torch.float16).cuda()
 
     expected_A = weight_A[input_A]
-    # TODO: add embed call on actual_A here
+    kerns.embed(qtype_int, qblock_size, qtype_size, actual_A, input_A, weight_A.view(torch.uint8))
     assert torch.allclose(expected_A.cpu(), actual_A.cpu()), "embed"
     
     # output act. shape [B // dp_size, L, hidden_dim]

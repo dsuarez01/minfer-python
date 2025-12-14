@@ -120,8 +120,6 @@ static __device__ int compute_dm_tile(
 ) {
     int row_in_tile = threadIdx.x / THR_PER_ROW;
     int thr_in_row = threadIdx.x % THR_PER_ROW;
-    int warp_id = threadIdx.x / 32;
-    int lane_id = threadIdx.x % 32;
 
     if (row_in_tile >= TILE_M) return -1;
 
@@ -129,8 +127,10 @@ static __device__ int compute_dm_tile(
 
     if (global_row >= M) return -1;
 
-    __shared__ float tile_rows_m[TILE_M*(THR_PER_ROW/32)];
-    __shared__ float tile_rows_d[TILE_M*(THR_PER_ROW/32)];
+    constexpr int WARPS_PER_ROW = THR_PER_ROW/32 > 0 ? THR_PER_ROW/32 : 1;
+
+    __shared__ float tile_rows_m[TILE_M*WARPS_PER_ROW];
+    __shared__ float tile_rows_d[TILE_M*WARPS_PER_ROW];
 
     // compute tile's m vals per row, write to tiles_m
     float ml = -INFINITY;
@@ -459,7 +459,7 @@ static __device__ void compute_tile(
     int64_t out_stride,
     half* x_shared,
     half* __restrict__ w_shared,
-    half* x,
+    const half* x,
     half* __restrict__ out,
     const uint8_t* __restrict__ w
 ) {
@@ -590,7 +590,7 @@ void matmul_cuda(
     int64_t N = w.size(0);
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    constexpr int TILE_SIZE = 64;
+    constexpr int TILE_SIZE = 32;
     constexpr int TILE_K = 256;
     dim3 grid((M+TILE_SIZE-1)/TILE_SIZE, (N+TILE_SIZE-1)/TILE_SIZE);
     dim3 block(512);
@@ -608,7 +608,6 @@ __global__ void embed_cuda_impl(
     const int64_t* __restrict__ token_ids,
     const uint8_t* __restrict__ w
 ) {
-    int64_t B = gridDim.x;
     int64_t L = gridDim.y;
 
     int64_t iB = blockIdx.x;
@@ -677,8 +676,6 @@ __global__ void qkv_cuda_impl(
     const uint8_t* __restrict__ wk,
     const uint8_t* __restrict__ wv
 ) {
-
-    constexpr int NUM_SUBTILES = (TILE_M/16)*(TILE_N/16); // wmma operates on 16x16 subtiles
 
     __shared__ half x_shared[TILE_M][TILE_K];
     __shared__ half w_shared[TILE_K][TILE_N];
@@ -810,7 +807,7 @@ void qkv_cuda(
     
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     
-    constexpr int TILE_SIZE = 64;
+    constexpr int TILE_SIZE = 32;
     constexpr int TILE_K = 256;
     
     dim3 block(512); // TODO: tune this or adjust as needed
@@ -951,7 +948,7 @@ void flash_attn_cuda(
     const half* v_ptr = reinterpret_cast<const half*>(v.data_ptr<at::Half>());
     half* out_ptr = reinterpret_cast<half*>(out.data_ptr<at::Half>());
 
-    constexpr int TILE_SIZE=64;
+    constexpr int TILE_SIZE=32;
     constexpr int TILE_K=256;
     constexpr int BLOCK_SIZE=512;
 
@@ -1005,10 +1002,9 @@ __global__ void moe_scoring_cuda_impl(
     __shared__ half l_shared[TILE_M][TILE_N]; // logits
 
     int64_t l_stride = TILE_N;
-    int64_t out_stride = N;
 
     const half* x_tile = x + blockIdx.x*TILE_M*K;
-    half* out_tile = out + blockIdx.x*TILE_M*out_stride + blockIdx.y*TILE_N;
+
     const uint8_t* w_tile = w + blockIdx.y*TILE_N*(K/qblock_size)*qtype_size;
 
     compute_tile<TILE_M, TILE_N, TILE_K>(
@@ -1166,7 +1162,7 @@ __global__ void ffn_cuda_impl(
     
     __syncthreads();
     
-    mul_elemwise(hb_shared, hb2_shared, hb_stride, hb2_stride);
+    mul_elemwise<TILE_M, TILE_N, BLOCK_SIZE>((half*)hb_shared, (half*)hb2_shared, hb_stride, hb2_stride);
 
     __syncthreads();
     
@@ -1246,7 +1242,7 @@ void ffn_cuda(
     
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     
-    constexpr int TILE_SIZE=64;
+    constexpr int TILE_SIZE=32;
     constexpr int TILE_K=256;
     constexpr int BLOCK_SIZE=512;
     
@@ -1266,7 +1262,7 @@ void ffn_cuda(
 TORCH_LIBRARY(minfer, m) {
     m.def("dequant(int qtype, Tensor x, Tensor(a!) y, int qblock_size, int qtype_size) -> ()");
     m.def("quant(int qtype, Tensor x, Tensor(a!) y, int qblock_size, int qtype_size) -> ()");
-    m.def("rmsnorm(float eps, Tensor in, Tensor(a!) out, Tensor w) -> ()");
+    m.def("rmsnorm(float eps, Tensor input, Tensor(a!) out, Tensor w) -> ()");
     m.def("il_rope(int rotary_dim, int start_pos, float freq_base, Tensor(a!) x) -> ()");
     m.def("neox_rope(int rotary_dim, int start_pos, float freq_base, Tensor(a!) x) -> ()");
     m.def("matmul(int qtype_int, int qblock_size, int qtype_size, Tensor x, Tensor(a!) out, Tensor w) -> ()");
@@ -1274,7 +1270,7 @@ TORCH_LIBRARY(minfer, m) {
     m.def("qkv(int q_qtype_int, int k_qtype_int, int v_qtype_int, int q_qblock_size, int k_qblock_size, int v_qblock_size, int q_qtype_size, int k_qtype_size, int v_qtype_size, Tensor x, Tensor(a!) q_out, Tensor(a!) k_out, Tensor(a!) v_out, Tensor wq, Tensor wk, Tensor wv) -> ()");
     m.def("flash_attn(int qtype_int, int qblock_size, int qtype_size, Tensor(a!) out, Tensor q, Tensor k, Tensor v) -> ()");
     m.def("moe_scoring(int qtype_int, int qblock_size, int qtype_size, Tensor x, Tensor(a!) out, Tensor w) -> ()");
-    m.def("ffn(int up_qtype_int, int gate_qtype_int, int down_qtype_int, int up_qblock_size, int gate_qblock_size, int down_qblock_size, int up_qtype_size, int gate_qtype_size, int down_qtype_size, Tensor in, Tensor(a!) out, Tensor(a!) hb, Tensor(a!) hb2, Tensor ws_up, Tensor ws_gate, Tensor ws_down) -> ()");
+    m.def("ffn(int up_qtype_int, int gate_qtype_int, int down_qtype_int, int up_qblock_size, int gate_qblock_size, int down_qblock_size, int up_qtype_size, int gate_qtype_size, int down_qtype_size, Tensor input, Tensor(a!) out, Tensor(a!) hb, Tensor(a!) hb2, Tensor ws_up, Tensor ws_gate, Tensor ws_down) -> ()");
 }
 
 // TODO: add this back in once finished
@@ -1288,6 +1284,8 @@ TORCH_LIBRARY_IMPL(minfer, CUDA, m) {
     m.impl("flash_attn", &flash_attn_cuda);
     m.impl("moe_scoring", &moe_scoring_cuda);
     m.impl("ffn", &ffn_cuda);
+}
+
 }
 
 // for computing online softmax in moe scoring
@@ -1316,6 +1314,4 @@ FlashAttnScoring::~FlashAttnScoring() {
     if (tiles_d) cudaFree(tiles_d);
     if (tiles_m) cudaFree(tiles_m);
     if (row_visit_cnt) cudaFree(row_visit_cnt);
-}
-
 }
