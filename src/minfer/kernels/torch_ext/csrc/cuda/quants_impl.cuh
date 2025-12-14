@@ -28,3 +28,5 @@ template <typename T> __device__ void dequant_block_iq1_m(const uint8_t* __restr
 template <typename T> __device__ void dequant_block_iq4_nl(const uint8_t* __restrict__ w, T* __restrict__ y, int64_t stride, int tid);
 template <typename T> __device__ void dequant_block_iq4_xs(const uint8_t* __restrict__ w, T* __restrict__ y, int64_t stride, int tid);
 template <typename T> __device__ void dequant_block_q8_K(const uint8_t* __restrict__ w, T* __restrict__ y, int64_t stride, int tid);
+template <typename T> __device__ void dequant_block_bf16(const uint8_t* __restrict__ w, T* __restrict__ y, int64_t stride, int tid);
+template <typename T> __device__ void dequant_block_f16(const uint8_t* __restrict__ w, T* __restrict__ y, int64_t stride, int tid);

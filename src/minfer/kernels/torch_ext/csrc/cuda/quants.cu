@@ -54,6 +54,8 @@ __global__ void dequant_cuda_(
         case GGMLQuantizationType::IQ4_NL: dequant_block_iq4_nl<T>(w, out, 1, threadIdx.x); break;
         case GGMLQuantizationType::IQ4_XS: dequant_block_iq4_xs<T>(w, out, 1, threadIdx.x); break;
         case GGMLQuantizationType::Q8_K: dequant_block_q8_K<T>(w, out, 1, threadIdx.x); break;
+        case GGMLQuantizationType::BF16: dequant_block_bf16<T>(w, out, 1, threadIdx.x); break;
+        case GGMLQuantizationType::F16: dequant_block_f16<T>(w, out, 1, threadIdx.x); break;
         default: assert(false && "Unsupported dtype");
     }
 }

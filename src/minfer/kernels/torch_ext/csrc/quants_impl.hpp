@@ -39,6 +39,8 @@ template <typename T> void dequant_row_iq1_m(const uint8_t* __restrict__ xr, T* 
 template <typename T> void dequant_row_iq4_nl(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
 template <typename T> void dequant_row_iq4_xs(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
 template <typename T> void dequant_row_q8_K(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_bf16(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
+template <typename T> void dequant_row_f16(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
 
 void quant_row_q4_0(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
 void quant_row_q4_1(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
@@ -63,6 +65,8 @@ void quant_row_iq1_m(const float* __restrict__ x, uint8_t* __restrict__ yr, int6
 void quant_row_iq4_nl(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n, const float* quant_weights = nullptr);
 void quant_row_iq4_xs(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n, const float* quant_weights = nullptr);
 void quant_row_q8_K(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
+void quant_row_bf16(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
+void quant_row_f16(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
 
 // fcns for init. and clean-up (called in quants.cpp)
 void iq2xs_init_impl(int qtype_int);

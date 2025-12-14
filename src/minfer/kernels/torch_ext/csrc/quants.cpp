@@ -40,6 +40,8 @@ void dequant_row_cpu(
         case GGMLQuantizationType::IQ4_NL: dequant_row_iq4_nl<T>(xr, y, k); break;
         case GGMLQuantizationType::IQ4_XS: dequant_row_iq4_xs<T>(xr, y, k); break;
         case GGMLQuantizationType::Q8_K: dequant_row_q8_K<T>(xr, y, k); break;
+        case GGMLQuantizationType::BF16: dequant_row_bf16<T>(xr, y, k); break;
+        case GGMLQuantizationType::F16: dequant_row_f16<T>(xr, y, k); break;
         default: assert(false && "Unsupported dtype");
     }
 }
@@ -121,6 +123,8 @@ void quant_row_cpu(
         case GGMLQuantizationType::IQ4_NL: quant_row_iq4_nl(x, yr, n); break;
         case GGMLQuantizationType::IQ4_XS: quant_row_iq4_xs(x, yr, n); break;
         case GGMLQuantizationType::Q8_K: quant_row_q8_K(x, yr, n); break;
+        case GGMLQuantizationType::BF16: quant_row_bf16(x, yr, n); break;
+        case GGMLQuantizationType::F16: quant_row_f16(x, yr, n); break;
         default: assert(false && "Unsupported dtype");
     }
 }
