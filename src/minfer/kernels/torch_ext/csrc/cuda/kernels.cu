@@ -1,3 +1,4 @@
+#include <Python.h>
 #include <torch/library.h>
 #include <ATen/core/Tensor.h>
 #include <c10/util/Exception.h>
@@ -15,6 +16,19 @@
 #include "impl_common.hpp"
 
 using namespace nvcuda;
+
+extern "C" {
+    PyObject* PyInit__C(void) {
+        static struct PyModuleDef module_def = {
+            PyModuleDef_HEAD_INIT,
+            "_C",
+            NULL,
+            -1,
+            NULL,
+        };
+        return PyModule_Create(&module_def);
+    }
+}
 
 // TODO: complete me!
 namespace minfer {
@@ -129,7 +143,7 @@ static __device__ int compute_dm_tile(
     // compute tile's d vals per row, write to tiles_d
     float dl = 0.0f;
     for (int col=thr_in_row; col<TILE_N; col+=THR_PER_ROW) {
-        dl += expf(__half2float(tile[row_in_tile*TILE_N+col] - ml));
+        dl += expf(__half2float(tile[row_in_tile*TILE_N+col])-ml);
     }
 
     tiles_d[blockIdx.x*gridDim.y*TILE_M + blockIdx.y*TILE_M + row_in_tile] = row_reduce_sum<THR_PER_ROW>(tile_rows_d, dl, row_in_tile, thr_in_row);
@@ -528,7 +542,7 @@ __global__ void matmul_cuda_impl(
     __shared__ half w_shared[TILE_K][TILE_N];
 
     int64_t out_stride = N;
-    half* x_tile = x + blockIdx.x*TILE_M*K;
+    const half* x_tile = x + blockIdx.x*TILE_M*K;
     half* out_tile = out + blockIdx.x*TILE_M*out_stride + blockIdx.y*TILE_N;
     const uint8_t* w_tile = w + blockIdx.y*TILE_N*(K/qblock_size)*qtype_size;
 
@@ -603,7 +617,7 @@ __global__ void embed_cuda_impl(
     int64_t token_id = token_ids[iB*L+iL];
 
     const uint8_t* w_block = w + token_id*b + block_in_row*qtype_size;
-    T* x_block = x + iB*L*k + iL*k + block_in_row*qblock_size;
+    half* x_block = x + iB*L*k + iL*k + block_in_row*qblock_size;
 
     dequant_block(qtype_int, 1, threadIdx.x, x_block, w_block);
 }
@@ -648,6 +662,7 @@ void embed_cuda(
     embed_cuda_impl<<<grid, qblock_size, 0, stream>>>(qtype_int, qblock_size, qtype_size, w.size(-1), x.size(-1), x_ptr, token_ids_ptr, w_ptr);
 }
 
+
 template <int TILE_M, int TILE_N, int TILE_K>
 __global__ void qkv_cuda_impl(
     int64_t q_qtype_int, int64_t k_qtype_int, int64_t v_qtype_int,
@@ -671,7 +686,7 @@ __global__ void qkv_cuda_impl(
     int64_t q_out_stride = N_Q;
     int64_t kv_out_stride = N_KV;
 
-    half* x_tile = x + blockIdx.x*TILE_M*K;
+    const half* x_tile = x + blockIdx.x*TILE_M*K;
     half* q_out_tile = q_out + blockIdx.x*TILE_M*q_out_stride + blockIdx.y*TILE_N;
     half* k_out_tile = k_out + blockIdx.x*TILE_M*kv_out_stride + blockIdx.y*TILE_N;
     half* v_out_tile = v_out + blockIdx.x*TILE_M*kv_out_stride + blockIdx.y*TILE_N;
@@ -806,9 +821,9 @@ void qkv_cuda(
         q_qblock_size, k_qblock_size, v_qblock_size, 
         q_qtype_size, k_qtype_size, v_qtype_size,
         M, K, N_Q, N_KV,
-        x,
-        q_out, k_out, v_out,
-        wq, wk, wv
+        x_ptr,
+        q_out_ptr, k_out_ptr, v_out_ptr,
+        wq_ptr, wk_ptr, wv_ptr
     );
 }
 
@@ -835,10 +850,10 @@ __global__ void flash_attn_cuda_impl(
     int64_t l_stride = TILE_N;    
     int64_t out_stride = N;
 
-    half* q_tile = q + blockIdx.x*TILE_M*K;
+    const half* q_tile = q + blockIdx.x*TILE_M*K;
     half* out_tile = out + blockIdx.x*TILE_M*out_stride + blockIdx.y*TILE_N;
-    const uint8_t* k_tile = k + blockIdx.y*TILE_N*(K/qblock_size)*qtype_size;
-    const uint8_t* v_tile = v + blockIdx.x*TILE_N*(K/qblock_size)*qtype_size;
+    const uint8_t* k_tile = reinterpret_cast<const uint8_t*>(k) + blockIdx.y*TILE_N*(K/qblock_size)*qtype_size;
+    const uint8_t* v_tile = reinterpret_cast<const uint8_t*>(v) + blockIdx.x*TILE_N*(K/qblock_size)*qtype_size;
 
     compute_tile<TILE_M, TILE_N, TILE_K>(
         qtype_int, qblock_size, qtype_size,
@@ -992,7 +1007,7 @@ __global__ void moe_scoring_cuda_impl(
     int64_t l_stride = TILE_N;
     int64_t out_stride = N;
 
-    half* x_tile = x + blockIdx.x*TILE_M*K;
+    const half* x_tile = x + blockIdx.x*TILE_M*K;
     half* out_tile = out + blockIdx.x*TILE_M*out_stride + blockIdx.y*TILE_N;
     const uint8_t* w_tile = w + blockIdx.y*TILE_N*(K/qblock_size)*qtype_size;
 
@@ -1007,7 +1022,7 @@ __global__ void moe_scoring_cuda_impl(
     int cnt = compute_dm_tile<TILE_M, TILE_N, THR_PER_ROW>(
         tiles_d, tiles_m, row_visit_cnt,
         (half*)l_shared,
-        M,
+        M
     );
 
     __shared__ float rows_d[TILE_M];
@@ -1117,14 +1132,14 @@ __global__ void ffn_cuda_impl(
     
     int64_t hb_stride = TILE_N;
     int64_t hb2_stride = TILE_N;
-    int64_t out_stride = N;
+    int64_t out_stride = N_DOWN;
 
-    half* in_tile = in + blockIdx.x*TILE_M*K;
+    const half* in_tile = in + blockIdx.x*TILE_M*K_GU;
     half* out_tile = out + blockIdx.x*TILE_M*out_stride + blockIdx.y*TILE_N;
 
-    const uint8_t* ws_gate_tile = ws_gate + blockIdx.y*TILE_N*(K/gate_qblock_size)*gate_qtype_size;
-    const uint8_t* ws_up_tile = ws_up + blockIdx.y*TILE_N*(K/up_qblock_size)*up_qtype_size;
-    const uint8_t* ws_down_tile = ws_down + blockIdx.y*TILE_N*(K/down_qblock_size)*down_qtype_size;
+    const uint8_t* ws_gate_tile = ws_gate + blockIdx.y*TILE_N*(K_GU/gate_qblock_size)*gate_qtype_size;
+    const uint8_t* ws_up_tile = ws_up + blockIdx.y*TILE_N*(K_GU/up_qblock_size)*up_qtype_size;
+    const uint8_t* ws_down_tile = ws_down + blockIdx.y*TILE_N*(K_DOWN/down_qblock_size)*down_qtype_size;
 
     // gate proj stored in hb
     compute_tile<TILE_M, TILE_N, TILE_K>(
@@ -1137,7 +1152,7 @@ __global__ void ffn_cuda_impl(
     __syncthreads();
     
     // apply swish to hb (swish(x) = x*sigmoid(beta*x), beta taken to be 1 here)
-    swish((half*)hb_shared, hb_stride);
+    swish<TILE_M, TILE_N, BLOCK_SIZE>((half*)hb_shared, hb_stride);
 
     __syncthreads();
     
@@ -1248,57 +1263,59 @@ void ffn_cuda(
     );
 }
 
+TORCH_LIBRARY(minfer, m) {
+    m.def("dequant(int qtype, Tensor x, Tensor(a!) y, int qblock_size, int qtype_size) -> ()");
+    m.def("quant(int qtype, Tensor x, Tensor(a!) y, int qblock_size, int qtype_size) -> ()");
+    m.def("rmsnorm(float eps, Tensor in, Tensor(a!) out, Tensor w) -> ()");
+    m.def("il_rope(int rotary_dim, int start_pos, float freq_base, Tensor(a!) x) -> ()");
+    m.def("neox_rope(int rotary_dim, int start_pos, float freq_base, Tensor(a!) x) -> ()");
+    m.def("matmul(int qtype_int, int qblock_size, int qtype_size, Tensor x, Tensor(a!) out, Tensor w) -> ()");
+    m.def("embed(int qtype_int, int qblock_size, int qtype_size, Tensor(a!) x, Tensor token_ids, Tensor w) -> ()");
+    m.def("qkv(int q_qtype_int, int k_qtype_int, int v_qtype_int, int q_qblock_size, int k_qblock_size, int v_qblock_size, int q_qtype_size, int k_qtype_size, int v_qtype_size, Tensor x, Tensor(a!) q_out, Tensor(a!) k_out, Tensor(a!) v_out, Tensor wq, Tensor wk, Tensor wv) -> ()");
+    m.def("flash_attn(int qtype_int, int qblock_size, int qtype_size, Tensor(a!) out, Tensor q, Tensor k, Tensor v) -> ()");
+    m.def("moe_scoring(int qtype_int, int qblock_size, int qtype_size, Tensor x, Tensor(a!) out, Tensor w) -> ()");
+    m.def("ffn(int up_qtype_int, int gate_qtype_int, int down_qtype_int, int up_qblock_size, int gate_qblock_size, int down_qblock_size, int up_qtype_size, int gate_qtype_size, int down_qtype_size, Tensor in, Tensor(a!) out, Tensor(a!) hb, Tensor(a!) hb2, Tensor ws_up, Tensor ws_gate, Tensor ws_down) -> ()");
+}
+
 // TODO: add this back in once finished
-// TORCH_LIBRARY_IMPL(minfer, CUDA, m) {
-//     m.impl("rmsnorm", &rmsnorm_cuda);
-//     m.impl("il_rope", &il_rope_cuda);
-//     m.impl("neox_rope", &neox_rope_cuda);
-//     m.impl("matmul", &matmul_cuda);
-//     m.impl("embed", &embed_cuda);
-//     m.impl("qkv", &qkv_cuda);
-//     m.impl("flash_attn", &flash_attn_cuda);
-//     m.impl("moe_scoring", &moe_scoring_cuda);
-//     m.impl("ffn", &ffn_cuda);
-// }
+TORCH_LIBRARY_IMPL(minfer, CUDA, m) {
+    m.impl("rmsnorm", &rmsnorm_cuda);
+    m.impl("il_rope", &il_rope_cuda);
+    m.impl("neox_rope", &neox_rope_cuda);
+    m.impl("matmul", &matmul_cuda);
+    m.impl("embed", &embed_cuda);
+    m.impl("qkv", &qkv_cuda);
+    m.impl("flash_attn", &flash_attn_cuda);
+    m.impl("moe_scoring", &moe_scoring_cuda);
+    m.impl("ffn", &ffn_cuda);
+}
 
 // for computing online softmax in moe scoring
-static struct MoeScoring {
-    float* tiles_d;
-    float* tiles_m;
-    int* row_visit_cnt;
-    bool init;
-    
-    MoeScoring() { // these are lazily init in moe_scoring_cuda
-        tiles_d = nullptr;
-        tiles_m = nullptr;
-        row_visit_cnt = nullptr;
-        init = false;
-    }
-    ~MoeScoring() {
-        if (tiles_d) cudaFree(tiles_d);
-        if (tiles_m) cudaFree(tiles_m);
-        if (row_visit_cnt) cudaFree(row_visit_cnt);
-    }
-} moe_scratch;
+MoeScoring::MoeScoring() {
+    tiles_d = nullptr;
+    tiles_m = nullptr;
+    row_visit_cnt = nullptr;
+    init = false;
+}
+
+MoeScoring::~MoeScoring() {
+    if (tiles_d) cudaFree(tiles_d);
+    if (tiles_m) cudaFree(tiles_m);
+    if (row_visit_cnt) cudaFree(row_visit_cnt);
+}
 
 // same as above, except in flash attn
-static struct FlashAttnScoring {
-    float* tiles_d;
-    float* tiles_m;
-    int* row_visit_cnt;
-    bool init;
+FlashAttnScoring::FlashAttnScoring() {
+    tiles_d = nullptr;
+    tiles_m = nullptr;
+    row_visit_cnt = nullptr;
+    init = false;
+}
 
-    FlashAttnScoring() {
-        tiles_d = nullptr;
-        tiles_m = nullptr;
-        row_visit_cnt = nullptr;
-        init = false;
-    }
-    ~FlashAttnScoring() {
-        if (tiles_d) cudaFree(tiles_d);
-        if (tiles_m) cudaFree(tiles_m);
-        if (row_visit_cnt) cudaFree(row_visit_cnt);
-    }
-} flash_attn_scratch;
+FlashAttnScoring::~FlashAttnScoring() {
+    if (tiles_d) cudaFree(tiles_d);
+    if (tiles_m) cudaFree(tiles_m);
+    if (row_visit_cnt) cudaFree(row_visit_cnt);
+}
 
 }

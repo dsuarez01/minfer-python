@@ -6,6 +6,7 @@
     #include <cuda_fp16.h>
     using half_t = half;
     #define CONSTANT static constexpr __device__
+
 #else
     #include <ATen/ATen.h>
     using half_t = at::Half;
@@ -382,6 +383,33 @@ constexpr int QI4_XS = (QK_K / (4*QR4_XS));
 
 constexpr int QR3_S = 4;
 constexpr int QI3_S = (QK_K / (4*QR3_S));
+
+////////////////////////////////////////////////////////////////////////////////
+// Scratch space
+////////////////////////////////////////////////////////////////////////////////
+
+struct MoeScoring {
+    float* tiles_d;
+    float* tiles_m;
+    int* row_visit_cnt;
+    bool init;
+    
+    MoeScoring();
+    ~MoeScoring();
+};
+
+struct FlashAttnScoring {
+    float* tiles_d;
+    float* tiles_m;
+    int* row_visit_cnt;
+    bool init;
+    
+    FlashAttnScoring();
+    ~FlashAttnScoring();
+};
+
+static MoeScoring moe_scratch;
+static FlashAttnScoring flash_attn_scratch;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Tables
