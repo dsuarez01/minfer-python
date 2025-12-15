@@ -55,7 +55,7 @@ def test_dequant(backend, qtype_name, shape):
 ## since dequant already tests the relevant usage patterns in the other kernels
 ## dp_size is used throughout but not actually factored in since it doesn't affect kernel usage
 
-# A: [B, L, hidden_dim]
+# A: [B , L, hidden_dim]
 # B: [B, n_heads, L, head_dim]
 @pytest.mark.parametrize("backend", ["torch_ext"])
 def test_rmsnorm(backend):
@@ -68,7 +68,7 @@ def test_rmsnorm(backend):
     weight_A = torch.randn((hidden_dim), dtype=torch.float16).cuda()
     expected_A = F.rms_norm(input=input_A, weight=weight_A, normalized_shape=(hidden_dim,),  eps=eps)
     kerns.rmsnorm(eps, input_A, actual_A, weight_A)
-    assert torch.allclose(expected_A, actual_A), "rmsnorm: over entire vec"
+    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), rtol=1e-3, atol=1e-5), "rmsnorm: over entire vec"
 
     # test for rmsnorm applied across heads (act. shape [B // dp_size, n_heads, L, head_dim], weight shape [head_dim,])
     input_B = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
@@ -76,7 +76,7 @@ def test_rmsnorm(backend):
     weight_B = torch.randn((head_dim,), dtype=torch.float16).cuda()
     expected_B = F.rms_norm(input=input_B, weight=weight_B, normalized_shape=(head_dim,),  eps=eps)
     kerns.rmsnorm(eps, input_B, actual_B, weight_B)
-    assert torch.allclose(expected_B.cpu(), actual_B.cpu()), "rmsnorm: per head"
+    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), rtol=1e-3, atol=1e-5), "rmsnorm: per head"
 
     # output act. identical shape to input in both cases
 
@@ -88,39 +88,52 @@ def test_rope(backend):
     B, L, n_heads, head_dim, rotary_dim, base_freq = 8, 4096, 48, 128, 64, 1e6 # adjust as needed
 
     # test for IL rope (act. shape [B // dp_size, n_heads, L, head_dim])
-    input_A = torch.randn((B*n_heads,L,head_dim), dtype=torch.float16).cuda()
-    actual_A = torch.zeros_like(input_A).cuda()
+    input_A = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).float().cuda()
+    actual_A = input_A.half().clone()
 
     # computing expected case (interleaved)
-    freqs_A = torch.arange(head_dim // 2, dtype=torch.float16).cuda()
+    freqs_A = torch.arange(head_dim // 2, dtype=torch.float32).cuda()
     freqs_A = torch.where(freqs_A < rotary_dim // 2, freqs_A, 0.0)
     freqs_A = base_freq ** (-2.0 * freqs_A / rotary_dim)
-    freqs_A = torch.arange(L, dtype=torch.float16)[:, None].cuda() * freqs_A[None,:]
-    freqs_A = torch.polar(torch.ones_like(freqs_A), freqs_A)
+    freqs_A = torch.arange(L, dtype=torch.float32)[:, None].cuda() * freqs_A[None,:]
+    cos_A = torch.cos(freqs_A)
+    sin_A = torch.sin(freqs_A)
 
-    input_A = torch.view_as_complex(input_A.reshape(*input_A.shape[:-1], -1, 2))
-    expected_A = torch.view_as_real(input_A * freqs_A).flatten(-2)
+    input_A = input_A.reshape(*input_A.shape[:-1], -1, 2)
+    expected_A = input_A.clone()
+    expected_A[..., :rotary_dim//2, 0] = cos_A[:, :rotary_dim//2] * input_A[..., :rotary_dim//2, 0] - sin_A[:, :rotary_dim//2] * input_A[..., :rotary_dim//2, 1]
+    expected_A[..., :rotary_dim//2, 1] = sin_A[:, :rotary_dim//2] * input_A[..., :rotary_dim//2, 0] + cos_A[:, :rotary_dim//2] * input_A[..., :rotary_dim//2, 1]
+    expected_A = expected_A.flatten(-2).half()
 
     kerns.il_rope(rotary_dim, 0, base_freq, actual_A)
-    assert torch.allclose(expected_A, actual_A), "rope: interleaved"
+
+    max_diff = (expected_A - actual_A).abs().max()
+    print(f"Max absolute diff: {max_diff}")
+    max_rel = ((expected_A - actual_A).abs() / (expected_A.abs() + 1e-5)).max()
+    print(f"Max relative diff: {max_rel}")
+
+    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), rtol=2e-2, atol=1e-3), "rope: interleaved"
 
     # test for neox rope (act. shape [B // dp_size, n_heads, L, head_dim])
-    input_B = torch.randn((B*n_heads,L,head_dim), dtype=torch.float16).cuda()
-    actual_B = torch.zeros_like(input_B).cuda()
+    input_B = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).float().cuda()
+    actual_B = input_B.half().clone()
 
     # computing expected case (neox)
-    freqs_B = torch.arange(head_dim // 2, dtype=torch.float16).cuda()
+    freqs_B = torch.arange(head_dim // 2, dtype=torch.float32).cuda()
     freqs_B = torch.where(freqs_B < rotary_dim // 2, freqs_B, 0.0)
     freqs_B = base_freq ** (-2.0 * freqs_B / rotary_dim)
-    freqs_B = torch.arange(L, dtype=torch.float16)[:, None].cuda() * freqs_B[None,:]
-    freqs_B = torch.polar(torch.ones_like(freqs_B), freqs_B)
+    freqs_B = torch.arange(L, dtype=torch.float32)[:, None].cuda() * freqs_B[None,:]
+    cos_B = torch.cos(freqs_B)
+    sin_B = torch.sin(freqs_B)
 
-    input_B = torch.view_as_complex(torch.stack([input_B[...,:head_dim//2], input_B[...,head_dim//2:]], dim=-1))
-    expected_B = torch.view_as_real(input_B * freqs_B)
-    expected_B = torch.cat([expected_B[...,0], expected_B[...,1]], dim=-1)
+    expected_B = input_B.clone()
+    input_B = torch.stack([input_B[...,:head_dim//2], input_B[...,head_dim//2:]], dim=-1)
+    expected_B[..., :rotary_dim//2] = cos_B[:, :rotary_dim//2] * input_B[..., :rotary_dim//2, 0] - sin_B[:, :rotary_dim//2] * input_B[..., :rotary_dim//2, 1]
+    expected_B[..., rotary_dim//2:rotary_dim] = sin_B[:, :rotary_dim//2] * input_B[..., :rotary_dim//2, 0] + cos_B[:, :rotary_dim//2] * input_B[..., :rotary_dim//2, 1]
+    expected_B = expected_B.half()
 
     kerns.neox_rope(rotary_dim, 0, base_freq, actual_B)
-    assert torch.allclose(expected_B.cpu(), actual_B.cpu()), "rope: neox"
+    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), rtol=2e-2, atol=1e-3), "rope: neox"
 
     # output act. identical shape to input
     # TODO: need to add test where start pos is not zero

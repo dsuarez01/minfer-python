@@ -58,19 +58,29 @@ static __device__ float warp_reduce_max(float v) {
 }
 
 static __device__ float blockreduce_sum(float* vs, float v, int tid) {
+    int warp_id = tid/32;
+    int lane_id = tid%32;
+
     v = warp_reduce_sum(v);
-    if (tid%32 == 0) vs[tid/32] = v;
+    if (lane_id == 0) vs[warp_id] = v;
     __syncthreads();
-    v = vs[tid%32];
-    return warp_reduce_sum(v);
+    if (warp_id == 0) v = warp_reduce_sum(vs[lane_id]);
+    if (tid == 0) vs[0] = v;
+    __syncthreads();
+    return vs[0];
 }
 
 static __device__ float blockreduce_max(float* vs, float v, int tid) {
+    int warp_id = tid/32;
+    int lane_id = tid%32;
+
     v = warp_reduce_max(v);
-    if (tid%32 == 0) vs[tid/32] = v;
+    if (lane_id == 0) vs[warp_id] = v;
     __syncthreads();
-    v = vs[tid%32];
-    return warp_reduce_max(v);
+    if (warp_id == 0) v = warp_reduce_max(vs[lane_id]);
+    if (tid == 0) vs[0] = v;
+    __syncthreads();
+    return vs[0];
 }
 
 // helper for moe scoring and flash attn, where (online) softmax is fused and taken per-tile
@@ -334,7 +344,7 @@ void rmsnorm_cuda(double eps, const at::Tensor& in, at::Tensor& out, const at::T
     half* out_ptr = reinterpret_cast<half*>(out.data_ptr<at::Half>());
     const half* w_ptr = reinterpret_cast<const half*>(w.data_ptr<at::Half>());
 
-    // handles both [B,L,D] and [B,L,n_heads,head_dim]
+    // handles both [B,L,D] and [B,n_heads,L,head_dim]
     int dim = w.size(0);
     int n_blocks = in.numel() / dim;
 
@@ -350,13 +360,16 @@ __global__ void il_rope_cuda_impl(
     float freq_base,
     half* __restrict__ x
 ) {
-    int head_idx = blockIdx.z % n_heads;
-    int pair_idx = (blockIdx.z / n_heads) * 32 + threadIdx.x;
-    int pos = start_pos + blockIdx.y;
+    int L = gridDim.z / ((rotary_dim/2+31)/32);
+    int head_idx = blockIdx.y;
+    int pair_block = blockIdx.z % ((rotary_dim/2+31)/32);
+    int seq_idx = blockIdx.z / ((rotary_dim/2+31)/32);
+    int pair_idx = pair_block * 32 + threadIdx.x;
+    int pos = start_pos + seq_idx;
     
     if (pair_idx >= rotary_dim / 2) return;
 
-    half* x_head = x + (blockIdx.x * gridDim.y * n_heads + blockIdx.y * n_heads + head_idx)*head_dim;
+    half* x_head = x + (blockIdx.x*n_heads*L + head_idx*L + seq_idx)*head_dim;
 
     float freq = 1.0f / pow(freq_base, 2.0f * pair_idx / rotary_dim);
     float angle = pos * freq;
@@ -386,11 +399,11 @@ void il_rope_cuda(
     half* x_ptr = reinterpret_cast<half*>(x.data_ptr<at::Half>());
 
     int B = x.size(0);
-    int L = x.size(1);
-    int n_heads = x.size(2);
+    int n_heads = x.size(1);
+    int L = x.size(2);
     int head_dim = x.size(3);
 
-    dim3 grid(B, L, n_heads*(rotary_dim/2+31)/32);
+    dim3 grid(B, n_heads, L*((rotary_dim/2+31)/32));
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     il_rope_cuda_impl<<<grid, 32, 0, stream>>>(n_heads, rotary_dim, head_dim, start_pos, freq_base, x_ptr);
@@ -404,13 +417,16 @@ __global__ void neox_rope_cuda_impl(
     float freq_base,
     half* __restrict__ x
 ) {
-    int head_idx = blockIdx.z % n_heads;
-    int pair_idx = (blockIdx.z / n_heads) * 32 + threadIdx.x;
-    int pos = start_pos + blockIdx.y;
+    int L = gridDim.z / ((rotary_dim/2+31)/32);
+    int head_idx = blockIdx.y;
+    int pair_block = blockIdx.z % ((rotary_dim/2+31)/32);
+    int seq_idx = blockIdx.z / ((rotary_dim/2+31)/32);
+    int pair_idx = pair_block * 32 + threadIdx.x;
+    int pos = start_pos + seq_idx;
     
     if (pair_idx >= rotary_dim / 2) return;
 
-    half* x_head = x + (blockIdx.x * gridDim.y * n_heads + blockIdx.y * n_heads + head_idx)*head_dim;
+    half* x_head = x + ((int64_t)blockIdx.x*n_heads*L + head_idx*L + seq_idx)*head_dim;
 
     float freq = 1.0f / pow(freq_base, 2.0f * pair_idx / rotary_dim);
     float angle = pos * freq;
@@ -438,11 +454,11 @@ void neox_rope_cuda(
     half* x_ptr = reinterpret_cast<half*>(x.data_ptr<at::Half>());
 
     int B = x.size(0);
-    int L = x.size(1);
-    int n_heads = x.size(2);
+    int n_heads = x.size(1);
+    int L = x.size(2);
     int head_dim = x.size(3);
 
-    dim3 grid(B, L, n_heads*(rotary_dim/2+31)/32);
+    dim3 grid(B, n_heads, L*((rotary_dim/2+31)/32));
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     neox_rope_cuda_impl<<<grid, 32, 0, stream>>>(n_heads, rotary_dim, head_dim, start_pos, freq_base, x_ptr);
