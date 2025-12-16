@@ -474,6 +474,7 @@ static __device__ void compute_tile(
     int64_t N,
     int64_t out_stride,
     half* x_shared,
+    float* __restrict__ out_shared,
     half* __restrict__ w_shared,
     const half* x,
     half* __restrict__ out,
@@ -490,13 +491,15 @@ static __device__ void compute_tile(
     int num_warps = blockDim.x / 32;
     int tiles_per_warp = NUM_SUBTILES / num_warps;
 
-    wmma::fragment<wmma::accumulator, 16, 16, 16, half> acc_frag;
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag;
 
     // split work over the subtiles (arranged in a grid of TILE_SIZE/16xTILE_SIZE/16), each of size 16x16.
     for (int i=0; i<tiles_per_warp; ++i) {
         int tile_id = warp_id * tiles_per_warp + i;
         int m_subtile = (tile_id / NUM_SUBTILES_N)*16;
         int n_subtile = (tile_id % NUM_SUBTILES_N)*16;
+
+        wmma::fill_fragment(acc_frag, 0.0f);
 
         // K-dimension processed in TILE_K chunks
         for (int64_t k_tile=0; k_tile<K; k_tile+=TILE_K) {
@@ -509,11 +512,12 @@ static __device__ void compute_tile(
                 }
             }
 
-            for (int idx = threadIdx.x; idx < (TILE_K/qblock_size)*TILE_N; idx += blockDim.x) {
-                int kb = idx / TILE_N;
-                int nl = idx % TILE_N;
+            for (int idx = threadIdx.x; idx < TILE_N*TILE_K; idx += blockDim.x) {
+                int nl = idx / TILE_K;
+                int kb = (idx % TILE_K) / qblock_size;
+                int kl = (idx % TILE_K) % qblock_size;
                 const uint8_t* w_block = w + (nl*(K/qblock_size) + (k_tile/qblock_size + kb))*qtype_size;
-                dequant_block(qtype_int, TILE_N, threadIdx.x % qblock_size, w_shared+kb*qblock_size*TILE_N+nl, w_block);
+                dequant_block(qtype_int, 1, kl, w_shared + nl*TILE_K + kb*qblock_size, w_block);
             }
             
             __syncthreads();
@@ -524,19 +528,27 @@ static __device__ void compute_tile(
                 wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b_frag;
 
                 wmma::load_matrix_sync(a_frag, x_shared+m_subtile*TILE_K+k_subtile, TILE_K);
-                wmma::load_matrix_sync(b_frag, w_shared+k_subtile*TILE_N+n_subtile, TILE_N);
+                wmma::load_matrix_sync(b_frag, w_shared+n_subtile*TILE_K+k_subtile, TILE_K);
                 wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
             }
+
             __syncthreads();
         }
 
         wmma::store_matrix_sync(
-            out + m_subtile*out_stride + n_subtile,
+            out_shared + m_subtile*TILE_N + n_subtile,
             acc_frag,
-            out_stride,
+            TILE_N,
             wmma::mem_row_major
         );
-        wmma::fill_fragment(acc_frag, __float2half(0.0f));
+    }
+
+    __syncthreads();
+
+    for (int idx = threadIdx.x; idx < TILE_M*TILE_N; idx += blockDim.x) {
+        int m_tile = idx / TILE_N;
+        int n_tile = idx % TILE_N;
+        out[m_tile*out_stride + n_tile] = __float2half(out_shared[m_tile*TILE_N + n_tile]);
     }
 }
 
@@ -555,7 +567,8 @@ __global__ void matmul_cuda_impl(
     const uint8_t* __restrict__ w
 ) {
     __shared__ half x_shared[TILE_M][TILE_K];
-    __shared__ half w_shared[TILE_K][TILE_N];
+    __shared__ float out_shared[TILE_M][TILE_N];
+    __shared__ half w_shared[TILE_N][TILE_K];
 
     int64_t out_stride = N;
     const half* x_tile = x + blockIdx.x*TILE_M*K;
@@ -565,7 +578,7 @@ __global__ void matmul_cuda_impl(
     compute_tile<TILE_M, TILE_N, TILE_K>(
         qtype_int, qblock_size, qtype_size,
         K, N, out_stride,
-        (half*)x_shared, (half*)w_shared,
+        (half*)x_shared, (float*)out_shared, (half*)w_shared,
         x_tile, out_tile, w_tile
     );
 }
@@ -609,7 +622,7 @@ void matmul_cuda(
     constexpr int TILE_SIZE = 32;
     constexpr int TILE_K = 256;
     dim3 grid((M+TILE_SIZE-1)/TILE_SIZE, (N+TILE_SIZE-1)/TILE_SIZE);
-    dim3 block(512);
+    dim3 block(128);
 
     matmul_cuda_impl<TILE_SIZE, TILE_SIZE, TILE_K><<<grid, block, 0, stream>>>(qtype_int, qblock_size, qtype_size, M, K, N, x_ptr, out_ptr, w_ptr);
 }
@@ -694,6 +707,7 @@ __global__ void qkv_cuda_impl(
 ) {
 
     __shared__ half x_shared[TILE_M][TILE_K];
+    __shared__ float out_shared[TILE_M][TILE_N];
     __shared__ half w_shared[TILE_K][TILE_N];
 
     int64_t q_out_stride = N_Q;
@@ -712,7 +726,7 @@ __global__ void qkv_cuda_impl(
         compute_tile<TILE_M, TILE_N, TILE_K>(
             q_qtype_int, q_qblock_size, q_qtype_size,
             K, N_Q, q_out_stride,
-            (half*)x_shared, (half*)w_shared,
+            (half*)x_shared, (float*)out_shared, (half*)w_shared,
             x_tile, q_out_tile, wq_tile
         );
     }
@@ -721,14 +735,14 @@ __global__ void qkv_cuda_impl(
         compute_tile<TILE_M, TILE_N, TILE_K>(
             k_qtype_int, k_qblock_size, k_qtype_size,
             K, N_KV, kv_out_stride,
-            (half*)x_shared, (half*)w_shared,
+            (half*)x_shared, (float*)out_shared, (half*)w_shared,
             x_tile, k_out_tile, wk_tile
         );
 
         compute_tile<TILE_M, TILE_N, TILE_K>(
             v_qtype_int, v_qblock_size, v_qtype_size,
             K, N_KV, kv_out_stride,
-            (half*)x_shared, (half*)w_shared,
+            (half*)x_shared, (float*)out_shared, (half*)w_shared,
             x_tile, v_out_tile, wv_tile
         );
     }
@@ -826,7 +840,7 @@ void qkv_cuda(
     constexpr int TILE_SIZE = 32;
     constexpr int TILE_K = 256;
     
-    dim3 block(512); // TODO: tune this or adjust as needed
+    dim3 block(128); // TODO: tune this or adjust as needed
     dim3 grid((M+TILE_SIZE-1)/TILE_SIZE, (N+TILE_SIZE-1)/TILE_SIZE);
 
     qkv_cuda_impl<TILE_SIZE, TILE_SIZE, TILE_K><<<grid, block, 0, stream>>>(
@@ -857,8 +871,10 @@ __global__ void flash_attn_cuda_impl(
     constexpr int THR_PER_ROW = BLOCK_SIZE / TILE_M;
 
     __shared__ half q_shared[TILE_M][TILE_K];
+    __shared__ float out_shared[TILE_M][TILE_N];
     __shared__ half k_shared[TILE_K][TILE_N];
     __shared__ half l_shared[TILE_M][TILE_N];
+    
     
     int64_t l_stride = TILE_N;    
     int64_t out_stride = N;
@@ -871,7 +887,7 @@ __global__ void flash_attn_cuda_impl(
     compute_tile<TILE_M, TILE_N, TILE_K>(
         qtype_int, qblock_size, qtype_size,
         K, N, l_stride,
-        (half*)q_shared, (half*)k_shared,
+        (half*)q_shared, (float*)out_shared, (half*)k_shared,
         q_tile, (half*)l_shared, k_tile
     );
 
@@ -908,7 +924,7 @@ __global__ void flash_attn_cuda_impl(
         compute_tile<TILE_M, TILE_K, TILE_N>(
             qtype_int, qblock_size, qtype_size,
             TILE_N, head_dim, out_stride,
-            (half*)l_shared, (half*)k_shared,
+            (half*)l_shared, (float*)out_shared, (half*)k_shared,
             (half*)l_shared, out_tile, v_tile
         );
     }
@@ -966,7 +982,7 @@ void flash_attn_cuda(
 
     constexpr int TILE_SIZE=32;
     constexpr int TILE_K=256;
-    constexpr int BLOCK_SIZE=512;
+    constexpr int BLOCK_SIZE=128;
 
     int64_t M = q.numel() / q.size(-1);
     int64_t K = q.size(-1);
@@ -1014,6 +1030,7 @@ __global__ void moe_scoring_cuda_impl(
     constexpr int THR_PER_ROW = BLOCK_SIZE / TILE_M;
 
     __shared__ half x_shared[TILE_M][TILE_K];
+    __shared__ float out_shared[TILE_M][TILE_N];
     __shared__ half w_shared[TILE_K][TILE_N];
     __shared__ half l_shared[TILE_M][TILE_N]; // logits
 
@@ -1026,7 +1043,7 @@ __global__ void moe_scoring_cuda_impl(
     compute_tile<TILE_M, TILE_N, TILE_K>(
         qtype_int, qblock_size, qtype_size,
         K, N, l_stride,
-        (half*)x_shared, (half*)w_shared,
+        (half*)x_shared, (float*)out_shared, (half*)w_shared,
         x_tile, (half*)l_shared, w_tile
     );
 
@@ -1099,7 +1116,7 @@ void moe_scoring_cuda(
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     constexpr int TILE_SIZE=32;
     constexpr int TILE_K=256;
-    constexpr int BLOCK_SIZE=512;
+    constexpr int BLOCK_SIZE=128;
 
     dim3 grid((M+TILE_SIZE-1)/TILE_SIZE, (N+TILE_SIZE-1)/TILE_SIZE);
     dim3 block(BLOCK_SIZE); // TODO: tune this or adjust as needed
@@ -1138,6 +1155,7 @@ __global__ void ffn_cuda_impl(
 ) {
     
     __shared__ half x_shared[TILE_M][TILE_K];
+    __shared__ float out_shared[TILE_M][TILE_N];
     __shared__ half w_shared[TILE_K][TILE_N];
     __shared__ half hb_shared[TILE_M][TILE_N];
     __shared__ half hb2_shared[TILE_M][TILE_N];
@@ -1157,7 +1175,7 @@ __global__ void ffn_cuda_impl(
     compute_tile<TILE_M, TILE_N, TILE_K>(
         gate_qtype_int, gate_qblock_size, gate_qtype_size,
         K_GU, N_GU, hb_stride,
-        (half*)x_shared, (half*)w_shared, 
+        (half*)x_shared, (float*)out_shared, (half*)w_shared, 
         in_tile, (half*)hb_shared, ws_gate_tile
     );
 
@@ -1172,7 +1190,7 @@ __global__ void ffn_cuda_impl(
     compute_tile<TILE_M, TILE_N, TILE_K>(
         up_qtype_int, up_qblock_size, up_qtype_size,
         K_GU, N_GU, hb2_stride,
-        (half*)x_shared, (half*)w_shared, 
+        (half*)x_shared, (float*)out_shared, (half*)w_shared, 
         in_tile, (half*)hb2_shared, ws_up_tile
     );
     
@@ -1185,7 +1203,7 @@ __global__ void ffn_cuda_impl(
     compute_tile<TILE_M, TILE_N, TILE_K>(
         down_qtype_int, down_qblock_size, down_qtype_size,
         K_DOWN, N_DOWN, out_stride,
-        (half*)x_shared, (half*)w_shared, 
+        (half*)x_shared, (float*)out_shared, (half*)w_shared, 
         (half*)hb2_shared, out_tile, ws_down_tile
     );
 }
@@ -1260,7 +1278,7 @@ void ffn_cuda(
     
     constexpr int TILE_SIZE=32;
     constexpr int TILE_K=256;
-    constexpr int BLOCK_SIZE=512;
+    constexpr int BLOCK_SIZE=128;
     
     dim3 block(BLOCK_SIZE); // TODO: tune this or adjust as needed
     dim3 grid((M+TILE_SIZE-1)/TILE_SIZE, (N+TILE_SIZE-1)/TILE_SIZE);
