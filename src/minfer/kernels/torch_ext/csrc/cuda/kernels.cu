@@ -100,7 +100,10 @@ static __device__ float row_reduce_max(float* vs, float v, int row_in_tile, int 
             v = warp_reduce_max(v);
         }
     }
-    return v;
+
+    if (thr_in_row == 0) vs[row_in_tile] = v;
+    __syncthreads();
+    return vs[row_in_tile];
 }
 
 template <int THR_PER_ROW>
@@ -117,11 +120,13 @@ static __device__ float row_reduce_sum(float* vs, float v, int row_in_tile, int 
             v = warp_reduce_sum(v);
         }
     }
-    return v;
+    if (thr_in_row == 0) vs[row_in_tile] = v;
+    __syncthreads();
+    return vs[row_in_tile];
 }
 
 template <int TILE_M, int TILE_N, int THR_PER_ROW>
-static __device__ int compute_dm_tile(
+static __device__ void compute_dm_tile(
     float* __restrict__ tiles_d,
     float* __restrict__ tiles_m,
     int* __restrict__ row_visit_cnt,
@@ -131,11 +136,11 @@ static __device__ int compute_dm_tile(
     int row_in_tile = threadIdx.x / THR_PER_ROW;
     int thr_in_row = threadIdx.x % THR_PER_ROW;
 
-    if (row_in_tile >= TILE_M) return -1;
+    if (row_in_tile >= TILE_M) return;
 
     int global_row = blockIdx.x*TILE_M+row_in_tile;
 
-    if (global_row >= M) return -1;
+    if (global_row >= M) return;
 
     constexpr int WARPS_PER_ROW = THR_PER_ROW/32 > 0 ? THR_PER_ROW/32 : 1;
 
@@ -148,21 +153,23 @@ static __device__ int compute_dm_tile(
         ml = fmaxf(ml, __half2float(tile[row_in_tile*TILE_N+col])); 
     }
 
-    tiles_m[blockIdx.x*gridDim.y*TILE_M + blockIdx.y*TILE_M + row_in_tile] = row_reduce_max<THR_PER_ROW>(tile_rows_m, ml, row_in_tile, thr_in_row);
+    float m = row_reduce_max<THR_PER_ROW>(tile_rows_m, ml, row_in_tile, thr_in_row);;
 
     // compute tile's d vals per row, write to tiles_d
     float dl = 0.0f;
     for (int col=thr_in_row; col<TILE_N; col+=THR_PER_ROW) {
-        dl += expf(__half2float(tile[row_in_tile*TILE_N+col])-ml);
+        dl += expf(__half2float(tile[row_in_tile*TILE_N+col])-m);
     }
 
-    tiles_d[blockIdx.x*gridDim.y*TILE_M + blockIdx.y*TILE_M + row_in_tile] = row_reduce_sum<THR_PER_ROW>(tile_rows_d, dl, row_in_tile, thr_in_row);
+    float d = row_reduce_sum<THR_PER_ROW>(tile_rows_d, dl, row_in_tile, thr_in_row);
 
-    int cnt = -1;
-    if (threadIdx.x == 0) {
-        cnt = atomicAdd(&row_visit_cnt[global_row],1);
+    if (threadIdx.x % THR_PER_ROW == 0 && row_in_tile < TILE_M) {
+        tiles_m[blockIdx.x*gridDim.y*TILE_M + blockIdx.y*TILE_M + row_in_tile] = m;
+        tiles_d[blockIdx.x*gridDim.y*TILE_M + blockIdx.y*TILE_M + row_in_tile] = d;
+        __threadfence();
+        atomicAdd(&row_visit_cnt[global_row], 1);
     }
-    return cnt;
+    __syncthreads();
 }
 
 template <int TILE_M>
@@ -174,57 +181,57 @@ static __device__ void reduce_dm_tiles (
     float* rows_m
  ) {
     int thr_per_row = blockDim.x / TILE_M;
+    int row_in_tile = threadIdx.x / thr_per_row;
+    int thr_in_row = threadIdx.x % thr_per_row;
+    int row_offset = row_in_tile*gridDim.y;
 
     float* scratch_d = scratch;
-    float* scratch_m = scratch + gridDim.y;
-
-    int row_in_tile = threadIdx.x / thr_per_row;
+    float* scratch_m = scratch + TILE_M*gridDim.y;
 
     // load tiles d and m vals to shared mem
-    for (int tile_col = threadIdx.x; tile_col<gridDim.y; tile_col += blockDim.x) {
-        int idx = blockIdx.x*gridDim.y*TILE_M + tile_col * TILE_M + row_in_tile;
-        scratch_d[tile_col] = tiles_d[idx];
-        scratch_m[tile_col] = tiles_m[idx];
+    for (int tile_col=thr_in_row; tile_col<gridDim.y; tile_col+=thr_per_row) {
+        int idx = blockIdx.x*gridDim.y*TILE_M + tile_col*TILE_M + row_in_tile;
+        scratch_d[row_offset + tile_col] = tiles_d[idx];
+        scratch_m[row_offset + tile_col] = tiles_m[idx];
     }
     __syncthreads();
 
     // tree reduction
     for (int stride = gridDim.y/2; stride > 0; stride >>= 1) {
-        if (threadIdx.x < stride) {
-            float m1 = scratch_m[threadIdx.x], m2 = scratch_m[threadIdx.x+stride];
-            float d1 = scratch_d[threadIdx.x], d2 = scratch_d[threadIdx.x+stride];
+        if (thr_in_row < stride && thr_in_row+stride<gridDim.y) {
+            float m1 = scratch_m[row_offset+thr_in_row], m2 = scratch_m[row_offset+thr_in_row+stride];
+            float d1 = scratch_d[row_offset+thr_in_row], d2 = scratch_d[row_offset+thr_in_row+stride];
             float m = fmaxf(m1,m2);
-            scratch_d[threadIdx.x] = d1*expf(m1-m) + d2*expf(m2-m);
-            scratch_m[threadIdx.x] = m;
+            scratch_d[row_offset+thr_in_row] = d1*expf(m1-m) + d2*expf(m2-m);
+            scratch_m[row_offset+thr_in_row] = m;
         }
         __syncthreads();
     }
 
-    if (threadIdx.x < TILE_M) {
-        rows_d[row_in_tile] = scratch_d[0];
-        rows_m[row_in_tile] = scratch_m[0];
+    if (thr_in_row == 0 && row_in_tile < TILE_M) {
+        rows_d[row_in_tile] = scratch_d[row_offset];
+        rows_m[row_in_tile] = scratch_m[row_offset];
     }
 }
 
 // only one block in row of tiles should call this
 template <int TILE_M>
 static __device__ void apply_dm(
-    half* __restrict__ out,
+    half* __restrict__ logits,
     float* __restrict__ rows_d,
     float* __restrict__ rows_m,
-    int64_t N
+    int64_t num_cols
 ) {
     int thr_per_row = blockDim.x / TILE_M; 
     int row_in_tile = threadIdx.x / thr_per_row;
+    int thr_in_row = threadIdx.x % thr_per_row;
 
     float d = rows_d[row_in_tile];
     float m = rows_m[row_in_tile];
 
-    int global_row = blockIdx.x*TILE_M + row_in_tile;
-
-    half* row = out + global_row*N;
+    half* row = logits + row_in_tile*num_cols;
     
-    for (int col=threadIdx.x; col<N; col+=blockDim.x) {
+    for (int col=thr_in_row; col<num_cols; col+=thr_per_row) {
         row[col] = __float2half(expf(__half2float(row[col])-m)/d);
     }
 }
@@ -869,6 +876,8 @@ __global__ void flash_attn_cuda_impl(
 ) {
     
     constexpr int THR_PER_ROW = BLOCK_SIZE / TILE_M;
+    int row_in_tile = threadIdx.x / THR_PER_ROW;
+    int global_row = blockIdx.x * TILE_M + row_in_tile;
 
     __shared__ half q_shared[TILE_M][TILE_K];
     __shared__ float out_shared[TILE_M][TILE_N];
@@ -891,7 +900,7 @@ __global__ void flash_attn_cuda_impl(
         q_tile, (half*)l_shared, k_tile
     );
 
-    int cnt = compute_dm_tile<TILE_M, TILE_N, THR_PER_ROW>(
+    compute_dm_tile<TILE_M, TILE_N, THR_PER_ROW>(
         tiles_d, tiles_m, row_visit_cnt,
         (half*)l_shared,
         M
@@ -906,7 +915,7 @@ __global__ void flash_attn_cuda_impl(
     // does tree reduction to get one d and m per row
     // applies softmax over TILE_M x TILE_N subsection using d and m
 
-    if (cnt == (gridDim.y-1)) {
+    if (row_visit_cnt[global_row] == gridDim.y-1) {
         reduce_dm_tiles<TILE_M>(
             tiles_d, tiles_m,
             reduce_scratch,
@@ -1028,6 +1037,8 @@ __global__ void moe_scoring_cuda_impl(
 ) {
 
     constexpr int THR_PER_ROW = BLOCK_SIZE / TILE_M;
+    int row_in_tile = threadIdx.x / THR_PER_ROW;
+    int global_row = blockIdx.x * TILE_M + row_in_tile;
 
     __shared__ half x_shared[TILE_M][TILE_K];
     __shared__ float out_shared[TILE_M][TILE_N];
@@ -1037,7 +1048,7 @@ __global__ void moe_scoring_cuda_impl(
     int64_t l_stride = TILE_N;
 
     const half* x_tile = x + blockIdx.x*TILE_M*K;
-
+    half* out_tile = out + blockIdx.x*TILE_M*N + blockIdx.y*TILE_N;
     const uint8_t* w_tile = w + blockIdx.y*TILE_N*(K/qblock_size)*qtype_size;
 
     compute_tile<TILE_M, TILE_N, TILE_K>(
@@ -1048,30 +1059,34 @@ __global__ void moe_scoring_cuda_impl(
     );
 
     // TODO: update(?) online softmax using computed tile here
-    int cnt = compute_dm_tile<TILE_M, TILE_N, THR_PER_ROW>(
+    compute_dm_tile<TILE_M, TILE_N, THR_PER_ROW>(
         tiles_d, tiles_m, row_visit_cnt,
         (half*)l_shared,
         M
     );
 
-    __shared__ float rows_d[TILE_M];
-    __shared__ float rows_m[TILE_M];
-
-    extern __shared__ float reduce_scratch[]; 
+    for (int idx=threadIdx.x; idx<TILE_M*N; idx+=blockDim.x) {
+        out_tile[(idx/N)*N + (idx%N)] = l_shared[idx/N][idx%N];
+    }
     
     // last tile to finish does:
     // does tree reduction to get one d and m per row
     // applies softmax over TILE_M x N subsection using d and m
 
-    if (cnt == (gridDim.y-1)) {
+    if (row_visit_cnt[blockIdx.x*TILE_M] == gridDim.y) {
+        __shared__ float rows_d[TILE_M], rows_m[TILE_M];
+        extern __shared__ float reduce_scratch[];
+
         reduce_dm_tiles<TILE_M>(
             tiles_d, tiles_m,
             reduce_scratch,
             rows_d, rows_m
         );
 
+        __syncthreads();
+
         apply_dm<TILE_M>(
-            out,
+            out + blockIdx.x*TILE_M*N,
             rows_d, rows_m,
             N
         );
@@ -1089,7 +1104,7 @@ void moe_scoring_cuda(
     const at::Tensor& w // [n_experts, hidden_dim]
 ) {
 
-    TORCH_CHECK(w.size(1) == x.size(-1));
+    TORCH_CHECK(w.size(1) == (x.size(-1) / qblock_size) * qtype_size);
     TORCH_CHECK(w.size(0) == out.size(-1));
     TORCH_CHECK(x.numel() / x.size(-1) == out.numel() / out.size(-1));
 
@@ -1131,7 +1146,7 @@ void moe_scoring_cuda(
 
     cudaMemset(moe_scratch.row_visit_cnt, 0, M*sizeof(int));
 
-    moe_scoring_cuda_impl<TILE_SIZE, TILE_SIZE, TILE_K, BLOCK_SIZE><<<grid, block, 2*grid.y*sizeof(float), stream>>>(
+    moe_scoring_cuda_impl<TILE_SIZE, TILE_SIZE, TILE_K, BLOCK_SIZE><<<grid, block, 2*TILE_SIZE*grid.y*sizeof(float), stream>>>(
         qtype_int, qblock_size, qtype_size,
         M, K, N,
         moe_scratch.tiles_d, moe_scratch.tiles_m, moe_scratch.row_visit_cnt, 

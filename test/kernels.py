@@ -158,6 +158,8 @@ def test_matmul(backend):
 def test_embed(backend):
     kerns = KernelBackend(backend)
     B, L, vocab_size, hidden_dim = 8, 4096, 128_000, 6144
+    qtype = GGMLQuantizationType.F16
+    qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
     # act. shape [B // dp_size, L], weight shape [vocab_size, hidden_dim]
     input_A = torch.randint(0, vocab_size, (B,L)).cuda()
@@ -165,7 +167,7 @@ def test_embed(backend):
     weight_A = torch.randn((vocab_size, hidden_dim), dtype=torch.float16).cuda()
 
     expected_A = weight_A[input_A]
-    kerns.embed(qtype_int, qblock_size, qtype_size, actual_A, input_A, weight_A.view(torch.uint8))
+    kerns.embed(qtype, qblock_size, qtype_size, actual_A, input_A, weight_A.view(torch.uint8))
     assert torch.allclose(expected_A.cpu(), actual_A.cpu()), "embed"
     
     # output act. shape [B // dp_size, L, hidden_dim]
@@ -175,26 +177,38 @@ def test_embed(backend):
 def test_qkv(backend):
     kerns = KernelBackend(backend)
     B, L, hidden_dim, n_heads, n_kv_heads, head_dim = 8, 4096, 6144, 48, 8, 128
+    q_qtype = GGMLQuantizationType.F16
+    q_qblock_size, q_qtype_size = GGML_QUANT_SIZES[q_qtype]
+    k_qtype = GGMLQuantizationType.F16
+    k_qblock_size, k_qtype_size = GGML_QUANT_SIZES[k_qtype]
+    v_qtype = GGMLQuantizationType.F16
+    v_qblock_size, v_qtype_size = GGML_QUANT_SIZES[v_qtype]
 
-    # act. shape [B // dp_size, L, hidden_dim], weight shape [q_dim or kv_dim, hidden_dim]
+    # input act. shape [B // dp_size, L, hidden_dim], 
+    # output act. shape [B // dp_size, L, q_dim or kv_dim] 
+    # weight shape [q_dim or kv_dim, hidden_dim]
     input_A = torch.randn((B,L,hidden_dim), dtype=torch.float16).cuda()
-    actual_A_Q = torch.zeros((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
-    actual_A_K = torch.zeros((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
-    actual_A_V = torch.zeros((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
+    actual_A_Q = torch.zeros((B,L,n_heads*head_dim), dtype=torch.float16).cuda()
+    actual_A_K = torch.zeros((B,L,n_kv_heads*head_dim), dtype=torch.float16).cuda()
+    actual_A_V = torch.zeros((B,L,n_kv_heads*head_dim), dtype=torch.float16).cuda()
     
     weight_A_Q = torch.randn((n_heads*head_dim,hidden_dim), dtype=torch.float16).cuda()
     weight_A_K = torch.randn((n_kv_heads*head_dim,hidden_dim), dtype=torch.float16).cuda()
     weight_A_V = torch.randn((n_kv_heads*head_dim,hidden_dim), dtype=torch.float16).cuda()
 
-    expected_A_Q = (input_A @ weight_A_Q.T).reshape(B, L, n_heads, head_dim).transpose(1,2)
-    expected_A_K = (input_A @ weight_A_K.T).reshape(B, L, n_kv_heads, head_dim).transpose(1,2)
-    expected_A_V = (input_A @ weight_A_V.T).reshape(B, L, n_kv_heads, head_dim).transpose(1,2)
+    expected_A_Q = (input_A @ weight_A_Q.T).reshape(B, L, n_heads*head_dim)
+    expected_A_K = (input_A @ weight_A_K.T).reshape(B, L, n_kv_heads*head_dim)
+    expected_A_V = (input_A @ weight_A_V.T).reshape(B, L, n_kv_heads*head_dim)
 
-    # TODO: add qkv call on actual_Q,K,V here
+    kerns.qkv(
+        q_qtype, k_qtype, v_qtype, q_qblock_size, k_qblock_size, v_qblock_size,
+        q_qtype_size, k_qtype_size, v_qtype_size, input_A, actual_A_Q, actual_A_K, actual_A_V,
+        weight_A_Q.view(torch.uint8), weight_A_K.view(torch.uint8), weight_A_V.view(torch.uint8)
+    )
 
-    assert torch.allclose(expected_A_Q.cpu(), actual_A_Q.cpu()), "qkv: Q"
-    assert torch.allclose(expected_A_K.cpu(), actual_A_K.cpu()), "qkv: K"
-    assert torch.allclose(expected_A_V.cpu(), actual_A_V.cpu()), "qkv: V"
+    assert torch.allclose(expected_A_Q.cpu(), actual_A_Q.cpu(), rtol=1e-2, atol=3e-1), "qkv: Q"
+    assert torch.allclose(expected_A_K.cpu(), actual_A_K.cpu(), rtol=1e-2, atol=3e-1), "qkv: K"
+    assert torch.allclose(expected_A_V.cpu(), actual_A_V.cpu(), rtol=1e-2, atol=3e-1), "qkv: V"
 
     # output: Q shape [B // dp_size, n_heads, L, head_dim], K and V shape [B // dp_size, n_kv_heads, L, head_dim]
 
@@ -203,17 +217,21 @@ def test_qkv(backend):
 def test_flash_attn(backend):
     kerns = KernelBackend(backend)
     B, L, hidden_dim, n_heads, n_kv_heads, head_dim = 8, 4096, 6144, 48, 8, 128
+    qtype = GGMLQuantizationType.F16
+    qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
     # Q shape [B // dp_size, n_heads, L, head_dim], K and V shape [B // dp_size, n_kv_heads, L, head_dim]
+    # zeros and zeros_like should be randn or something right?
     input_A_Q = torch.zeros((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
     input_A_K = torch.zeros((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
     input_A_V = torch.zeros_like(input_A_K)
-
     actual_A = torch.zeros((B,L,hidden_dim), dtype=torch.float16).cuda()
+
     expected_A = F.scaled_dot_product_attention(input_A_Q, input_A_K, input_A_V, is_causal=True)
 
-    # TODO: add flash_attn call on actual_A here
-
+    kerns.flash_attn(
+        qtype, qblock_size, qtype_size, actual_A, input_A_Q, input_A_K.view(torch.uint8), input_A_V.view(torch.uint8)
+    )
     assert torch.allclose(expected_A.cpu(), actual_A.cpu()), "flash_attn"
     
     # output act. shape [B // dp_size, L, hidden_dim]
@@ -223,16 +241,18 @@ def test_flash_attn(backend):
 def test_moe_scoring(backend):
     kerns = KernelBackend(backend)
     B, L, n_experts, hidden_dim = 8, 4096, 8, 6144
+    qtype = GGMLQuantizationType.F16
+    qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
     # performs matmul and fused (online) softmax
     # input act. shape [B // dp_size, L, hidden_dim]
-    input_A = torch.zeros((B,L,hidden_dim), dtype=torch.float16).cuda()
+    input_A = torch.randn((B,L,hidden_dim), dtype=torch.float16).cuda()
     actual_A = torch.zeros((B,L,n_experts), dtype=torch.float16).cuda()
     weight_A = torch.randn((n_experts, hidden_dim), dtype=torch.float16).cuda()
 
     expected_A = F.softmax(input_A @ weight_A.T, dim=-1)
 
-    # TODO: add moe_scoring call on actual_A here
+    kerns.moe_scoring(qtype, qblock_size, qtype_size, input_A, actual_A, weight_A.view(torch.uint8))
 
     assert torch.allclose(expected_A.cpu(), actual_A.cpu()), "moe_scoring"
 
@@ -242,20 +262,33 @@ def test_moe_scoring(backend):
 @pytest.mark.parametrize("backend", ["torch_ext"])
 def test_ffn(backend):
     kerns = KernelBackend(backend)
-    B, L, hidden_dim, mlp_dim = 8, 4096, 6144, 16384
+    B, L, n_local_exps, hidden_dim, mlp_dim = 8, 4096, 2, 6144, 16384
+    up_qtype = GGMLQuantizationType.F16
+    up_qblock_size, up_qtype_size = GGML_QUANT_SIZES[up_qtype]
+    gate_qtype = GGMLQuantizationType.F16
+    gate_qblock_size, gate_qtype_size = GGML_QUANT_SIZES[gate_qtype]
+    down_qtype = GGMLQuantizationType.F16
+    down_qblock_size, down_qtype_size = GGML_QUANT_SIZES[down_qtype]
 
     # performs SwiGLU then downproj.
     # input act. shape [B // dp_size, L, hidden_dim]
     input_A = torch.zeros((B,L,hidden_dim), dtype=torch.float16).cuda()
     actual_A = torch.zeros_like(input_A)
 
-    weight_A_gate = torch.randn((mlp_dim, hidden_dim), dtype=torch.float16).cuda()
-    weight_A_up = torch.randn((mlp_dim, hidden_dim), dtype=torch.float16).cuda()
-    weight_A_down = torch.randn((hidden_dim, mlp_dim), dtype=torch.float16).cuda()
+    hb = torch.zeros((B, L, n_local_exps, mlp_dim), dtype=torch.float16).cuda()
+    hb2 = torch.zeros_like(hb)
 
-    expected_A = (F.silu((input_A @ weight_A_gate.T)) * (input_A @ weight_A_up.T)) @ weight_A_down.T
+    ws_A_gate = torch.randn((n_local_exps, mlp_dim, hidden_dim), dtype=torch.float16).cuda()
+    ws_A_up = torch.randn((n_local_exps, mlp_dim, hidden_dim), dtype=torch.float16).cuda()
+    ws_A_down = torch.randn((n_local_exps, hidden_dim, mlp_dim), dtype=torch.float16).cuda()
 
-    # TODO: add ffn call on actual_A here
+    expected_A = (F.silu((input_A @ ws_A_gate.T)) * (input_A @ ws_A_up.T)) @ ws_A_down.T
+
+    kerns.ffn(
+        up_qtype, gate_qtype, down_qtype, up_qblock_size, gate_qblock_size, down_qblock_size,
+        up_qtype_size, gate_qtype_size, down_qtype_size, input_A, actual_A, hb, hb2,
+        ws_A_up.view(torch.uint8), ws_A_gate.view(torch.uint8), ws_A_down.view(torch.uint8)
+    )
 
     assert torch.allclose(expected_A.cpu(), actual_A.cpu()), "ffn"
 
