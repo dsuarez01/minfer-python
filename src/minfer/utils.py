@@ -255,8 +255,9 @@ class BufPool(nn.Module):
         self.register_buffer("act_exps_ws", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.n_act_exps), dtype=params.act_dtype))
 
         # experts
-        self.register_buffer("hb", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.n_exps // params.ep_size, params.mlp_dim), dtype=params.act_dtype))
-        self.register_buffer("hb2", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.n_exps // params.ep_size, params.mlp_dim), dtype=params.act_dtype))
+        self.register_buffer("hb", torch.zeros((params.n_exps // params.ep_size, params.batch_size // params.dp_size, params.max_seq_len, params.mlp_dim), dtype=params.act_dtype))
+        self.register_buffer("hb2", torch.zeros((params.n_exps // params.ep_size, params.batch_size // params.dp_size, params.max_seq_len, params.mlp_dim), dtype=params.act_dtype))
+        self.register_buffer("exp_out", torch.zeros((params.n_exps // params.ep_size, params.batch_size // params.dp_size, params.max_seq_len, params.hidden_dim), dtype=params.act_dtype)))
 
         # logits
         self.register_buffer("logits", torch.zeros((params.batch_size // params.dp_size, params.max_seq_len, params.vocab_size), dtype=params.act_dtype))

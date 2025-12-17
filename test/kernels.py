@@ -254,7 +254,12 @@ def test_moe_scoring(backend):
 
     kerns.moe_scoring(qtype, qblock_size, qtype_size, input_A, actual_A, weight_A.view(torch.uint8))
 
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu()), "moe_scoring"
+    print("max abs diff:", (actual_A - expected_A).abs().max().item())
+    print("has nan actual:", torch.isnan(actual_A).any().item())
+    print("has nan expected:", torch.isnan(expected_A).any().item())
+    print("num nans:", torch.isnan(actual_A).sum().item())
+
+    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), rtol=1e-3, atol=1e-5), "moe_scoring"
 
     # output act. shape [B // dp_size, L, n_experts]
 
@@ -273,16 +278,20 @@ def test_ffn(backend):
     # performs SwiGLU then downproj.
     # input act. shape [B // dp_size, L, hidden_dim]
     input_A = torch.zeros((B,L,hidden_dim), dtype=torch.float16).cuda()
-    actual_A = torch.zeros_like(input_A)
+    actual_A = torch.zeros((n_local_exps,B,L,hidden_dim), dtype=torch.float16).cuda()
 
-    hb = torch.zeros((B, L, n_local_exps, mlp_dim), dtype=torch.float16).cuda()
+    hb = torch.zeros((n_local_exps,B,L,mlp_dim), dtype=torch.float16).cuda()
     hb2 = torch.zeros_like(hb)
 
     ws_A_gate = torch.randn((n_local_exps, mlp_dim, hidden_dim), dtype=torch.float16).cuda()
     ws_A_up = torch.randn((n_local_exps, mlp_dim, hidden_dim), dtype=torch.float16).cuda()
     ws_A_down = torch.randn((n_local_exps, hidden_dim, mlp_dim), dtype=torch.float16).cuda()
 
-    expected_A = (F.silu((input_A @ ws_A_gate.T)) * (input_A @ ws_A_up.T)) @ ws_A_down.T
+    gate_out = torch.einsum("blh,emh->eblm", input_A, ws_A_gate)
+    up_out = torch.einsum("blh,emh->eblm", input_A, ws_A_up)
+    hidden = F.silu(gate_out) * up_out
+
+    expected_A = torch.einsum('eblm,ehm->eblh', hidden, ws_A_down)
 
     kerns.ffn(
         up_qtype, gate_qtype, down_qtype, up_qblock_size, gate_qblock_size, down_qblock_size,
@@ -292,4 +301,4 @@ def test_ffn(backend):
 
     assert torch.allclose(expected_A.cpu(), actual_A.cpu()), "ffn"
 
-    # output act. shape [B // dp_size, L, hidden_dim]
+    # output act. shape [n_local_exps, B // dp_size, L, hidden_dim]

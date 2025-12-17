@@ -43,15 +43,15 @@ static __device__ T convert_float(float v) {
 }
 
 // helpers for warp-level and block-level reductions
-static __device__ float warp_reduce_sum(float v) {
-    for (int offset = 16; offset > 0; offset >>= 1) {
+static __device__ float warp_reduce_sum(float v, int width=32) {
+    for (int offset = width/2; offset > 0; offset >>= 1) {
         v += __shfl_down_sync(0xffffffff, v, offset);
     }
     return v;
 }
 
-static __device__ float warp_reduce_max(float v) {
-    for (int offset = 16; offset > 0; offset >>= 1) {
+static __device__ float warp_reduce_max(float v, int width=32) {
+    for (int offset = width/2; offset > 0; offset >>= 1) {
         v = fmaxf(v, __shfl_down_sync(0xffffffff, v, offset));
     }
     return v;
@@ -88,7 +88,8 @@ static __device__ float blockreduce_max(float* vs, float v, int tid) {
 // threads in first warp responsible for reducing over warp vals [per-row]
 template <int THR_PER_ROW>
 static __device__ float row_reduce_max(float* vs, float v, int row_in_tile, int thr_in_row) {
-    v = warp_reduce_max(v);
+
+    v = warp_reduce_max(v, THR_PER_ROW);
 
     if constexpr(THR_PER_ROW/32 > 1) {
         int warp_in_row = thr_in_row / 32;
@@ -108,7 +109,8 @@ static __device__ float row_reduce_max(float* vs, float v, int row_in_tile, int 
 
 template <int THR_PER_ROW>
 static __device__ float row_reduce_sum(float* vs, float v, int row_in_tile, int thr_in_row) {
-    v = warp_reduce_sum(v);
+    
+    v = warp_reduce_sum(v, THR_PER_ROW);
 
     if constexpr(THR_PER_ROW/32 > 1) {
         int warp_in_row = thr_in_row / 32;
@@ -131,16 +133,13 @@ static __device__ void compute_dm_tile(
     float* __restrict__ tiles_m,
     int* __restrict__ row_visit_cnt,
     const half* __restrict__ tile,
-    int64_t M
+    int64_t M,
+    int64_t N
 ) {
     int row_in_tile = threadIdx.x / THR_PER_ROW;
     int thr_in_row = threadIdx.x % THR_PER_ROW;
-
-    if (row_in_tile >= TILE_M) return;
-
     int global_row = blockIdx.x*TILE_M+row_in_tile;
-
-    if (global_row >= M) return;
+    int num_cols = min((int64_t)TILE_N, N - blockIdx.y*TILE_N);
 
     constexpr int WARPS_PER_ROW = THR_PER_ROW/32 > 0 ? THR_PER_ROW/32 : 1;
 
@@ -149,7 +148,7 @@ static __device__ void compute_dm_tile(
 
     // compute tile's m vals per row, write to tiles_m
     float ml = -INFINITY;
-    for (int col=thr_in_row; col<TILE_N; col+=THR_PER_ROW) {
+    for (int col=thr_in_row; col<num_cols; col+=THR_PER_ROW) {
         ml = fmaxf(ml, __half2float(tile[row_in_tile*TILE_N+col])); 
     }
 
@@ -157,17 +156,21 @@ static __device__ void compute_dm_tile(
 
     // compute tile's d vals per row, write to tiles_d
     float dl = 0.0f;
-    for (int col=thr_in_row; col<TILE_N; col+=THR_PER_ROW) {
+    for (int col=thr_in_row; col<num_cols; col+=THR_PER_ROW) {
         dl += expf(__half2float(tile[row_in_tile*TILE_N+col])-m);
     }
 
     float d = row_reduce_sum<THR_PER_ROW>(tile_rows_d, dl, row_in_tile, thr_in_row);
 
-    if (threadIdx.x % THR_PER_ROW == 0 && row_in_tile < TILE_M) {
+    if (threadIdx.x%THR_PER_ROW == 0 && row_in_tile<TILE_M) {
         tiles_m[blockIdx.x*gridDim.y*TILE_M + blockIdx.y*TILE_M + row_in_tile] = m;
         tiles_d[blockIdx.x*gridDim.y*TILE_M + blockIdx.y*TILE_M + row_in_tile] = d;
+    }
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
         __threadfence();
-        atomicAdd(&row_visit_cnt[global_row], 1);
+        atomicAdd(&row_visit_cnt[blockIdx.x], 1);
     }
     __syncthreads();
 }
@@ -903,7 +906,7 @@ __global__ void flash_attn_cuda_impl(
     compute_dm_tile<TILE_M, TILE_N, THR_PER_ROW>(
         tiles_d, tiles_m, row_visit_cnt,
         (half*)l_shared,
-        M
+        M, N
     );
 
     __shared__ float rows_d[TILE_M];
@@ -915,7 +918,7 @@ __global__ void flash_attn_cuda_impl(
     // does tree reduction to get one d and m per row
     // applies softmax over TILE_M x TILE_N subsection using d and m
 
-    if (row_visit_cnt[global_row] == gridDim.y-1) {
+    if (true) {
         reduce_dm_tiles<TILE_M>(
             tiles_d, tiles_m,
             reduce_scratch,
@@ -1062,18 +1065,20 @@ __global__ void moe_scoring_cuda_impl(
     compute_dm_tile<TILE_M, TILE_N, THR_PER_ROW>(
         tiles_d, tiles_m, row_visit_cnt,
         (half*)l_shared,
-        M
+        M, N
     );
 
     for (int idx=threadIdx.x; idx<TILE_M*N; idx+=blockDim.x) {
         out_tile[(idx/N)*N + (idx%N)] = l_shared[idx/N][idx%N];
     }
     
+    __syncthreads();
+
     // last tile to finish does:
     // does tree reduction to get one d and m per row
     // applies softmax over TILE_M x N subsection using d and m
 
-    if (row_visit_cnt[blockIdx.x*TILE_M] == gridDim.y) {
+    if (atomicAdd(&row_visit_cnt[blockIdx.x], 0) == gridDim.y) {
         __shared__ float rows_d[TILE_M], rows_m[TILE_M];
         extern __shared__ float reduce_scratch[];
 
@@ -1140,11 +1145,11 @@ void moe_scoring_cuda(
         size_t scratch_size = grid.x*grid.y*TILE_SIZE; // TILE_SIZE entries per block (due to each row)
         cudaMalloc(&moe_scratch.tiles_d, scratch_size*sizeof(float));
         cudaMalloc(&moe_scratch.tiles_m, scratch_size*sizeof(float));
-        cudaMalloc(&moe_scratch.row_visit_cnt, M*sizeof(int));
+        cudaMalloc(&moe_scratch.row_visit_cnt, grid.x*sizeof(int));
         moe_scratch.init = true;
     }
 
-    cudaMemset(moe_scratch.row_visit_cnt, 0, M*sizeof(int));
+    cudaMemset(moe_scratch.row_visit_cnt, 0, grid.x*sizeof(int));
 
     moe_scoring_cuda_impl<TILE_SIZE, TILE_SIZE, TILE_K, BLOCK_SIZE><<<grid, block, 2*TILE_SIZE*grid.y*sizeof(float), stream>>>(
         qtype_int, qblock_size, qtype_size,
@@ -1179,12 +1184,16 @@ __global__ void ffn_cuda_impl(
     int64_t hb2_stride = TILE_N;
     int64_t out_stride = N_DOWN;
 
-    const half* in_tile = in + blockIdx.x*TILE_M*K_GU;
-    half* out_tile = out + blockIdx.x*TILE_M*out_stride + blockIdx.y*TILE_N;
+    const half* in_tile = in + blockIdx.y*TILE_M*K_GU;
+    half* out_tile = out + blockIdx.x * M * N_DOWN + blockIdx.y*TILE_M*out_stride + blockIdx.z*TILE_N;
 
-    const uint8_t* ws_gate_tile = ws_gate + blockIdx.y*TILE_N*(K_GU/gate_qblock_size)*gate_qtype_size;
-    const uint8_t* ws_up_tile = ws_up + blockIdx.y*TILE_N*(K_GU/up_qblock_size)*up_qtype_size;
-    const uint8_t* ws_down_tile = ws_down + blockIdx.y*TILE_N*(K_DOWN/down_qblock_size)*down_qtype_size;
+    int64_t exp_gate_size = N_GU*(K_GU/gate_qblock_size)*gate_qtype_size;
+    int64_t exp_up_size = N_GU*(K_GU/up_qblock_size)*up_qtype_size;
+    int64_t exp_down_size = N_DOWN*(K_DOWN/down_qblock_size)*down_qtype_size;
+
+    const uint8_t* ws_gate_tile = ws_gate + blockIdx.x*exp_gate_size + blockIdx.z * TILE_N * (K_GU / gate_qblock_size) * gate_qtype_size;
+    const uint8_t* ws_up_tile = ws_up + blockIdx.x*exp_up_size + blockIdx.z * TILE_N * (K_GU / up_qblock_size) * up_qtype_size;
+    const uint8_t* ws_down_tile = ws_down + blockIdx.x * exp_down_size + blockIdx.z * TILE_N * (K_DOWN / down_qblock_size) * down_qtype_size;
 
     // gate proj stored in hb
     compute_tile<TILE_M, TILE_N, TILE_K>(
@@ -1215,11 +1224,19 @@ __global__ void ffn_cuda_impl(
 
     __syncthreads();
     
+    half* hb2_tile = hb2 + blockIdx.x*M*N_GU + blockIdx.y*TILE_M*N_GU + blockIdx.z*TILE_N;
+    for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
+        hb2_tile[(idx/TILE_N)*N_GU+(idx%TILE_N)] = hb2_shared[idx/TILE_N][idx%TILE_N];
+    }
+
+    __syncthreads();
+
+    const half* hb2_row = hb2 + blockIdx.x*M*N_GU + blockIdx.y*TILE_M*N_GU;
     compute_tile<TILE_M, TILE_N, TILE_K>(
         down_qtype_int, down_qblock_size, down_qtype_size,
         K_DOWN, N_DOWN, out_stride,
         (half*)x_shared, (float*)out_shared, (half*)w_shared, 
-        (half*)hb2_shared, out_tile, ws_down_tile
+        (half*)hb2_row, out_tile, ws_down_tile
     );
 }
 
@@ -1229,9 +1246,9 @@ void ffn_cuda(
     int64_t up_qblock_size, int64_t gate_qblock_size, int64_t down_qblock_size,
     int64_t up_qtype_size, int64_t gate_qtype_size, int64_t down_qtype_size,
     const at::Tensor& in, // [B,L,hidden_dim]
-    at::Tensor& out, // [B,L,hidden_dim]
-    at::Tensor& hb, // [B,L,n_local_exps,mlp_dim]
-    at::Tensor& hb2, // [B,L,n_local_exps,mlp_dim]
+    at::Tensor& out, // [n_local_exps,B,L,hidden_dim]
+    at::Tensor& hb, // [n_local_exps,B,L,mlp_dim]
+    at::Tensor& hb2, // [n_local_exps,B,L,mlp_dim]
     const at::Tensor& ws_up, // [n_local_exps, mlp_dim, hidden_dim]
     const at::Tensor& ws_gate, // // [n_local_exps, mlp_dim, hidden_dim]
     const at::Tensor& ws_down // [n_local_exps, hidden_dim, mlp_dim]
@@ -1239,16 +1256,15 @@ void ffn_cuda(
     //validation 
 
     //dims
-    TORCH_CHECK((in.dim() == 3) && (out.dim() == 3));
+    TORCH_CHECK((in.dim() == 3) && (out.dim() == 4));
     TORCH_CHECK((hb.dim() == 4) && (hb2.dim() == 4));
     TORCH_CHECK((ws_up.dim() == 3) && (ws_gate.dim() == 3) && (ws_down.dim() == 3));
 
     //checks between dimensions
-    TORCH_CHECK(in.sizes().equals(out.sizes()));
+    TORCH_CHECK(in.numel() == out.numel() / out.size(0));
     TORCH_CHECK(hb.sizes().equals(hb2.sizes()));
     TORCH_CHECK(
-        (ws_up.numel() / ws_up.size(1) == ws_down.numel() / ws_down.size(-1)) &&
-        (ws_gate.numel() / ws_gate.size(1) == ws_down.numel() / ws_down.size(-1))
+        ws_up.size(0) == ws_gate.size(0) && ws_gate.size(0) == ws_down.size(0) && ws_up.size(1) == ws_gate.size(1)
     );
 
     //dtypes
@@ -1281,13 +1297,18 @@ void ffn_cuda(
     const uint8_t* ws_gate_ptr = ws_gate.data_ptr<uint8_t>();
     const uint8_t* ws_down_ptr = ws_down.data_ptr<uint8_t>();
 
-    int64_t M = in.numel() / in.size(-1);
-    int64_t N_GU = hb.size(2) * hb.size(3);
-    int64_t N_DOWN = in.size(-1);
-    int64_t N = std::max(N_GU, N_DOWN);
+    int64_t B = in.size(0);
+    int64_t L = in.size(1);
+    int64_t hidden_dim = in.size(-1);
+    int64_t n_local_exps = out.size(0);
+    int64_t mlp_dim = hb.size(3);
 
-    int64_t K_GU = in.size(-1);
-    int64_t K_DOWN = hb.size(2) * hb.size(3);
+    int64_t M = B*L;
+    int64_t K_GU = hidden_dim;
+    int64_t N_GU = mlp_dim;
+    int64_t K_DOWN = mlp_dim;
+    int64_t N_DOWN = hidden_dim;
+    int64_t N = std::max(N_GU, N_DOWN);
     
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     
@@ -1296,7 +1317,7 @@ void ffn_cuda(
     constexpr int BLOCK_SIZE=128;
     
     dim3 block(BLOCK_SIZE); // TODO: tune this or adjust as needed
-    dim3 grid((M+TILE_SIZE-1)/TILE_SIZE, (N+TILE_SIZE-1)/TILE_SIZE);
+    dim3 grid(n_local_exps, (M+TILE_SIZE-1)/TILE_SIZE, (N+TILE_SIZE-1)/TILE_SIZE);
 
     ffn_cuda_impl<TILE_SIZE, TILE_SIZE, TILE_K, BLOCK_SIZE><<<grid, block, 0, stream>>>(
         up_qtype_int, gate_qtype_int, down_qtype_int,
