@@ -385,33 +385,6 @@ constexpr int QR3_S = 4;
 constexpr int QI3_S = (QK_K / (4*QR3_S));
 
 ////////////////////////////////////////////////////////////////////////////////
-// Scratch space
-////////////////////////////////////////////////////////////////////////////////
-
-struct MoeScoring {
-    float* tiles_d;
-    float* tiles_m;
-    int* row_visit_cnt;
-    bool init;
-    
-    MoeScoring();
-    ~MoeScoring();
-};
-
-struct FlashAttnScoring {
-    float* tiles_d;
-    float* tiles_m;
-    int* row_visit_cnt;
-    bool init;
-    
-    FlashAttnScoring();
-    ~FlashAttnScoring();
-};
-
-static MoeScoring moe_scratch;
-static FlashAttnScoring flash_attn_scratch;
-
-////////////////////////////////////////////////////////////////////////////////
 // Tables
 ////////////////////////////////////////////////////////////////////////////////
 

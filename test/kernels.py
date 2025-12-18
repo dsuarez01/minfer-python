@@ -222,9 +222,9 @@ def test_flash_attn(backend):
 
     # Q shape [B // dp_size, n_heads, L, head_dim], K and V shape [B // dp_size, n_kv_heads, L, head_dim]
     # zeros and zeros_like should be randn or something right?
-    input_A_Q = torch.zeros((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
-    input_A_K = torch.zeros((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
-    input_A_V = torch.zeros_like(input_A_K)
+    input_A_Q = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
+    input_A_K = torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
+    input_A_V = torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
     actual_A = torch.zeros((B,L,hidden_dim), dtype=torch.float16).cuda()
 
     expected_A = F.scaled_dot_product_attention(input_A_Q, input_A_K, input_A_V, is_causal=True)
@@ -254,16 +254,11 @@ def test_moe_scoring(backend):
 
     kerns.moe_scoring(qtype, qblock_size, qtype_size, input_A, actual_A, weight_A.view(torch.uint8))
 
-    print("max abs diff:", (actual_A - expected_A).abs().max().item())
-    print("has nan actual:", torch.isnan(actual_A).any().item())
-    print("has nan expected:", torch.isnan(expected_A).any().item())
-    print("num nans:", torch.isnan(actual_A).sum().item())
-
     assert torch.allclose(expected_A.cpu(), actual_A.cpu(), rtol=1e-3, atol=1e-5), "moe_scoring"
 
     # output act. shape [B // dp_size, L, n_experts]
 
-# A: the usual ffn opn. per expert
+# A: the usual ffn opn.
 @pytest.mark.parametrize("backend", ["torch_ext"])
 def test_ffn(backend):
     kerns = KernelBackend(backend)
@@ -277,7 +272,7 @@ def test_ffn(backend):
 
     # performs SwiGLU then downproj.
     # input act. shape [B // dp_size, L, hidden_dim]
-    input_A = torch.zeros((B,L,hidden_dim), dtype=torch.float16).cuda()
+    input_A = torch.randn((B,L,hidden_dim), dtype=torch.float16).cuda()
     actual_A = torch.zeros((n_local_exps,B,L,hidden_dim), dtype=torch.float16).cuda()
 
     hb = torch.zeros((n_local_exps,B,L,mlp_dim), dtype=torch.float16).cuda()
