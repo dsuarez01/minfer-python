@@ -43,16 +43,25 @@ static __device__ T convert_float(float v) {
 }
 
 // helpers for warp-level and block-level reductions
-static __device__ float warp_reduce_sum(float v, int width=32) {
-    for (int offset = width/2; offset > 0; offset >>= 1) {
-        v += __shfl_down_sync(0xffffffff, v, offset, width);
+// refer to: https://developer.nvidia.com/blog/using-cuda-warp-level-primitives/
+#define FULL_MASK 0xffffffff
+template <int WIDTH=32>
+static __device__ float warp_reduce_sum(float v) {
+    unsigned mask = __ballot_sync(FULL_MASK, threadIdx.x < WIDTH);
+
+    for (int offset = WIDTH/2; offset > 0; offset >>= 1) {
+        v += __shfl_down_sync(mask, v, offset);
     }
     return v;
 }
 
-static __device__ float warp_reduce_max(float v, int width=32) {
-    for (int offset = width/2; offset > 0; offset >>= 1) {
-        v = fmaxf(v, __shfl_down_sync(0xffffffff, v, offset, width));
+#define FULL_MASK 0xffffffff
+template <int WIDTH=32>
+static __device__ float warp_reduce_max(float v) {
+    unsigned mask = __ballot_sync(FULL_MASK, threadIdx.x < WIDTH);
+    
+    for (int offset = WIDTH/2; offset > 0; offset >>= 1) {
+        v = fmaxf(v, __shfl_down_sync(mask, v, offset));
     }
     return v;
 }
@@ -89,46 +98,43 @@ static __device__ float blockreduce_max(float* vs, float v, int tid) {
 template <int THR_PER_ROW>
 static __device__ float row_reduce_max(float* vs, float v, int row_in_tile, int thr_in_row) {
 
-    //reduce w/in warp
-    v = warp_reduce_max(v, THR_PER_ROW);
+    v = warp_reduce_max<THR_PER_ROW>(v);
 
-    // reduce across warps
-    if constexpr(THR_PER_ROW/32 > 1) {
-        int warp_in_row = thr_in_row / 32;
-        if (thr_in_row % 32 == 0) vs[row_in_tile*(THR_PER_ROW/32)+warp_in_row]=v;
-        __syncthreads();
+    constexpr int WARPS_PER_ROW = (THR_PER_ROW+32-1)/32;
 
-        if (warp_in_row == 0 && thr_in_row < THR_PER_ROW/32) {
-            v = vs[row_in_tile*(THR_PER_ROW/32) + thr_in_row];
-            v = warp_reduce_max(v);
-        }
+    int warp_in_row = thr_in_row / 32;
+    if (thr_in_row % 32 == 0) vs[row_in_tile*WARPS_PER_ROW+warp_in_row]=v;
+    __syncthreads();
+    
+    if (THR_PER_ROW/32 > 0 && warp_in_row == 0 && thr_in_row < WARPS_PER_ROW) {
+        v = vs[row_in_tile*WARPS_PER_ROW + thr_in_row];
+        v = warp_reduce_max(v);
     }
 
-    if (thr_in_row == 0) vs[row_in_tile] = v;
+    if (thr_in_row == 0) vs[row_in_tile*WARPS_PER_ROW] = v;
     __syncthreads();
-    return vs[row_in_tile];
+    return vs[row_in_tile*WARPS_PER_ROW];
 }
 
 template <int THR_PER_ROW>
 static __device__ float row_reduce_sum(float* vs, float v, int row_in_tile, int thr_in_row) {
-    
-    // reduce w/in warp
-    v = warp_reduce_sum(v, THR_PER_ROW);
 
-    // reduce across warps
-    if constexpr(THR_PER_ROW/32 > 1) {
-        int warp_in_row = thr_in_row / 32;
-        if (thr_in_row % 32 == 0) vs[row_in_tile*(THR_PER_ROW/32)+warp_in_row]=v;
-        __syncthreads();
-        
-        if (warp_in_row == 0 && thr_in_row < THR_PER_ROW/32) {
-            v = vs[row_in_tile*(THR_PER_ROW/32) + thr_in_row];
-            v = warp_reduce_sum(v);
-        }
-    }
-    if (thr_in_row == 0) vs[row_in_tile] = v;
+    v = warp_reduce_sum<THR_PER_ROW>(v);
+
+    constexpr int WARPS_PER_ROW = (THR_PER_ROW+32-1)/32;
+
+    int warp_in_row = thr_in_row / 32;
+    if (thr_in_row % 32 == 0) vs[row_in_tile*WARPS_PER_ROW+warp_in_row]=v;
     __syncthreads();
-    return vs[row_in_tile];
+    
+    if (THR_PER_ROW/32 > 0 && warp_in_row == 0 && thr_in_row < WARPS_PER_ROW) {
+        v = vs[row_in_tile*WARPS_PER_ROW + thr_in_row];
+        v = warp_reduce_sum(v);
+    }
+
+    if (thr_in_row == 0) vs[row_in_tile*WARPS_PER_ROW] = v;
+    __syncthreads();
+    return vs[row_in_tile*WARPS_PER_ROW];
 }
 
 template <int TILE_M, int TILE_N, int THR_PER_ROW>
@@ -150,7 +156,6 @@ static __device__ void update_dm(
     }
 
     float tile_m = row_reduce_max<THR_PER_ROW>(scratch_m, ml, row_in_tile, thr_in_row);;
-    if (row_in_tile == 0 && blockIdx.x == 0) printf("tile_m is %f\n", tile_m);
 
     // compute tile's d vals per row, write to tiles_d
     float dl = 0.0f;
@@ -159,7 +164,6 @@ static __device__ void update_dm(
     }
 
     float tile_d = row_reduce_sum<THR_PER_ROW>(scratch_d, dl, row_in_tile, thr_in_row);
-    if (row_in_tile == 0 && blockIdx.x == 0) printf("tile_d is %f\n", tile_d);
 
     // update m and d
     if (thr_in_row == 0) {
@@ -167,7 +171,6 @@ static __device__ void update_dm(
         float d_old = ds[row_in_tile];
         float m_new = fmaxf(m_old, tile_m);
         float d_new = d_old*expf(m_old-m_new) + tile_d*expf(tile_m-m_new);
-        if (blockIdx.x == 0) printf("m_old is %f, m_new is %f, d_new is %f for row %d\n", m_old, m_new, d_new, row_in_tile);
         ms[row_in_tile] = m_new;
         ds[row_in_tile] = d_new;
     }
@@ -987,14 +990,15 @@ __global__ void moe_scoring_cuda_impl(
 ) {
 
     constexpr int THR_PER_ROW = BLOCK_SIZE / TILE_M;
- 
+    constexpr int WARPS_PER_ROW = (THR_PER_ROW+32-1)/32;
+
     __shared__ half x_shared[TILE_M][TILE_K];
     __shared__ half w_shared[TILE_N][TILE_K];
     __shared__ half l_shared[TILE_M][TILE_N];
     __shared__ float ds[TILE_M];
     __shared__ float ms[TILE_M];
-    __shared__ float scratch_d[TILE_M];
-    __shared__ float scratch_m[TILE_M];
+    __shared__ float scratch_d[TILE_M*WARPS_PER_ROW];
+    __shared__ float scratch_m[TILE_M*WARPS_PER_ROW];
 
     const half* x_row = x + blockIdx.x*TILE_M*K;
     half* out_row = out + blockIdx.x*TILE_M*N;

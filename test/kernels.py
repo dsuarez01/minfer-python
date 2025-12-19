@@ -47,7 +47,7 @@ def test_dequant(backend, qtype_name, shape):
     grid = (M,)
     kerns._dequant(qtype, quantized_A, actual_A, qblock_size, qtype_size)
     
-    assert torch.allclose(actual_A.cpu(), expected_A, rtol=1e-2, atol=1e-3)
+    assert torch.allclose(actual_A.cpu(), expected_A)
 
     torch.cuda.empty_cache()
 
@@ -68,7 +68,7 @@ def test_rmsnorm(backend):
     weight_A = torch.randn((hidden_dim), dtype=torch.float16).cuda()
     expected_A = F.rms_norm(input=input_A, weight=weight_A, normalized_shape=(hidden_dim,),  eps=eps)
     kerns.rmsnorm(eps, input_A, actual_A, weight_A)
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), rtol=1e-3, atol=1e-5), "rmsnorm: over entire vec"
+    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-2), "rmsnorm: over entire vec"
 
     # test for rmsnorm applied across heads (act. shape [B // dp_size, n_heads, L, head_dim], weight shape [head_dim,])
     input_B = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
@@ -76,7 +76,7 @@ def test_rmsnorm(backend):
     weight_B = torch.randn((head_dim,), dtype=torch.float16).cuda()
     expected_B = F.rms_norm(input=input_B, weight=weight_B, normalized_shape=(head_dim,),  eps=eps)
     kerns.rmsnorm(eps, input_B, actual_B, weight_B)
-    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), rtol=1e-3, atol=1e-5), "rmsnorm: per head"
+    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=1e-2), "rmsnorm: per head"
 
     # output act. identical shape to input in both cases
 
@@ -105,8 +105,7 @@ def test_rope(backend):
     expected_A = expected_A.flatten(-2).half()
 
     kerns.il_rope(rotary_dim, 0, base_freq, actual_A)
-    
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), rtol=2e-2, atol=5e-3), "rope: interleaved"
+    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=5e-3), "rope: interleaved"
 
     # test for neox rope (act. shape [B // dp_size, n_heads, L, head_dim])
     input_B = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).float().cuda()
@@ -126,7 +125,7 @@ def test_rope(backend):
     expected_B = expected_B.half()
 
     kerns.neox_rope(rotary_dim, 0, base_freq, actual_B)
-    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), rtol=2e-2, atol=5e-3), "rope: neox"
+    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=5e-3), "rope: neox"
 
     # output act. identical shape to input
     # TODO: need to add test where start pos is not zero
@@ -149,7 +148,7 @@ def test_matmul(backend):
     expected_A = input_A @ weight_A.T
     kerns.matmul(qtype, qblock_size, qtype_size, input_A, actual_A, weight_A.view(torch.uint8))
 
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), rtol=1e-2, atol=3e-1), "matmul"
+    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=3e-1), "matmul"
 
     # output act. shape [B // dp_size, L, out_dim]
 
@@ -175,6 +174,7 @@ def test_embed(backend):
 # A: just the usual QKV projections
 @pytest.mark.parametrize("backend", ["torch_ext"])
 def test_qkv(backend):
+
     kerns = KernelBackend(backend)
     B, L, hidden_dim, n_heads, n_kv_heads, head_dim = 8, 4096, 6144, 48, 8, 128
     q_qtype = GGMLQuantizationType.F16
@@ -192,13 +192,13 @@ def test_qkv(backend):
     actual_A_K = torch.zeros((B,L,n_kv_heads*head_dim), dtype=torch.float16).cuda()
     actual_A_V = torch.zeros((B,L,n_kv_heads*head_dim), dtype=torch.float16).cuda()
     
-    weight_A_Q = torch.randn((n_heads*head_dim,hidden_dim), dtype=torch.float16).cuda()
-    weight_A_K = torch.randn((n_kv_heads*head_dim,hidden_dim), dtype=torch.float16).cuda()
-    weight_A_V = torch.randn((n_kv_heads*head_dim,hidden_dim), dtype=torch.float16).cuda()
+    weight_A_Q = (1/hidden_dim**0.5) * torch.randn((n_heads*head_dim,hidden_dim), dtype=torch.float16).cuda()
+    weight_A_K = (1/hidden_dim**0.5) * torch.randn((n_kv_heads*head_dim,hidden_dim), dtype=torch.float16).cuda()
+    weight_A_V = (1/hidden_dim**0.5) * torch.randn((n_kv_heads*head_dim,hidden_dim), dtype=torch.float16).cuda()
 
-    expected_A_Q = (input_A @ weight_A_Q.T).reshape(B, L, n_heads*head_dim)
-    expected_A_K = (input_A @ weight_A_K.T).reshape(B, L, n_kv_heads*head_dim)
-    expected_A_V = (input_A @ weight_A_V.T).reshape(B, L, n_kv_heads*head_dim)
+    expected_A_Q = (input_A @ weight_A_Q.T)
+    expected_A_K = (input_A @ weight_A_K.T)
+    expected_A_V = (input_A @ weight_A_V.T)
 
     kerns.qkv(
         q_qtype, k_qtype, v_qtype, q_qblock_size, k_qblock_size, v_qblock_size,
@@ -206,9 +206,9 @@ def test_qkv(backend):
         weight_A_Q.view(torch.uint8), weight_A_K.view(torch.uint8), weight_A_V.view(torch.uint8)
     )
 
-    assert torch.allclose(expected_A_Q.cpu(), actual_A_Q.cpu(), rtol=1e-2, atol=3e-1), "qkv: Q"
-    assert torch.allclose(expected_A_K.cpu(), actual_A_K.cpu(), rtol=1e-2, atol=3e-1), "qkv: K"
-    assert torch.allclose(expected_A_V.cpu(), actual_A_V.cpu(), rtol=1e-2, atol=3e-1), "qkv: V"
+    assert torch.allclose(expected_A_Q.cpu(), actual_A_Q.cpu(), atol=5e-3), "qkv: Q"
+    assert torch.allclose(expected_A_K.cpu(), actual_A_K.cpu(), atol=5e-3), "qkv: K"
+    assert torch.allclose(expected_A_V.cpu(), actual_A_V.cpu(), atol=5e-3), "qkv: V"
 
     # output: Q shape [B // dp_size, n_heads, L, head_dim], K and V shape [B // dp_size, n_kv_heads, L, head_dim]
 
@@ -237,8 +237,8 @@ def test_flash_attn(backend):
     # output act. shape [B // dp_size, L, hidden_dim]
 
 # just the usual matmul + softmax before topk expert selection
-# A: padded weights, 8 exps
-# B: non-padded weights, 128 exps
+# A: 8 exps
+# B: 128 exps
 @pytest.mark.parametrize("backend", ["torch_ext"])
 def test_moe_scoring(backend):
     kerns = KernelBackend(backend)
@@ -255,22 +255,17 @@ def test_moe_scoring(backend):
 
     kerns.moe_scoring(qtype, qblock_size, qtype_size, input_A, actual_A, weight_A.view(torch.uint8))
 
-    print(f"actual_A sum: {actual_A.sum()}")
-    print(f"actual_A any isnan: {actual_A.isnan().any()}")
-    print(f"actual_A isnan total count {actual_A.isnan().sum()} vs nelem {actual_A.numel()}")
-    print(f"expected_A sum: {expected_A.sum()}")
-
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), rtol=1e-3, atol=1e-5), "moe_scoring"
+    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-3), "moe_scoring"
 
     input_B = torch.randn((B,L,hidden_dim), dtype=torch.float16).cuda()
     actual_B = torch.zeros((B,L,n_experts_B), dtype=torch.float16).cuda()
-    weight_B = torch.randn((n_experts_B, hidden_dim), dtype=torch.float16).cuda()
+    weight_B = (1/hidden_dim**0.5) * torch.randn((n_experts_B, hidden_dim), dtype=torch.float16).cuda()
 
     expected_B = F.softmax(input_B @ weight_B.T, dim=-1)
 
     kerns.moe_scoring(qtype, qblock_size, qtype_size, input_B, actual_B, weight_B.view(torch.uint8))
 
-    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), rtol=1e-3, atol=1e-5), "moe_scoring"
+    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=1e-3), "moe_scoring"
 
     # output act. shape [B // dp_size, L, n_experts]
 

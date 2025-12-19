@@ -428,7 +428,7 @@ void iq2xs_init_impl(int qtype_int) {
     //     return;
     // }
 
-    // NOTE: moved initialization of grid arrays to header
+    // NOTE: moved init of grid arrays to impl_common header
 
     const int kmap_size = 43692;
     //const int nwant = qtype == GGMLQuantizationType::IQ1_S ? 3 : 2;

@@ -2,6 +2,7 @@
 #include <ATen/core/Tensor.h>
 #include <c10/util/Exception.h>
 
+#include <omp.h>
 #include <cassert>
 
 #include "impl_common.hpp"
@@ -76,6 +77,7 @@ void dequant_cpu(
         case at::kFloat: {
             float* __restrict__ y_ptr = y.data_ptr<float>();
             // NOTE: could add threading here to speed things along
+            #pragma omp parallel for
             for (int row_idx = 0; row_idx < n_rows; ++row_idx) {
                 dequant_row_cpu<float>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
             }
@@ -84,6 +86,7 @@ void dequant_cpu(
         case at::kHalf: {
             at::Half* __restrict__ y_ptr = y.data_ptr<at::Half>();
             // NOTE: could add threading here to speed things along
+            #pragma omp parallel for
             for (int row_idx = 0; row_idx < n_rows; ++row_idx) {
                 dequant_row_cpu<at::Half>(qtype, x_ptr+row_idx*b, y_ptr+row_idx*k, k);
             }
@@ -158,6 +161,7 @@ void quant_cpu(
     switch (x.scalar_type()) {
         case at::kFloat: {
             const float* __restrict__ x_ptr = x.data_ptr<float>();
+            #pragma omp parallel for
             for (int row_idx = 0; row_idx < n_rows; ++row_idx) {
                 quant_row_cpu(qtype, x_ptr+row_idx*n, y_ptr+row_idx*b, n);
             }
