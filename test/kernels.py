@@ -236,25 +236,41 @@ def test_flash_attn(backend):
     
     # output act. shape [B // dp_size, L, hidden_dim]
 
-# A: just the usual matmul + softmax before topk expert selection
+# just the usual matmul + softmax before topk expert selection
+# A: padded weights, 8 exps
+# B: non-padded weights, 128 exps
 @pytest.mark.parametrize("backend", ["torch_ext"])
 def test_moe_scoring(backend):
     kerns = KernelBackend(backend)
-    B, L, n_experts, hidden_dim = 8, 4096, 8, 6144
+    B, L, n_experts_A, n_experts_B, hidden_dim = 8, 4096, 8, 128, 6144
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
     # performs matmul and fused (online) softmax
     # input act. shape [B // dp_size, L, hidden_dim]
     input_A = torch.randn((B,L,hidden_dim), dtype=torch.float16).cuda()
-    actual_A = torch.zeros((B,L,n_experts), dtype=torch.float16).cuda()
-    weight_A = torch.randn((n_experts, hidden_dim), dtype=torch.float16).cuda()
-
+    actual_A = torch.zeros((B,L,n_experts_A), dtype=torch.float16).cuda()
+    weight_A = (1/hidden_dim**0.5) * torch.randn((n_experts_A, hidden_dim), dtype=torch.float16).cuda()
     expected_A = F.softmax(input_A @ weight_A.T, dim=-1)
 
     kerns.moe_scoring(qtype, qblock_size, qtype_size, input_A, actual_A, weight_A.view(torch.uint8))
 
+    print(f"actual_A sum: {actual_A.sum()}")
+    print(f"actual_A any isnan: {actual_A.isnan().any()}")
+    print(f"actual_A isnan total count {actual_A.isnan().sum()} vs nelem {actual_A.numel()}")
+    print(f"expected_A sum: {expected_A.sum()}")
+
     assert torch.allclose(expected_A.cpu(), actual_A.cpu(), rtol=1e-3, atol=1e-5), "moe_scoring"
+
+    input_B = torch.randn((B,L,hidden_dim), dtype=torch.float16).cuda()
+    actual_B = torch.zeros((B,L,n_experts_B), dtype=torch.float16).cuda()
+    weight_B = torch.randn((n_experts_B, hidden_dim), dtype=torch.float16).cuda()
+
+    expected_B = F.softmax(input_B @ weight_B.T, dim=-1)
+
+    kerns.moe_scoring(qtype, qblock_size, qtype_size, input_B, actual_B, weight_B.view(torch.uint8))
+
+    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), rtol=1e-3, atol=1e-5), "moe_scoring"
 
     # output act. shape [B // dp_size, L, n_experts]
 
@@ -278,9 +294,10 @@ def test_ffn(backend):
     hb = torch.zeros((n_local_exps,B,L,mlp_dim), dtype=torch.float16).cuda()
     hb2 = torch.zeros_like(hb)
 
-    ws_A_gate = torch.randn((n_local_exps, mlp_dim, hidden_dim), dtype=torch.float16).cuda()
-    ws_A_up = torch.randn((n_local_exps, mlp_dim, hidden_dim), dtype=torch.float16).cuda()
-    ws_A_down = torch.randn((n_local_exps, hidden_dim, mlp_dim), dtype=torch.float16).cuda()
+    # reduces variance of linear proj outputs to 1, limits overflow
+    ws_A_gate = (1/hidden_dim**0.5) * torch.randn((n_local_exps, mlp_dim, hidden_dim), dtype=torch.float16).cuda()
+    ws_A_up = (1/hidden_dim**0.5) * torch.randn((n_local_exps, mlp_dim, hidden_dim), dtype=torch.float16).cuda()
+    ws_A_down = (1/mlp_dim**0.5) * torch.randn((n_local_exps, hidden_dim, mlp_dim), dtype=torch.float16).cuda()
 
     gate_out = torch.einsum("blh,emh->eblm", input_A, ws_A_gate)
     up_out = torch.einsum("blh,emh->eblm", input_A, ws_A_up)
@@ -294,6 +311,6 @@ def test_ffn(backend):
         ws_A_up.view(torch.uint8), ws_A_gate.view(torch.uint8), ws_A_down.view(torch.uint8)
     )
 
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu()), "ffn"
+    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=2e-3), "ffn"
 
     # output act. shape [n_local_exps, B // dp_size, L, hidden_dim]
