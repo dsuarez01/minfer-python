@@ -732,21 +732,6 @@ __device__ void dequant_block_bf16(
     y[idx*stride] = convert_bf16<T>(block[idx]);
 }
 
-template <typename T>
-__device__ void dequant_block_f16(
-    const uint8_t * __restrict__ w,
-    T * __restrict__ y,
-    int64_t stride,
-    int tid
-) {
-    if (tid >= QK_K) return;
-
-    int idx = tid;
-
-    const half* block = reinterpret_cast<const half*>(w);
-    y[idx*stride] = convert_half<T>(block[idx]);
-}
-
 // explicit instantiations of templates:
 
 // block
@@ -776,7 +761,6 @@ template __device__ void dequant_block_iq4_nl<float>(const uint8_t* __restrict__
 template __device__ void dequant_block_iq4_xs<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
 template __device__ void dequant_block_q8_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
 template __device__ void dequant_block_bf16<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_f16<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
 
 
 // half
@@ -804,4 +788,3 @@ template __device__ void dequant_block_iq4_nl<half>(const uint8_t* __restrict__ 
 template __device__ void dequant_block_iq4_xs<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
 template __device__ void dequant_block_q8_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
 template __device__ void dequant_block_bf16<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_f16<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);

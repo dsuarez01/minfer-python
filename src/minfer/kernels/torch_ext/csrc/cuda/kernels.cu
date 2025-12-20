@@ -214,7 +214,6 @@ static __device__ void dequant_block(
         case GGMLQuantizationType::IQ4_XS: dequant_block_iq4_xs<half>(w, y, stride, tid); break;
         case GGMLQuantizationType::Q8_K: dequant_block_q8_K<half>(w, y, stride, tid); break;
         case GGMLQuantizationType::BF16: dequant_block_bf16<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::F16: dequant_block_f16<half>(w, y, stride, tid); break;
         default: assert(false && "Unsupported dtype"); // this gets compiled out in non-debug builds...
     }
 }
@@ -455,6 +454,7 @@ static __device__ void compute_tile_wmma(
     half* __restrict__ out,
     const uint8_t* __restrict__ w
 ) {
+    auto qtype = static_cast<GGMLQuantizationType>(qtype_int);
 
     constexpr int NUM_SUBTILES_M = (TILE_M/16);
     constexpr int NUM_SUBTILES_N = (TILE_N/16);
@@ -479,24 +479,35 @@ static __device__ void compute_tile_wmma(
         // K-dimension processed in TILE_K chunks
         for (int64_t k_tile=0; k_tile<K; k_tile+=TILE_K) {
             // coop load x tile and w tile to shared mem
-            for (int idx = threadIdx.x; idx < TILE_M*TILE_K; idx += blockDim.x) {
-                int ml = idx / TILE_K;
-                int kl = idx % TILE_K;
+            int tile_k = min((int64_t)TILE_K, K-k_tile);
+            for (int idx = threadIdx.x; idx < TILE_M*tile_k; idx += blockDim.x) {
+                int ml = idx / tile_k;
+                int kl = idx % tile_k;
                 x_shared[ml*TILE_K+kl] = x[ml*K + k_tile + kl];
             }
 
-            for (int idx=threadIdx.x; idx<TILE_N*TILE_K; idx+=blockDim.x) {
-                int nl = idx / TILE_K;
-                int kb = (idx % TILE_K) / qblock_size;
-                int kl = (idx % TILE_K) % qblock_size;
-                const uint8_t* w_block = w + (nl*(K/qblock_size) + (k_tile/qblock_size + kb))*qtype_size;
-                dequant_block(qtype_int, 1, kl, w_shared + nl*TILE_K + kb*qblock_size, w_block);
+            // coop load of weight to shared mem
+            if (qtype == GGMLQuantizationType::F16) {
+                const half* w_f16 = (const half*)w;
+                for (int idx=threadIdx.x; idx<TILE_N*tile_k; idx+=blockDim.x) {
+                    int nl = idx / tile_k;
+                    int kl = idx % tile_k;
+                    w_shared[nl*TILE_K + kl] = w_f16[nl*K + k_tile + kl];
+                }
+            } else {
+                for (int idx=threadIdx.x; idx<TILE_N*tile_k; idx+=blockDim.x) {
+                    int nl = idx / tile_k;
+                    int kb = (idx % tile_k) / qblock_size;
+                    int kl = (idx % tile_k) % qblock_size;
+                    const uint8_t* w_block = w + (nl*(K/qblock_size) + (k_tile/qblock_size + kb))*qtype_size;
+                    dequant_block(qtype_int, 1, kl, w_shared + nl*TILE_K + kb*qblock_size, w_block);
+                }
             }
 
             __syncthreads();
 
             // process TILE_K with WMMA in chunks of 16
-            for (int k_subtile=0; k_subtile<TILE_K; k_subtile+=16) {
+            for (int k_subtile=0; k_subtile<tile_k; k_subtile+=16) {
                 wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a_frag;
                 wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b_frag;
 
@@ -610,6 +621,7 @@ __global__ void embed_cuda_impl(
     const int64_t* __restrict__ token_ids,
     const uint8_t* __restrict__ w
 ) {
+    auto qtype = static_cast<GGMLQuantizationType>(qtype_int);
     int64_t L = gridDim.y;
 
     int64_t iB = blockIdx.x;
@@ -620,7 +632,18 @@ __global__ void embed_cuda_impl(
     const uint8_t* w_block = w + token_id*b + block_in_row*qtype_size;
     half* x_block = x + iB*L*k + iL*k + block_in_row*qblock_size;
 
-    dequant_block(qtype_int, 1, threadIdx.x, x_block, w_block);
+    if (qtype == GGMLQuantizationType::F16) {
+        const half* w_f16 = (const half*)w;
+        half* x_row = x + iB*L*k + iL*k;
+        int elem_idx = block_in_row * qblock_size + threadIdx.x;
+        if (elem_idx < k) {
+            x_row[elem_idx] = w_f16[token_id*k + elem_idx];
+        }
+    } else {
+        const uint8_t* w_block = w + token_id*b + block_in_row*qtype_size;
+        half* x_block = x + iB*L*k + iL*k + block_in_row*qblock_size;
+        dequant_block(qtype_int, 1, threadIdx.x, x_block, w_block);
+    }
 }
 
 // NOTE: for now this assumes that the embedding matrix is quantized
@@ -831,87 +854,92 @@ __global__ void flash_attn_cuda_impl(
     int64_t M, int64_t K, int64_t N,
     half* __restrict__ out,
     const half* __restrict__ q,
-    const half* __restrict__ k,
-    const half* __restrict__ v
+    const uint8_t* __restrict__ k,
+    const uint8_t* __restrict__ v
 ) {
     
-    // constexpr int THR_PER_ROW = BLOCK_SIZE / TILE_M;
-    // int row_in_tile = threadIdx.x / THR_PER_ROW;
-    // int thr_in_row = threadIdx.x % THR_PER_ROW;
+    constexpr int THR_PER_ROW = BLOCK_SIZE / TILE_M;
+    constexpr int WARPS_PER_ROW = (THR_PER_ROW+32-1)/32;
 
-    // __shared__ half q_shared[TILE_M][TILE_K];
-    // __shared__ float out_shared[TILE_M][TILE_N];
-    // __shared__ half k_shared[TILE_K][TILE_N];
-    // __shared__ half l_shared[TILE_M][TILE_N];
+    __shared__ half in_shared[TILE_M][TILE_K];
+    __shared__ half kv_shared[TILE_N][TILE_K];
+    __shared__ half l_shared[TILE_M][TILE_N];
+    __shared__ float out_acc_shared[TILE_M][TILE_N];
+    __shared__ half out_shared[TILE_M][TILE_K];
+    __shared__ float ds[TILE_M];
+    __shared__ float ms[TILE_M];
+    __shared__ float scratch_d[TILE_M*WARPS_PER_ROW];
+    __shared__ float scratch_m[TILE_M*WARPS_PER_ROW];
 
-    // __shared__ float ds[TILE_M];
-    // __shared__ float ms[TILE_M];
+    const half* q_row = q + blockIdx.x*TILE_M*K;
+    half* out_row = out + blockIdx.x*TILE_M*K;
 
-    
-    // half* out_row = out + blockIdx.x*TILE_M*K;
-    // const half* q_row = q + blockIdx.x*TILE_M*K;
+    if (threadIdx.x<TILE_M) {
+        ds[threadIdx.x] = 0.0f;
+        ms[threadIdx.x] = -INFINITY;
+    }
 
-    // if (threadIdx.x<TILE_M) {
-    //     ds[threadIdx.x] = 0.0f;
-    //     ms[threadIdx.x] = -INFINITY;
-    // }
+    __syncthreads();
 
-    // __syncthreads();
+    for (int n_tile=0; n_tile<(N/TILE_N); ++n_tile) {
+        const uint8_t* k_row = k + n_tile*TILE_N*(K/qblock_size)*qtype_size;
+        const uint8_t* v_row = v + n_tile*TILE_N*(K/qblock_size)*qtype_size;
 
-    // for (int n_tile=0; n_tile<(N/TILE_N); ++n_tile) {
-    //     const uint8_t* k_row = reinterpret_cast<const uint8_t*>(k) + n_tile*(K/qblock_size)*qtype_size;
-    //     const uint8_t* v_row = reinterpret_cast<const uint8_t*>(v) + n_tile*(K/qblock_size)*qtype_size;
+        compute_tile_wmma<TILE_M, TILE_N, TILE_K>(
+            qtype_int, qblock_size, qtype_size,
+            K, TILE_N,
+            (half*)in_shared, (float*)out_acc_shared, (half*)kv_shared,
+            q_row, (half*)l_shared, k_row
+        );
 
-    //     for (int k_tile=0; k_tile<(K/TILE_K); ++k_tile) {
+        float m_old = ms[threadIdx.x/TILE_M];
+        float d_old = ds[threadIdx.x/TILE_M];
 
+        update_dm<TILE_M, TILE_N, THR_PER_ROW>(ds, ms, scratch_d, scratch_m, (half*)l_shared);
 
+        float m_new = ms[threadIdx.x/TILE_M];
+        float d_new = ds[threadIdx.x/TILE_M];
 
+        for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
+            int r = idx/TILE_N;
+            int c = idx%TILE_N;
+            l_shared[r][c] = __float2half(expf(__half2float(l_shared[r][c])-m_new)/d_new);
+        }
 
+        for (int k_tile=0; k_tile<K; k_tile+=TILE_K) {
+            
+            half* out_tile = out_row + k_tile;
+            const uint8_t* v_tile = v_row + (k_tile/qblock_size)*qtype_size;
 
-    //     }
+            for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
+                int r = idx/TILE_K;
+                int c = idx%TILE_K;
+                float out_val = __half2float(out_tile[r*TILE_K+c]);
+                out_shared[r][c] =  __float2half(out_val * expf(m_old-m_new));
+            }
 
+            compute_tile_wmma<TILE_M, TILE_N, TILE_K>(
+                qtype_int, qblock_size, qtype_size,
+                TILE_N, TILE_K,
+                (half*)in_shared, (float*)out_acc_shared, (half*)kv_shared,
+                (half*)l_shared, (half*)out_shared, v_tile
+            );
 
-    //     compute_tile<TILE_M, TILE_N, TILE_K>(
-    //         qtype_int, qblock_size, qtype_size,
-    //         K, TILE_N,
-    //         (half*)q_shared, (float*)out_shared, (half*)k_shared,
-    //         q_row, (half*)l_shared, k_tile
-    //     );
-
-    //     float d_old = ds[row_in_tile];
-    //     float m_old = ms[row_in_tile];
-
-    //     update_dm<TILE_M, TILE_N, THR_PER_ROW>(ds, ms, scratch_d, scratch_m, (half*)l_shared);
-
-    //     float d_new = ds[row_in_tile];
-    //     float m_new = ms[row_in_tile];
-
-    //     float scale = expf(m_old-m_new) * (d_old/d_new);
-    //     for (int idx=threadIdx.x; idx < TILE_M*TILE_K; idx += BLOCK_SIZE) {
-    //         int r = idx / TILE_K;
-    //         int c = idx % TILE_K;
-    //         out_acc[r][c] *= rescale;
-    //     }
-    //     __syncthreads();
-
-    //     for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=BLOCK_SIZE) {
-    //         int r = idx/TILE_N;
-    //         int c = idx%TILE_N;
-    //         out_row[r*N+n_tile*TILE_N+c] = l_shared[r][c];
-    //     }
-
-    //     __syncthreads();
-
-    // }
-
-    
+            int tile_k = min((int64_t)TILE_K, K - k_tile);
+            for (int idx=threadIdx.x; idx<TILE_M*tile_k; idx+=blockDim.x) {
+                int r = idx/tile_k;
+                int c = idx%tile_k;
+                out_tile[r*K+c] = out_shared[r][c];
+            }
+        }
+    }
 }
 
 void flash_attn_cuda(
     int64_t qtype_int,
     int64_t qblock_size,
     int64_t qtype_size,
-    at::Tensor& out,     // [B, n_heads, L, head_dim]
+    at::Tensor& out,     // [B, n_heads, L, head_dim] (important that this is zero-initialized)
     const at::Tensor& q, // [B, n_heads, L, head_dim]
     const at::Tensor& k, // [B, n_kv_heads, L, head_dim]
     const at::Tensor& v  // [B, n_kv_heads, L, head_dim]
@@ -923,17 +951,19 @@ void flash_attn_cuda(
         (q.dim() == 4) && (k.dim() == 4) && (v.dim() == 4) && (out.dim() == 4)
     );
 
-
     // checks btwn different dims
     TORCH_CHECK(q.sizes().equals(out.sizes()));
     TORCH_CHECK(k.sizes().equals(v.sizes()));
-    TORCH_CHECK(q.numel() / q.size(1) == k.numel() / k.size(1));
+    TORCH_CHECK(
+        (k.size(-1) * qblock_size == q.size(-1) * qtype_size) &&
+        (q.size(0) == k.size(0)) && (q.size(1) == k.size(1)) && (q.size(2) == k.size(2))
+    );
 
     // dtypes
     TORCH_CHECK(
         (q.dtype() == at::kHalf) &&
-        (k.dtype() == at::kHalf) &&
-        (v.dtype() == at::kHalf) &&
+        (k.dtype() == at::kByte) &&
+        (v.dtype() == at::kByte) &&
         (out.dtype() == at::kHalf)
     );
 
@@ -953,11 +983,11 @@ void flash_attn_cuda(
     );
 
     const half* q_ptr = reinterpret_cast<const half*>(q.data_ptr<at::Half>());
-    const half* k_ptr = reinterpret_cast<const half*>(k.data_ptr<at::Half>());
-    const half* v_ptr = reinterpret_cast<const half*>(v.data_ptr<at::Half>());
+    const uint8_t* k_ptr = reinterpret_cast<const uint8_t*>(k.data_ptr<uint8_t>());
+    const uint8_t* v_ptr = reinterpret_cast<const uint8_t*>(v.data_ptr<uint8_t>());
     half* out_ptr = reinterpret_cast<half*>(out.data_ptr<at::Half>());
 
-    constexpr int TILE_SIZE=32;
+    constexpr int TILE_SIZE=16;
     constexpr int TILE_K=256;
     constexpr int BLOCK_SIZE=128;
 

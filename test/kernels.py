@@ -65,18 +65,18 @@ def test_rmsnorm(backend):
     # test for rmsnorm applied across entire vector (act. shape [B // dp_size, L, hidden_dim], weight shape [hidden_dim,])
     input_A = torch.randn((B,L,hidden_dim), dtype=torch.float16).cuda()
     actual_A = torch.zeros_like(input_A)
-    weight_A = torch.randn((hidden_dim), dtype=torch.float16).cuda()
+    weight_A = (1/hidden_dim**0.5) * torch.randn((hidden_dim), dtype=torch.float16).cuda()
     expected_A = F.rms_norm(input=input_A, weight=weight_A, normalized_shape=(hidden_dim,),  eps=eps)
     kerns.rmsnorm(eps, input_A, actual_A, weight_A)
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-2), "rmsnorm: over entire vec"
+    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-3), "rmsnorm: over entire vec"
 
     # test for rmsnorm applied across heads (act. shape [B // dp_size, n_heads, L, head_dim], weight shape [head_dim,])
     input_B = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
     actual_B = torch.zeros_like(input_B)
-    weight_B = torch.randn((head_dim,), dtype=torch.float16).cuda()
+    weight_B = (1/head_dim**0.5) * torch.randn((head_dim,), dtype=torch.float16).cuda()
     expected_B = F.rms_norm(input=input_B, weight=weight_B, normalized_shape=(head_dim,),  eps=eps)
     kerns.rmsnorm(eps, input_B, actual_B, weight_B)
-    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=1e-2), "rmsnorm: per head"
+    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=1e-3), "rmsnorm: per head"
 
     # output act. identical shape to input in both cases
 
@@ -127,9 +127,46 @@ def test_rope(backend):
     kerns.neox_rope(rotary_dim, 0, base_freq, actual_B)
     assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=5e-3), "rope: neox"
 
-    # output act. identical shape to input
-    # TODO: need to add test where start pos is not zero
+    # test with non-zero start_pos
+    start_pos = 2048
+    input_C = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).float().cuda()
+    actual_C = input_C.half().clone()
 
+    freqs_C = torch.arange(rotary_dim // 2, dtype=torch.float32).cuda()
+    freqs_C = base_freq ** (-2.0 * freqs_C / rotary_dim)
+    freqs_C = (torch.arange(L, dtype=torch.float32).cuda() + start_pos)[:, None] * freqs_C[None,:]
+    cos_C = torch.cos(freqs_C)
+    sin_C = torch.sin(freqs_C)
+
+    input_C = input_C.reshape(*input_C.shape[:-1], -1, 2)
+    expected_C = input_C.clone()
+    expected_C[..., :rotary_dim//2, 0] = cos_C * input_C[..., :rotary_dim//2, 0] - sin_C * input_C[..., :rotary_dim//2, 1]
+    expected_C[..., :rotary_dim//2, 1] = sin_C * input_C[..., :rotary_dim//2, 0] + cos_C * input_C[..., :rotary_dim//2, 1]
+    expected_C = expected_C.flatten(-2).half()
+
+    kerns.il_rope(rotary_dim, start_pos, base_freq, actual_C)
+    assert torch.allclose(expected_C.cpu(), actual_C.cpu(), atol=5e-3), "rope: interleaved w/ start_pos"
+
+    # test neox with non-zero start_pos
+    input_D = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).float().cuda()
+    actual_D = input_D.half().clone()
+
+    freqs_D = torch.arange(rotary_dim // 2, dtype=torch.float32).cuda()
+    freqs_D = base_freq ** (-2.0 * freqs_D / rotary_dim)
+    freqs_D = (torch.arange(L, dtype=torch.float32).cuda() + start_pos)[:, None] * freqs_D[None,:]
+    cos_D = torch.cos(freqs_D)
+    sin_D = torch.sin(freqs_D)
+
+    expected_D = input_D.clone()
+    input_D = torch.stack([input_D[...,:rotary_dim//2], input_D[...,rotary_dim//2:rotary_dim]], dim=-1)
+    expected_D[..., :rotary_dim//2] = cos_D * input_D[..., :rotary_dim//2, 0] - sin_D * input_D[..., :rotary_dim//2, 1]
+    expected_D[..., rotary_dim//2:rotary_dim] = sin_D * input_D[..., :rotary_dim//2, 0] + cos_D * input_D[..., :rotary_dim//2, 1]
+    expected_D = expected_D.half()
+
+    kerns.neox_rope(rotary_dim, start_pos, base_freq, actual_D)
+    assert torch.allclose(expected_D.cpu(), actual_D.cpu(), atol=5e-3), "rope: neox w/ start_pos"
+
+    # output act. identical shape to input
     # TODO: there's some precision issue here (large vals of angle=freq*pos), so had to manually adjust the rtol and atol values
 
 # A: just the usual matmul
@@ -143,12 +180,12 @@ def test_matmul(backend):
     # act. shape [B // dp_size, L, in_dim], weight shape [out_dim, in_dim]    
     input_A = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()
     actual_A = torch.zeros((B, L, out_dim), dtype=torch.float16).cuda()
-    weight_A = torch.randn((out_dim, in_dim), dtype=torch.float16).cuda()
+    weight_A = (1/in_dim**0.5) * torch.randn((out_dim, in_dim), dtype=torch.float16).cuda()
 
     expected_A = input_A @ weight_A.T
     kerns.matmul(qtype, qblock_size, qtype_size, input_A, actual_A, weight_A.view(torch.uint8))
 
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=3e-1), "matmul"
+    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-2), "matmul"
 
     # output act. shape [B // dp_size, L, out_dim]
 
@@ -223,9 +260,13 @@ def test_flash_attn(backend):
     # Q shape [B // dp_size, n_heads, L, head_dim], K and V shape [B // dp_size, n_kv_heads, L, head_dim]
     # zeros and zeros_like should be randn or something right?
     input_A_Q = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
-    input_A_K = torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
-    input_A_V = torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
-    actual_A = torch.zeros((B,L,hidden_dim), dtype=torch.float16).cuda()
+    input_A_K = (1/head_dim**0.5) * torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
+    input_A_V = (1/head_dim**0.5) * torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
+    n_rep = n_heads // n_kv_heads
+    input_A_K = input_A_K.repeat_interleave(n_rep, dim=1)
+    input_A_V = input_A_V.repeat_interleave(n_rep, dim=1)
+
+    actual_A = torch.zeros((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
 
     expected_A = F.scaled_dot_product_attention(input_A_Q, input_A_K, input_A_V, is_causal=True)
 

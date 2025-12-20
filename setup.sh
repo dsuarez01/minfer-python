@@ -12,6 +12,7 @@ export CXX=/usr/bin/g++
 
 module load cuda/12.9
 export CUDA_HOME=$(dirname $(dirname $(which nvcc)))
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 # local disk for compile cache
 LOCAL_DISK=/state/partition1/user/$USER

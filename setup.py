@@ -29,11 +29,12 @@ def get_extensions():
     extensions_dir = os.path.join("src", library_name, "kernels", "torch_ext", "csrc")
     include_path = "-I"+os.path.join(this_dir, extensions_dir)
 
-    extra_link_args = []
+    extra_link_args = ["-fopenmp"]
     extra_compile_args = {
         "cxx": [
             "-std=c++17",
             "-O3" if not debug_mode else "-O0",
+            "-fopenmp",
             "-fdiagnostics-color=always",
             "-DPy_LIMITED_API=0x030d0000",  # min CPython v3.13,
             include_path,

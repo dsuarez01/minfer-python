@@ -56,6 +56,10 @@ void dequant_cpu(
     int64_t qblock_size, // num deq elems in block
     int64_t qtype_size // byte size of block
 ) {
+    #ifdef _OPENMP
+    printf("Dequant OpenMP threads: %d\n", omp_get_max_threads());
+    #endif
+
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
     TORCH_CHECK(x.dim() == 2 && y.dim() == 2);
     TORCH_CHECK(x.size(0) == y.size(0), "x and y must have the same number of rows");
@@ -141,6 +145,10 @@ void quant_cpu(
     int64_t qblock_size, // num deq elems in block
     int64_t qtype_size // byte size of block
 ) {
+    #ifdef _OPENMP
+    printf("Quant OpenMP threads: %d\n", omp_get_max_threads());
+    #endif
+
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
     TORCH_CHECK(x.dim() == 2 && y.dim() == 2);
     TORCH_CHECK(x.size(0) == y.size(0), "x and y must have same number of rows");
