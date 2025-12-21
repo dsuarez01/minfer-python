@@ -173,19 +173,31 @@ def test_rope(backend):
 @pytest.mark.parametrize("backend", ["torch_ext"])
 def test_matmul(backend):
     kerns = KernelBackend(backend)
-    B, L, in_dim, out_dim = 8, 4096, 6144, 16384
+    B, L, in_dim, out_dim_A, out_dim_B = 8, 4096, 6144, 16384, 8
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
     # act. shape [B // dp_size, L, in_dim], weight shape [out_dim, in_dim]    
     input_A = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()
-    actual_A = torch.zeros((B, L, out_dim), dtype=torch.float16).cuda()
-    weight_A = (1/in_dim**0.5) * torch.randn((out_dim, in_dim), dtype=torch.float16).cuda()
+    actual_A = torch.zeros((B, L, out_dim_A), dtype=torch.float16).cuda()
+    weight_A = (1/in_dim**0.5) * torch.randn((out_dim_A, in_dim), dtype=torch.float16).cuda()
 
     expected_A = input_A @ weight_A.T
-    kerns.matmul(qtype, qblock_size, qtype_size, input_A, actual_A, weight_A.view(torch.uint8))
+    kerns.matmul(qtype, qblock_size, qtype_size, input_A, actual_A, weight_A)
 
     assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-2), "matmul"
+
+    # act. shape [B // dp_size, L, in_dim], weight shape [out_dim, in_dim]    
+    input_B = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()
+    actual_B = torch.zeros((B, L, out_dim_B), dtype=torch.float16).cuda()
+    weight_B = (1/in_dim**0.5) * torch.randn((out_dim_B, in_dim), dtype=torch.float16).cuda()
+
+    expected_B = input_B @ weight_B.T
+    kerns.matmul(qtype, qblock_size, qtype_size, input_B, actual_B, weight_B)
+
+    print(f"max abs tol test B: {(actual_B - expected_B).abs().max():.9f}")
+
+    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=1e-2), "matmul"
 
     # output act. shape [B // dp_size, L, out_dim]
 
@@ -203,7 +215,7 @@ def test_embed(backend):
     weight_A = torch.randn((vocab_size, hidden_dim), dtype=torch.float16).cuda()
 
     expected_A = weight_A[input_A]
-    kerns.embed(qtype, qblock_size, qtype_size, actual_A, input_A, weight_A.view(torch.uint8))
+    kerns.embed(qtype, qblock_size, qtype_size, actual_A, input_A, weight_A)
     assert torch.allclose(expected_A.cpu(), actual_A.cpu()), "embed"
     
     # output act. shape [B // dp_size, L, hidden_dim]
@@ -240,7 +252,7 @@ def test_qkv(backend):
     kerns.qkv(
         q_qtype, k_qtype, v_qtype, q_qblock_size, k_qblock_size, v_qblock_size,
         q_qtype_size, k_qtype_size, v_qtype_size, input_A, actual_A_Q, actual_A_K, actual_A_V,
-        weight_A_Q.view(torch.uint8), weight_A_K.view(torch.uint8), weight_A_V.view(torch.uint8)
+        weight_A_Q, weight_A_K, weight_A_V
     )
 
     assert torch.allclose(expected_A_Q.cpu(), actual_A_Q.cpu(), atol=5e-3), "qkv: Q"
@@ -271,7 +283,7 @@ def test_flash_attn(backend):
     expected_A = F.scaled_dot_product_attention(input_A_Q, input_A_K, input_A_V, is_causal=True)
 
     kerns.flash_attn(
-        qtype, qblock_size, qtype_size, actual_A, input_A_Q, input_A_K.view(torch.uint8), input_A_V.view(torch.uint8)
+        qtype, qblock_size, qtype_size, actual_A, input_A_Q, input_A_K, input_A_V
     )
     assert torch.allclose(expected_A.cpu(), actual_A.cpu()), "flash_attn"
     
@@ -294,7 +306,7 @@ def test_moe_scoring(backend):
     weight_A = (1/hidden_dim**0.5) * torch.randn((n_experts_A, hidden_dim), dtype=torch.float16).cuda()
     expected_A = F.softmax(input_A @ weight_A.T, dim=-1)
 
-    kerns.moe_scoring(qtype, qblock_size, qtype_size, input_A, actual_A, weight_A.view(torch.uint8))
+    kerns.moe_scoring(qtype, qblock_size, qtype_size, input_A, actual_A, weight_A)
 
     assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-3), "moe_scoring"
 
@@ -304,7 +316,7 @@ def test_moe_scoring(backend):
 
     expected_B = F.softmax(input_B @ weight_B.T, dim=-1)
 
-    kerns.moe_scoring(qtype, qblock_size, qtype_size, input_B, actual_B, weight_B.view(torch.uint8))
+    kerns.moe_scoring(qtype, qblock_size, qtype_size, input_B, actual_B, weight_B)
 
     assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=1e-3), "moe_scoring"
 
@@ -342,9 +354,11 @@ def test_ffn(backend):
     expected_A = torch.einsum('eblm,ehm->eblh', hidden, ws_A_down)
 
     kerns.ffn(
-        up_qtype, gate_qtype, down_qtype, up_qblock_size, gate_qblock_size, down_qblock_size,
-        up_qtype_size, gate_qtype_size, down_qtype_size, input_A, actual_A, hb, hb2,
-        ws_A_up.view(torch.uint8), ws_A_gate.view(torch.uint8), ws_A_down.view(torch.uint8)
+        up_qtype, gate_qtype, down_qtype, 
+        up_qblock_size, gate_qblock_size, down_qblock_size,
+        up_qtype_size, gate_qtype_size, down_qtype_size, 
+        input_A, actual_A, hb, hb2,
+        ws_A_up, ws_A_gate, ws_A_down
     )
 
     assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=2e-3), "ffn"
