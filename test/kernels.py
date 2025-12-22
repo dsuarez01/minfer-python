@@ -195,8 +195,6 @@ def test_matmul(backend):
     expected_B = input_B @ weight_B.T
     kerns.matmul(qtype, qblock_size, qtype_size, input_B, actual_B, weight_B)
 
-    print(f"max abs tol test B: {(actual_B - expected_B).abs().max():.9f}")
-
     assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=1e-2), "matmul"
 
     # output act. shape [B // dp_size, L, out_dim]
@@ -261,7 +259,8 @@ def test_qkv(backend):
 
     # output: Q shape [B // dp_size, n_heads, L, head_dim], K and V shape [B // dp_size, n_kv_heads, L, head_dim]
 
-# A: just the usual flash attention
+# A: causal mask
+# B: sliding window mask
 @pytest.mark.parametrize("backend", ["torch_ext"])
 def test_flash_attn(backend):
     kerns = KernelBackend(backend)
@@ -270,23 +269,54 @@ def test_flash_attn(backend):
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
     # Q shape [B // dp_size, n_heads, L, head_dim], K and V shape [B // dp_size, n_kv_heads, L, head_dim]
-    # zeros and zeros_like should be randn or something right?
     input_A_Q = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
     input_A_K = (1/head_dim**0.5) * torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
     input_A_V = (1/head_dim**0.5) * torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
+    
+    mask_A = torch.ones(B, n_heads, L, L, dtype=torch.uint8).tril()
+    mask_A = mask_A.cuda()
+
+    print(mask_A.shape)
+    print(mask_A.element_size() * mask_A.nelement())
+    print(mask_A.is_contiguous())
+
+    actual_A = torch.zeros((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
+
+    kerns.flash_attn(
+        qtype, qblock_size, qtype_size, mask_A, actual_A, input_A_Q, input_A_K, input_A_V
+    )
+    
     n_rep = n_heads // n_kv_heads
     input_A_K = input_A_K.repeat_interleave(n_rep, dim=1)
     input_A_V = input_A_V.repeat_interleave(n_rep, dim=1)
 
-    actual_A = torch.zeros((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
+    expected_A = F.scaled_dot_product_attention(input_A_Q, input_A_K, input_A_V, attn_mask=mask_A)
 
-    expected_A = F.scaled_dot_product_attention(input_A_Q, input_A_K, input_A_V, is_causal=True)
+    assert torch.allclose(expected_A.cpu(), actual_A.cpu()), "flash_attn"
+
+    # Q shape [B // dp_size, n_heads, L, head_dim], K and V shape [B // dp_size, n_kv_heads, L, head_dim]
+    input_B_Q = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
+    input_B_K = (1/head_dim**0.5) * torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
+    input_B_V = (1/head_dim**0.5) * torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
+
+    window_size = 256
+    mask_B = (torch.tril(torch.ones(L, L), window_size-1) * torch.triu(torch.ones(L, L), -(window_size-1))).bool()
+    mask_B = mask_B.unsqueeze(0).unsqueeze(0)
+    mask_B = mask_B.cuda()
+
+    actual_B = torch.zeros((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
 
     kerns.flash_attn(
-        qtype, qblock_size, qtype_size, actual_A, input_A_Q, input_A_K, input_A_V
+        qtype, qblock_size, qtype_size, mask_B, actual_B, input_B_Q, input_B_K, input_B_V
     )
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu()), "flash_attn"
-    
+
+    n_rep = n_heads // n_kv_heads
+    input_B_K = input_A_K.repeat_interleave(n_rep, dim=1)
+    input_B_V = input_A_V.repeat_interleave(n_rep, dim=1)
+
+    expected_B = F.scaled_dot_product_attention(input_B_Q, input_B_K, input_B_V, attn_mask=mask_B)
+
+    assert torch.allclose(expected_B.cpu(), actual_B.cpu()), "flash_attn"
     # output act. shape [B // dp_size, L, hidden_dim]
 
 # just the usual matmul + softmax before topk expert selection

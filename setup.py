@@ -41,17 +41,21 @@ def get_extensions():
         ],
         "nvcc": [
             "-O3" if not debug_mode else "-O0",
-            "--use_fast_math",
             "-rdc=true",
-            "-gencode=arch=compute_70,code=lto_70",
+            "-gencode=arch=compute_70,code=" + ("lto_70" if not debug_mode else "sm_70"),
             include_path,
+        ],
+        "nvcc_dlink": [
+            "-dlink"
         ],
     }
     
     if debug_mode:
         extra_compile_args["cxx"].append("-g")
-        extra_compile_args["nvcc"].append("-g")
+        extra_compile_args["nvcc"].extend(["-G","-g"])
         extra_link_args.extend(["-O0", "-g"])
+    else:
+        extra_compile_args["nvcc"].extend(["-lineinfo", "-use_fast_math"])
 
     sources = list(glob.glob(os.path.join(extensions_dir, "*.cpp")))
     
@@ -66,7 +70,7 @@ def get_extensions():
             extra_compile_args=extra_compile_args,
             extra_link_args=extra_link_args,
             py_limited_api=py_limited_api,
-            dlink=True,
+            dlink=not debug_mode,
         )
     ]
 

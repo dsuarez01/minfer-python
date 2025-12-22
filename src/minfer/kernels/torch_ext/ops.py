@@ -215,25 +215,28 @@ def flash_attn(
     qtype_int: int, 
     qblock_size: int, 
     qtype_size: int,
+    mask: torch.Tensor,
     out: torch.Tensor, 
     q: torch.Tensor, 
     k: torch.Tensor, 
     v: torch.Tensor
 ):
     """
-    flash attention (v2-style w/ tree reduction)
+    flash attention (v2-style w/ KV in outer loop)
     """
-    return torch.ops.minfer.flash_attn.default(qtype_int, qblock_size, qtype_size, out, q, k, v)
+    return torch.ops.minfer.flash_attn.default(qtype_int, qblock_size, qtype_size, mask, out, q, k, v)
 
 @torch.library.register_fake("minfer::flash_attn")
 def _(
     qtype_int: int, qblock_size: int, qtype_size: int, 
-    out: torch.Tensor, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
+    mask: torch.Tensor, out: torch.Tensor, 
+    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
 ):
     torch._check(q.dtype == torch.float16)
     torch._check(k.dtype == torch.float16)
     torch._check(v.dtype == torch.float16)
     torch._check(out.dtype == torch.float16)
+    torch._check(mask.dtype == torch.bool)
     torch._check(q.device == k.device)
     torch._check(q.device == v.device)
     torch._check(q.device == out.device)
@@ -241,6 +244,7 @@ def _(
     torch._check(k.dim() == 4)
     torch._check(v.dim() == 4)
     torch._check(out.dim() == 4)
+    torch._check(mask.dim() == 4)
 
 def moe_scoring(
     qtype_int: int, 

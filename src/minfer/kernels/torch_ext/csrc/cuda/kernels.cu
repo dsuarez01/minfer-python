@@ -315,42 +315,55 @@ static __device__ void compute_tile_f16(
     int64_t K,
     int64_t out_stride,
     half* __restrict__ x_shared, // [TILE_M, TILE_K]
+    float* __restrict__ out_shared, // [TILE_M, TILE_N]
     half* __restrict__ w_shared, // [TILE_N, TILE_K]
     const half* __restrict__ x,
     half* __restrict__ out,
     const half* __restrict__ w
 ) {
+
     for (int i=threadIdx.x; i<TILE_M*TILE_N; i+=blockDim.x) {
         int r = i / TILE_N;
         int c = i % TILE_N;
-        float acc = 0.0f;
-        
-        for (int k_tile=0; k_tile<K; k_tile+=TILE_K) {
-            
-            // coop load x tile and w tile to shared mem
-            for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
-                int ml = idx / TILE_K;
-                int kl = idx % TILE_K;
-                x_shared[ml*TILE_K+kl] = x[ml*K +k_tile + kl];
-            }
+        out_shared[r*TILE_N+c] = 0.0f;
+    }
 
-            // coop load of weight to shared mem
-            for (int idx=threadIdx.x; idx<TILE_N*TILE_K; idx+=blockDim.x) {
-                int nl = idx / TILE_K;
-                int kl = idx % TILE_K;
-                w_shared[nl*TILE_K + kl] = w[nl*K + k_tile + kl];
-            }
+    for (int k_tile = 0; k_tile<K; k_tile+=TILE_K) {
+        // coop load x tile and w tile to shared mem
+        for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
+            int ml = idx / TILE_K;
+            int kl = idx % TILE_K;
+            x_shared[ml*TILE_K+kl] = x[ml*K + k_tile + kl];
+        }
 
-            __syncthreads();
-            
+        // coop load of weight to shared mem
+        for (int idx=threadIdx.x; idx<TILE_N*TILE_K; idx+=blockDim.x) {
+            int nl = idx / TILE_K;
+            int kl = idx % TILE_K;
+            w_shared[nl*TILE_K + kl] = w[nl*K + k_tile + kl];
+        }
+
+        __syncthreads();
+
+        for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
+            int r = idx / TILE_N;
+            int c = idx % TILE_N;
+            float acc = out_shared[r*TILE_N+c];
+
             for (int kk=0; kk<TILE_K; ++kk) {
                 acc += __half2float(x_shared[r*TILE_K+kk]) * __half2float(w_shared[c*TILE_K+kk]);
             }
-            
-            __syncthreads();
+
+            out_shared[r*TILE_N+c] = acc;
         }
-        
-        out[r*out_stride+c] = __float2half(acc);
+
+        __syncthreads();
+    }
+
+    for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
+        int r = idx / TILE_N;
+        int c = idx % TILE_N;
+        out[r*out_stride+c] = __float2half(out_shared[r*TILE_N+c]);
     }
 }
 
@@ -527,6 +540,7 @@ __global__ void matmul_f16_cuda_impl(
     const half* __restrict__ w
 ) {
     __shared__ half x_shared[TILE_M][TILE_K];
+    __shared__ float out_shared[TILE_M][TILE_N];
     __shared__ half w_shared[TILE_N][TILE_K];
 
     const half* x_row = x + blockIdx.x*TILE_M*K;
@@ -535,7 +549,7 @@ __global__ void matmul_f16_cuda_impl(
 
     compute_tile_f16<TILE_M, TILE_N, TILE_K>(
         K, N,
-        (half*)x_shared, (half*)w_shared,
+        (half*)x_shared, (float*)out_shared, (half*)w_shared,
         x_row, out_tile, w_row
     );
 }
@@ -772,7 +786,7 @@ void embed_cuda(
 template <int TILE_M, int TILE_N, int TILE_K>
 static __device__ void compute_qkv_tile_f16(
     int64_t N_Q, int64_t N_KV, 
-    int64_t K, int64_t out_stride,
+    int64_t K, int64_t q_out_stride, int64_t kv_out_stride,
     half* __restrict__ x_shared, // [TILE_M, TILE_K]
     float* __restrict__ q_out_shared, // [TILE_M, TILE_N]
     float* __restrict__ k_out_shared, // [TILE_M, TILE_N]
@@ -916,7 +930,7 @@ static __device__ void compute_qkv_tile_f16(
         for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
             int r = idx / TILE_N;
             int c = idx % TILE_N;
-            q_out[r*out_stride+c] = __float2half(q_out_shared[r*TILE_N+c]);
+            q_out[r*q_out_stride+c] = __float2half(q_out_shared[r*TILE_N+c]);
         }
     }
 
@@ -924,13 +938,13 @@ static __device__ void compute_qkv_tile_f16(
         for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
             int r = idx / TILE_N;
             int c = idx % TILE_N;
-            k_out[r*out_stride+c] = __float2half(k_out_shared[r*TILE_N+c]);
+            k_out[r*kv_out_stride+c] = __float2half(k_out_shared[r*TILE_N+c]);
         }
 
         for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
             int r = idx / TILE_N;
             int c = idx % TILE_N;
-            v_out[r*out_stride+c] = __float2half(v_out_shared[r*TILE_N+c]);
+            v_out[r*kv_out_stride+c] = __float2half(v_out_shared[r*TILE_N+c]);
         }
     }
 }
@@ -943,7 +957,8 @@ static __device__ void compute_qkv_tile_quant(
     int64_t q_qblock_size,  int64_t k_qblock_size, int64_t v_qblock_size,
     int64_t q_qtype_size, int64_t k_qtype_size, int64_t v_qtype_size,
     int64_t N_Q, int64_t N_KV,
-    int64_t K, int64_t out_stride,
+    int64_t K, 
+    int64_t q_out_stride, int64_t kv_out_stride,
     half* __restrict__ x_shared, // [TILE_M, TILE_K]
     float* __restrict__ q_out_shared, // [TILE_M, TILE_N]
     float* __restrict__ k_out_shared, // [TILE_M, TILE_N]
@@ -1093,7 +1108,7 @@ static __device__ void compute_qkv_tile_quant(
         for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
             int r = idx / TILE_N;
             int c = idx % TILE_N;
-            q_out[r*out_stride+c] = __float2half(q_out_shared[r*TILE_N+c]);
+            q_out[r*q_out_stride+c] = __float2half(q_out_shared[r*TILE_N+c]);
         }
     }
 
@@ -1101,13 +1116,13 @@ static __device__ void compute_qkv_tile_quant(
         for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
             int r = idx / TILE_N;
             int c = idx % TILE_N;
-            k_out[r*out_stride+c] = __float2half(k_out_shared[r*TILE_N+c]);
+            k_out[r*kv_out_stride+c] = __float2half(k_out_shared[r*TILE_N+c]);
         }
 
         for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
             int r = idx / TILE_N;
             int c = idx % TILE_N;
-            v_out[r*out_stride+c] = __float2half(v_out_shared[r*TILE_N+c]);
+            v_out[r*kv_out_stride+c] = __float2half(v_out_shared[r*TILE_N+c]);
         }
     }
 }
@@ -1141,7 +1156,7 @@ __global__ void qkv_f16_cuda_impl(
 
     compute_qkv_tile_f16<TILE_M, TILE_N, TILE_K>(
         N_Q, N_KV,
-        K, N_Q,
+        K, N_Q, N_KV,
         (half*)x_shared, 
         (float*)q_out_shared, (float*)k_out_shared, (float*)v_out_shared, 
         (half*)w_shared,
@@ -1186,7 +1201,7 @@ __global__ void qkv_quant_cuda_impl(
         k_qtype_int, k_qblock_size, k_qtype_size,
         v_qtype_int, v_qblock_size, v_qtype_size,
         N_Q, N_KV,
-        K, N_Q,
+        K, N_Q, N_KV,
         (half*)x_shared, 
         (float*)q_out_shared, (float*)k_out_shared, (float*)v_out_shared,
         (half*)w_shared,
@@ -1214,13 +1229,6 @@ void qkv_cuda(
     auto k_qtype = static_cast<GGMLQuantizationType>(k_qtype_int);
     auto v_qtype = static_cast<GGMLQuantizationType>(v_qtype_int);
 
-    //qblock sizes
-    TORCH_CHECK(
-        (q_qblock_size == 256 || q_qblock_size == 32) && 
-        (k_qblock_size == 256 || k_qblock_size == 32) && 
-        (v_qblock_size == 256 || v_qblock_size == 32)
-    );
-
     TORCH_INTERNAL_ASSERT(
         (x.device().type() == at::DeviceType::CUDA) &&
         (q_out.device().type() == at::DeviceType::CUDA) &&
@@ -1246,7 +1254,7 @@ void qkv_cuda(
         (wv.dtype() == at::kByte || wv.dtype() == at::kHalf)
     );
 
-    //dim
+    // dim
     TORCH_CHECK(
         (x.dim() == 3) && 
         (q_out.dim() == 3) && (k_out.dim() == 3) && (v_out.dim() == 3) &&
@@ -1404,7 +1412,7 @@ static __device__ void update_dm(
         ml = fmaxf(ml, __half2float(tile[row_in_tile*TILE_N+col])); 
     }
 
-    float tile_m = row_reduce_max<THR_PER_ROW>(scratch_m, ml, row_in_tile, thr_in_row);;
+    float tile_m = row_reduce_max<THR_PER_ROW>(scratch_m, ml, row_in_tile, thr_in_row);
 
     // compute tile's d vals per row, write to tiles_d
     float dl = 0.0f;
@@ -1425,32 +1433,34 @@ static __device__ void update_dm(
     }
 }
 
-template <int TILE_M, int TILE_N, int TILE_K, int BLOCK_SIZE>
+template <int TILE_Q, int TILE_K, int TILE_D, int BLOCK_SIZE>
 __global__ void flash_attn_cuda_impl(
-    int64_t M, int64_t K, int64_t N,
+    int64_t head_dim, 
+    int64_t L, 
     int64_t n_kv_heads,
+    const uint8_t* __restrict__ mask,
     half* __restrict__ out,
     const half* __restrict__ q,
     const half* __restrict__ k,
     const half* __restrict__ v
 ) {
     
-    constexpr int THR_PER_ROW = BLOCK_SIZE / TILE_M;
+    constexpr int THR_PER_ROW = BLOCK_SIZE / TILE_Q;
     constexpr int WARPS_PER_ROW = (THR_PER_ROW+32-1)/32;
 
-    __shared__ half in_shared[TILE_M][TILE_K];
-    __shared__ half kv_shared[TILE_N][TILE_K];
-    __shared__ half l_shared[TILE_M][TILE_N];
+    __shared__ half in_shared[TILE_Q][TILE_D];
+    __shared__ half kv_shared[TILE_K][TILE_D];
+    __shared__ half l_shared[TILE_Q][TILE_K];
     
-    __shared__ float out_acc_shared[TILE_M][TILE_N];
-    __shared__ half out_old_shared[TILE_M][TILE_K];
-    __shared__ half out_new_shared[TILE_M][TILE_K];
+    __shared__ float out_acc_shared[TILE_Q][TILE_K];
+    __shared__ half out_old_shared[TILE_Q][TILE_D];
+    __shared__ half out_new_shared[TILE_Q][TILE_D];
     
-    __shared__ float ds[TILE_M];
-    __shared__ float ms[TILE_M];
+    __shared__ float ds[TILE_Q];
+    __shared__ float ms[TILE_Q];
 
-    __shared__ float scratch_d[TILE_M*WARPS_PER_ROW];
-    __shared__ float scratch_m[TILE_M*WARPS_PER_ROW];
+    __shared__ float scratch_d[TILE_Q*WARPS_PER_ROW];
+    __shared__ float scratch_m[TILE_Q*WARPS_PER_ROW];
 
     int64_t n_heads = gridDim.y;
     int64_t batch_idx = blockIdx.x;
@@ -1458,70 +1468,83 @@ __global__ void flash_attn_cuda_impl(
     int64_t kv_head_idx = q_head_idx / (n_heads/n_kv_heads);
     int64_t seq_tile = blockIdx.z;
 
-    const half* q_row = q + batch_idx*n_heads*N*K + q_head_idx*N*K + seq_tile*TILE_M*K;
-    half* out_row = out + batch_idx*n_heads*N*K + q_head_idx*N*K + seq_tile*TILE_M*K;
-    const half* k_head = k + batch_idx*n_kv_heads*N*K + kv_head_idx*N*K;
-    const half* v_head = v + batch_idx*n_kv_heads*N*K + kv_head_idx*N*K;
+    const half* q_row = q + batch_idx*n_heads*L*head_dim + q_head_idx*L*head_dim + seq_tile*TILE_Q*head_dim;
+    half* out_row = out + batch_idx*n_heads*L*head_dim + q_head_idx*L*head_dim + seq_tile*TILE_Q*head_dim;
+    const half* k_head = k + batch_idx*n_kv_heads*L*head_dim + kv_head_idx*L*head_dim;
+    const half* v_head = v + batch_idx*n_kv_heads*L*head_dim + kv_head_idx*L*head_dim;
 
-    if (threadIdx.x<TILE_M) {
+    if (threadIdx.x<TILE_Q) {
         ds[threadIdx.x] = 0.0f;
         ms[threadIdx.x] = -INFINITY;
     }
 
     __syncthreads();
 
-    for (int n_tile=0; n_tile<N; n_tile+=TILE_N) {
-        const half* k_row = k_head + n_tile*K;
-        const half* v_row = v_head + n_tile*K;
+    for (int n_tile=0; n_tile<L; n_tile+=TILE_K) {
+        const half* k_row = k_head + n_tile*head_dim;
+        const half* v_row = v_head + n_tile*head_dim;
 
-        compute_tile_wmma_f16<TILE_M, TILE_N, TILE_K>(
-            K, TILE_N,
+        compute_tile_wmma_f16<TILE_Q, TILE_K, TILE_D>(
+            head_dim, TILE_K,
             (half*)in_shared, (float*)out_acc_shared, (half*)kv_shared,
             q_row, (half*)l_shared, k_row
         );
 
+        // apply mask before computing max and scale
+        for (int idx=threadIdx.x; idx<TILE_Q*TILE_K; idx+=blockDim.x) {
+            int r = idx / TILE_K;
+            int c = idx % TILE_K;
+            int q_pos = seq_tile*TILE_Q+r;
+            int k_pos = n_tile+c;
+            int mask_idx = batch_idx*n_heads*L*L + q_head_idx*L*L + q_pos*L + k_pos;
+
+            if (!mask[mask_idx]) {
+                l_shared[r][c] = __float2half(-INFINITY);
+            }
+        }
+
         __syncthreads();
 
-        float m_old = ms[threadIdx.x/TILE_M];
-        float d_old = ds[threadIdx.x/TILE_M];
+        float m_old = ms[threadIdx.x/TILE_Q];
+        float d_old = ds[threadIdx.x/TILE_Q];
 
-        update_dm<TILE_M, TILE_N, THR_PER_ROW>(ds, ms, scratch_d, scratch_m, (half*)l_shared);
+        update_dm<TILE_Q, TILE_K, THR_PER_ROW>(ds, ms, scratch_d, scratch_m, (half*)l_shared);
 
         __syncthreads();
 
-        float m_new = ms[threadIdx.x/TILE_M];
-        float d_new = ds[threadIdx.x/TILE_M];
+        float m_new = ms[threadIdx.x/TILE_Q];
+        float d_new = ds[threadIdx.x/TILE_Q];
 
-        for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
-            int r = idx/TILE_N;
-            int c = idx%TILE_N;
+        for (int idx=threadIdx.x; idx<TILE_Q*TILE_K; idx+=blockDim.x) {
+            int r = idx/TILE_K;
+            int c = idx%TILE_K;
             l_shared[r][c] = __float2half(expf(__half2float(l_shared[r][c])-m_new)/d_new);
         }
 
-        for (int k_tile=0; k_tile<K; k_tile+=TILE_K) {
+        for (int k_tile=0; k_tile<head_dim; k_tile+=TILE_D) {
             half* out_tile = out_row + k_tile;
             const half* v_tile = v_row + k_tile;
 
-            for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
-                int r = idx/TILE_K;
-                int c = idx%TILE_K;
-                out_old_shared[r][c] =  __float2half(__half2float(out_tile[r*TILE_K+c]) * expf(m_old-m_new));
+            for (int idx=threadIdx.x; idx<TILE_Q*TILE_D; idx+=blockDim.x) {
+                int r = idx/TILE_D;
+                int c = idx%TILE_D;
+                out_old_shared[r][c] =  __float2half(__half2float(out_tile[r*head_dim+c]) * expf(m_old-m_new));
             }
 
             __syncthreads();
 
-            compute_tile_wmma_f16<TILE_M, TILE_N, TILE_K>(
-                TILE_N, TILE_K,
+            compute_tile_wmma_f16<TILE_Q, TILE_K, TILE_D>(
+                TILE_K, TILE_D,
                 (half*)in_shared, (float*)out_acc_shared, (half*)kv_shared,
                 (half*)l_shared, (half*)out_new_shared, v_tile
             );
 
             __syncthreads();
 
-            for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
-                int r = idx/TILE_K;
-                int c = idx%TILE_K;
-                out_tile[r*K+c] = __float2half(__half2float(out_old_shared[r][c]) + __half2float(out_new_shared[r][c]));
+            for (int idx=threadIdx.x; idx<TILE_Q*TILE_D; idx+=blockDim.x) {
+                int r = idx/TILE_D;
+                int c = idx%TILE_D;
+                out_tile[r*head_dim+c] = __float2half(__half2float(out_old_shared[r][c]) + __half2float(out_new_shared[r][c]));
             }
         }
     }
@@ -1531,6 +1554,7 @@ void flash_attn_cuda(
     int64_t qtype_int,
     int64_t qblock_size,
     int64_t qtype_size,
+    at::Tensor& mask, // [B, n_heads, L, L]
     at::Tensor& out,     // [B, n_heads, L, head_dim]
     const at::Tensor& q, // [B, n_heads, L, head_dim]
     const at::Tensor& k, // [B, n_kv_heads, L, head_dim]
@@ -1541,15 +1565,18 @@ void flash_attn_cuda(
         (q.device().type() == at::DeviceType::CUDA) &&
         (k.device().type() == at::DeviceType::CUDA) && 
         (v.device().type() == at::DeviceType::CUDA) &&
-        (out.device().type() == at::DeviceType::CUDA)
+        (out.device().type() == at::DeviceType::CUDA) &&
+        (mask.device().type() == at::DeviceType::CUDA)
     );
 
     // contiguity in the last dimension
+    // except mask, is fully contiguous
     TORCH_CHECK(
         (q.stride(-1) == 1) &&
         (k.stride(-1) == 1) &&
         (v.stride(-1) == 1) &&
-        (out.stride(-1) == 1)
+        (out.stride(-1) == 1) &&
+        (mask.is_contiguous())
     );
 
     // dtypes
@@ -1557,28 +1584,35 @@ void flash_attn_cuda(
         (q.dtype() == at::kHalf) &&
         (k.dtype() == at::kHalf) &&
         (v.dtype() == at::kHalf) &&
-        (out.dtype() == at::kHalf)
+        (out.dtype() == at::kHalf) && 
+        (mask.dtype() == at::kByte)
     );
 
     // dims
     TORCH_CHECK(
-        (q.dim() == 4) && (k.dim() == 4) && (v.dim() == 4) && (out.dim() == 4)
+        (q.dim() == 4) &&
+        (k.dim() == 4) &&
+        (v.dim() == 4) &&
+        (out.dim() == 4) &&
+        (mask.dim() == 4)
     );
 
     // checks btwn different dims
     TORCH_CHECK(q.sizes().equals(out.sizes()));
     TORCH_CHECK(k.sizes().equals(v.sizes()));
     TORCH_CHECK(
-        (q.size(0) == k.size(0)) && 
-        (q.size(1) == k.size(1)) && 
-        (q.size(2) == k.size(2)) && 
+        (q.size(0) == k.size(0)) && (q.size(0) == mask.size(0)) &&
+        (q.size(1) == mask.size(1)) && 
+        (q.size(2) == k.size(2)) && (q.size(2) == mask.size(2)) &&
         (q.size(3) == k.size(3))
     );
+    TORCH_CHECK(q.numel() / q.size(-1) == mask.numel() / mask.size(-1));
 
     const half* q_ptr = reinterpret_cast<const half*>(q.data_ptr<at::Half>());
     const half* k_ptr = reinterpret_cast<const half*>(k.data_ptr<at::Half>());
     const half* v_ptr = reinterpret_cast<const half*>(v.data_ptr<at::Half>());
     half* out_ptr = reinterpret_cast<half*>(out.data_ptr<at::Half>());
+    const uint8_t* mask_ptr = mask.data_ptr<uint8_t>();
 
     int64_t B = q.size(0);
     int64_t n_heads = q.size(1);
@@ -1586,23 +1620,19 @@ void flash_attn_cuda(
     int64_t L = q.size(2);
     int64_t head_dim = q.size(-1);
 
-    int64_t M = q.numel() / head_dim;
-    int64_t K = head_dim;
-    int64_t N = L;
-
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-    constexpr int TILE_M = 16;
-    constexpr int TILE_N = 64;
+    constexpr int TILE_Q = 16;
     constexpr int TILE_K = 64;
+    constexpr int TILE_D = 64;
     constexpr int BLOCK_SIZE = 128;
 
     dim3 block(BLOCK_SIZE); // TODO: tune this or adjust as needed
-    dim3 grid(B, n_heads, (L+TILE_M-1)/TILE_M);
+    dim3 grid(B, n_heads, (L+TILE_Q-1)/TILE_Q);
 
-    flash_attn_cuda_impl<TILE_M, TILE_N, TILE_K, BLOCK_SIZE><<<grid, block, 0, stream>>>(
-        M, K, N,
-        n_kv_heads,
+    flash_attn_cuda_impl<TILE_Q, TILE_K, TILE_D, BLOCK_SIZE><<<grid, block, 0, stream>>>(
+        head_dim, L, n_kv_heads,
+        mask_ptr,
         out_ptr, q_ptr, k_ptr, v_ptr
     );
 }
@@ -1618,6 +1648,7 @@ __global__ void moe_scoring_cuda_impl(
     constexpr int WARPS_PER_ROW = (THR_PER_ROW+32-1)/32;
 
     __shared__ half x_shared[TILE_M][TILE_K];
+    __shared__ float out_shared[TILE_M][TILE_N];
     __shared__ half w_shared[TILE_N][TILE_K];
     __shared__ half l_shared[TILE_M][TILE_N];
     
@@ -1643,7 +1674,7 @@ __global__ void moe_scoring_cuda_impl(
 
         compute_tile_f16<TILE_M, TILE_N, TILE_K>(
             K, TILE_N,
-            (half*)x_shared, (half*)w_shared,
+            (half*)x_shared, (float*)out_shared, (half*)w_shared,
             x_row, (half*)l_shared, w_row
         );
 
@@ -2038,7 +2069,7 @@ TORCH_LIBRARY(minfer, m) {
     m.def("matmul(int qtype_int, int qblock_size, int qtype_size, Tensor x, Tensor(a!) out, Tensor w) -> ()");
     m.def("embed(int qtype_int, int qblock_size, int qtype_size, Tensor(a!) x, Tensor token_ids, Tensor w) -> ()");
     m.def("qkv(int q_qtype_int, int k_qtype_int, int v_qtype_int, int q_qblock_size, int k_qblock_size, int v_qblock_size, int q_qtype_size, int k_qtype_size, int v_qtype_size, Tensor x, Tensor(a!) q_out, Tensor(a!) k_out, Tensor(a!) v_out, Tensor wq, Tensor wk, Tensor wv) -> ()");
-    m.def("flash_attn(int qtype_int, int qblock_size, int qtype_size, Tensor(a!) out, Tensor q, Tensor k, Tensor v) -> ()");
+    m.def("flash_attn(int qtype_int, int qblock_size, int qtype_size, Tensor mask, Tensor(a!) out, Tensor q, Tensor k, Tensor v) -> ()");
     m.def("moe_scoring(int qtype_int, int qblock_size, int qtype_size, Tensor x, Tensor(a!) out, Tensor w) -> ()");
     m.def("ffn(int up_qtype_int, int gate_qtype_int, int down_qtype_int, int up_qblock_size, int gate_qblock_size, int down_qblock_size, int up_qtype_size, int gate_qtype_size, int down_qtype_size, Tensor input, Tensor(a!) out, Tensor(a!) hb, Tensor(a!) hb2, Tensor ws_up, Tensor ws_gate, Tensor ws_down) -> ()");
 }
