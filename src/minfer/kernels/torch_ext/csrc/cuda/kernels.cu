@@ -47,7 +47,7 @@ static __device__ T convert_float(float v) {
 #define FULL_MASK 0xffffffff
 template <int WIDTH=32>
 static __device__ float warp_reduce_sum(float v) {
-    unsigned mask = __ballot_sync(FULL_MASK, threadIdx.x < WIDTH);
+    unsigned mask = __ballot_sync(FULL_MASK, (threadIdx.x % 32) < WIDTH);
 
     for (int offset = WIDTH/2; offset > 0; offset >>= 1) {
         v += __shfl_down_sync(mask, v, offset);
@@ -58,7 +58,7 @@ static __device__ float warp_reduce_sum(float v) {
 #define FULL_MASK 0xffffffff
 template <int WIDTH=32>
 static __device__ float warp_reduce_max(float v) {
-    unsigned mask = __ballot_sync(FULL_MASK, threadIdx.x < WIDTH);
+    unsigned mask = __ballot_sync(FULL_MASK, (threadIdx.x % 32) < WIDTH);
     
     for (int offset = WIDTH/2; offset > 0; offset >>= 1) {
         v = fmaxf(v, __shfl_down_sync(mask, v, offset));
@@ -1472,7 +1472,9 @@ __global__ void flash_attn_cuda_impl(
     half* out_row = out + batch_idx*n_heads*L*head_dim + q_head_idx*L*head_dim + seq_tile*TILE_Q*head_dim;
     const half* k_head = k + batch_idx*n_kv_heads*L*head_dim + kv_head_idx*L*head_dim;
     const half* v_head = v + batch_idx*n_kv_heads*L*head_dim + kv_head_idx*L*head_dim;
-
+    // would include q_head_idx*L*L, but pattern is usually the same across all heads
+    const uint8_t* mask_row = mask + batch_idx*L*L + seq_tile*TILE_Q*L;
+    
     if (threadIdx.x<TILE_Q) {
         ds[threadIdx.x] = 0.0f;
         ms[threadIdx.x] = -INFINITY;
@@ -1483,8 +1485,9 @@ __global__ void flash_attn_cuda_impl(
     for (int n_tile=0; n_tile<L; n_tile+=TILE_K) {
         const half* k_row = k_head + n_tile*head_dim;
         const half* v_row = v_head + n_tile*head_dim;
+        const uint8_t* mask_tile = mask_row + n_tile;
 
-        compute_tile_wmma_f16<TILE_Q, TILE_K, TILE_D>(
+        compute_tile_wmma_f16<TILE_Q, TILE_D, TILE_K>(
             head_dim, TILE_K,
             (half*)in_shared, (float*)out_acc_shared, (half*)kv_shared,
             q_row, (half*)l_shared, k_row
@@ -1494,13 +1497,8 @@ __global__ void flash_attn_cuda_impl(
         for (int idx=threadIdx.x; idx<TILE_Q*TILE_K; idx+=blockDim.x) {
             int r = idx / TILE_K;
             int c = idx % TILE_K;
-            int q_pos = seq_tile*TILE_Q+r;
-            int k_pos = n_tile+c;
-            int mask_idx = batch_idx*n_heads*L*L + q_head_idx*L*L + q_pos*L + k_pos;
 
-            if (!mask[mask_idx]) {
-                l_shared[r][c] = __float2half(-INFINITY);
-            }
+            l_shared[r][c] = mask_tile[r*L+c] ? l_shared[r][c] : __float2half(-INFINITY);
         }
 
         __syncthreads();
@@ -1554,7 +1552,7 @@ void flash_attn_cuda(
     int64_t qtype_int,
     int64_t qblock_size,
     int64_t qtype_size,
-    at::Tensor& mask, // [B, n_heads, L, L]
+    at::Tensor& mask, // [B, 1, L, L]
     at::Tensor& out,     // [B, n_heads, L, head_dim]
     const at::Tensor& q, // [B, n_heads, L, head_dim]
     const at::Tensor& k, // [B, n_kv_heads, L, head_dim]
@@ -1585,7 +1583,7 @@ void flash_attn_cuda(
         (k.dtype() == at::kHalf) &&
         (v.dtype() == at::kHalf) &&
         (out.dtype() == at::kHalf) && 
-        (mask.dtype() == at::kByte)
+        (mask.dtype() == at::kBool)
     );
 
     // dims
@@ -1602,17 +1600,15 @@ void flash_attn_cuda(
     TORCH_CHECK(k.sizes().equals(v.sizes()));
     TORCH_CHECK(
         (q.size(0) == k.size(0)) && (q.size(0) == mask.size(0)) &&
-        (q.size(1) == mask.size(1)) && 
-        (q.size(2) == k.size(2)) && (q.size(2) == mask.size(2)) &&
+        (q.size(2) == k.size(2)) && (q.size(2) == mask.size(2)) && (q.size(2) == mask.size(3)) &&
         (q.size(3) == k.size(3))
     );
-    TORCH_CHECK(q.numel() / q.size(-1) == mask.numel() / mask.size(-1));
 
     const half* q_ptr = reinterpret_cast<const half*>(q.data_ptr<at::Half>());
     const half* k_ptr = reinterpret_cast<const half*>(k.data_ptr<at::Half>());
     const half* v_ptr = reinterpret_cast<const half*>(v.data_ptr<at::Half>());
     half* out_ptr = reinterpret_cast<half*>(out.data_ptr<at::Half>());
-    const uint8_t* mask_ptr = mask.data_ptr<uint8_t>();
+    const uint8_t* mask_ptr = reinterpret_cast<const uint8_t*>(mask.data_ptr<bool>());
 
     int64_t B = q.size(0);
     int64_t n_heads = q.size(1);

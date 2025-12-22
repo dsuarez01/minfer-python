@@ -273,12 +273,10 @@ def test_flash_attn(backend):
     input_A_K = (1/head_dim**0.5) * torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
     input_A_V = (1/head_dim**0.5) * torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
     
-    mask_A = torch.ones(B, n_heads, L, L, dtype=torch.uint8).tril()
-    mask_A = mask_A.cuda()
-
-    print(mask_A.shape)
-    print(mask_A.element_size() * mask_A.nelement())
-    print(mask_A.is_contiguous())
+    # NOTE: weird bug with torch tril and triu on CUDA, see e.g. https://github.com/pytorch/pytorch/issues/136611
+    # mask_A = torch.ones(B, n_heads, L, L, dtype=torch.uint8).tril()
+    # mask_A = mask_A.cuda()
+    mask_A = (torch.arange(L).unsqueeze(0) <= torch.arange(L).unsqueeze(1)).unsqueeze(0).unsqueeze(0).expand(B, 1, L, L).to(torch.bool).cuda()
 
     actual_A = torch.zeros((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
 
@@ -299,10 +297,12 @@ def test_flash_attn(backend):
     input_B_K = (1/head_dim**0.5) * torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
     input_B_V = (1/head_dim**0.5) * torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
 
-    window_size = 256
-    mask_B = (torch.tril(torch.ones(L, L), window_size-1) * torch.triu(torch.ones(L, L), -(window_size-1))).bool()
-    mask_B = mask_B.unsqueeze(0).unsqueeze(0)
-    mask_B = mask_B.cuda()
+    # NOTE: weird bug with torch tril and triu on CUDA, see e.g. https://github.com/pytorch/pytorch/issues/136611
+    # window_size = 256
+    # mask_B = (torch.tril(torch.ones(L, L), window_size-1) * torch.triu(torch.ones(L, L), -(window_size-1))).bool()
+    # mask_B = mask_B.unsqueeze(0).unsqueeze(0)
+    dist = torch.arange(L).unsqueeze(0) - torch.arange(L).unsqueeze(1)
+    mask_B = (dist.abs() < window_size).unsqueeze(0).unsqueeze(0).expand(B, 1, L, L).to(torch.bool).cuda()
 
     actual_B = torch.zeros((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
 
