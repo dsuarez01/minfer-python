@@ -11,6 +11,7 @@
 
 #include <cassert>
 #include <algorithm>
+#include <type_traits>
 
 #include "quants_impl.cuh"
 #include "impl_common.hpp"
@@ -44,26 +45,24 @@ static __device__ T convert_float(float v) {
 
 // helpers for warp-level and block-level reductions
 // refer to: https://developer.nvidia.com/blog/using-cuda-warp-level-primitives/
-#define FULL_MASK 0xffffffff
 template <int WIDTH=32>
 static __device__ float warp_reduce_sum(float v) {
-    unsigned mask = __ballot_sync(FULL_MASK, (threadIdx.x % 32) < WIDTH);
+    unsigned mask = (1ull << WIDTH) - 1;
 
     for (int offset = WIDTH/2; offset > 0; offset >>= 1) {
-        v += __shfl_down_sync(mask, v, offset);
+        v += __shfl_down_sync(mask, v, offset, WIDTH);
     }
-    return v;
+    return __shfl_sync(mask, v, 0, WIDTH);
 }
 
-#define FULL_MASK 0xffffffff
 template <int WIDTH=32>
 static __device__ float warp_reduce_max(float v) {
-    unsigned mask = __ballot_sync(FULL_MASK, (threadIdx.x % 32) < WIDTH);
-    
+    unsigned mask = (1ull << WIDTH) - 1;
+
     for (int offset = WIDTH/2; offset > 0; offset >>= 1) {
-        v = fmaxf(v, __shfl_down_sync(mask, v, offset));
+        v = fmaxf(v, __shfl_down_sync(mask, v, offset, WIDTH));
     }
-    return v;
+    return __shfl_sync(mask, v, 0, WIDTH);
 }
 
 static __device__ float blockreduce_sum(float* vs, float v, int tid) {
@@ -310,10 +309,12 @@ void neox_rope_cuda(
 }
 
 // helper to compute TILE_M x TILE_N portion of result
-template <int TILE_M, int TILE_N, int TILE_K>
+template <int TILE_M, int TILE_N, int TILE_K, bool row_major_x = true, bool row_major_w = false>
 static __device__ void compute_tile_f16(
     int64_t K,
+    int64_t x_stride,
     int64_t out_stride,
+    int64_t w_stride,
     half* __restrict__ x_shared, // [TILE_M, TILE_K]
     float* __restrict__ out_shared, // [TILE_M, TILE_N]
     half* __restrict__ w_shared, // [TILE_N, TILE_K]
@@ -333,14 +334,22 @@ static __device__ void compute_tile_f16(
         for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
             int ml = idx / TILE_K;
             int kl = idx % TILE_K;
-            x_shared[ml*TILE_K+kl] = x[ml*K + k_tile + kl];
+            if constexpr (row_major_x) {
+                x_shared[ml*TILE_K+kl] = x[ml*x_stride + k_tile + kl];
+            } else {
+                x_shared[ml*TILE_K+kl] = x[(k_tile+kl)*x_stride + ml];
+            }
         }
 
         // coop load of weight to shared mem
         for (int idx=threadIdx.x; idx<TILE_N*TILE_K; idx+=blockDim.x) {
             int nl = idx / TILE_K;
             int kl = idx % TILE_K;
-            w_shared[nl*TILE_K + kl] = w[nl*K + k_tile + kl];
+            if constexpr (!row_major_w) {
+                w_shared[nl*TILE_K + kl] = w[nl*w_stride + k_tile + kl];
+            } else {
+                w_shared[nl*TILE_K + kl] = w[(k_tile+kl)*w_stride + nl];
+            }
         }
 
         __syncthreads();
@@ -350,8 +359,22 @@ static __device__ void compute_tile_f16(
             int c = idx % TILE_N;
             float acc = out_shared[r*TILE_N+c];
 
+            half x_val, w_val;
             for (int kk=0; kk<TILE_K; ++kk) {
-                acc += __half2float(x_shared[r*TILE_K+kk]) * __half2float(w_shared[c*TILE_K+kk]);
+                
+                if constexpr (row_major_x) {
+                    x_val = x_shared[r*TILE_K+kk];
+                } else {
+                    x_val = x_shared[kk*TILE_M+r];
+                }
+
+                if constexpr(row_major_w) {
+                    w_val = w_shared[kk*TILE_N+c];
+                } else {
+                    w_val = w_shared[c*TILE_K+kk];
+                }
+
+                acc += __half2float(x_val) * __half2float(w_val);
             }
 
             out_shared[r*TILE_N+c] = acc;
@@ -368,10 +391,12 @@ static __device__ void compute_tile_f16(
 }
 
 // helper to compute TILE_M x TILE_N portion of result
-template <int TILE_M, int TILE_N, int TILE_K>
+template <int TILE_M, int TILE_N, int TILE_K, bool row_major_x = true, bool row_major_w = false>
 static __device__ void compute_tile_wmma_f16(
     int64_t K,
+    int64_t x_stride,
     int64_t out_stride,
+    int64_t w_stride,
     half* __restrict__ x_shared, // [TILE_M, TILE_K]
     float* __restrict__ out_shared, // [TILE_M, TILE_N]
     half* __restrict__ w_shared, // [TILE_N, TILE_K]
@@ -384,6 +409,7 @@ static __device__ void compute_tile_wmma_f16(
 
     // wmma operates on 16x16 subtiles
     constexpr int NUM_SUBTILES = NUM_SUBTILES_M*NUM_SUBTILES_N;
+
 
     int warp_id = threadIdx.x / 32;
     int num_warps = blockDim.x / 32;
@@ -408,14 +434,22 @@ static __device__ void compute_tile_wmma_f16(
             for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
                 int ml = idx / TILE_K;
                 int kl = idx % TILE_K;
-                x_shared[ml*TILE_K+kl] = x[ml*K + k_tile + kl];
+                if constexpr (row_major_x) {
+                    x_shared[ml*TILE_K+kl] = x[ml*x_stride + k_tile + kl];
+                } else {
+                    x_shared[ml*TILE_K+kl] = x[(k_tile+kl)*x_stride + ml];
+                }
             }
 
             // coop load of weight to shared mem
             for (int idx=threadIdx.x; idx<TILE_N*TILE_K; idx+=blockDim.x) {
                 int nl = idx / TILE_K;
                 int kl = idx % TILE_K;
-                w_shared[nl*TILE_K + kl] = w[nl*K + k_tile + kl];
+                if constexpr (row_major_w) {
+                    w_shared[nl*TILE_K + kl] = w[(k_tile+kl)*w_stride + nl];
+                } else {
+                    w_shared[nl*TILE_K + kl] = w[nl*w_stride + k_tile + kl];
+                }
             }
 
             __syncthreads();
@@ -448,13 +482,15 @@ static __device__ void compute_tile_wmma_f16(
 }
 
 // helper to compute TILE_M x TILE_N portion of result
-template <int TILE_M, int TILE_N, int TILE_K>
+template <int TILE_M, int TILE_N, int TILE_K, bool row_major_x = true, bool row_major_w = false>
 static __device__ void compute_tile_quant(
     int64_t qtype_int,
     int64_t qblock_size,
     int64_t qtype_size,
     int64_t K,
+    int64_t x_stride,
     int64_t out_stride,
+    int64_t w_stride,
     half* __restrict__ x_shared, // [TILE_M, TILE_K]
     float* __restrict__ out_shared, // [TILE_M, TILE_N]
     half* __restrict__ w_shared, // [TILE_N, TILE_K]
@@ -491,7 +527,11 @@ static __device__ void compute_tile_quant(
             for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
                 int ml = idx / TILE_K;
                 int kl = idx % TILE_K;
-                x_shared[ml*TILE_K+kl] = x[ml*K + k_tile + kl];
+                if constexpr (row_major_x) {
+                    x_shared[ml*TILE_K+kl] = x[ml*x_stride + k_tile + kl];
+                } else {
+                    x_shared[ml*TILE_K+kl] = x[(k_tile+kl)*x_stride + ml];
+                }
             }
 
             // coop load of weight to shared mem
@@ -499,7 +539,12 @@ static __device__ void compute_tile_quant(
                 int nl = idx / TILE_K;
                 int kb = (idx % TILE_K) / qblock_size;
                 int kl = (idx % TILE_K) % qblock_size;
-                const uint8_t* w_block = w + (nl*(K/qblock_size) + (k_tile/qblock_size + kb))*qtype_size;
+                const uint8_t* w_block;
+                if constexpr (row_major_w) {
+                    w_block = w + ((k_tile/qblock_size + kb)*(w_stride/qblock_size) + nl)*qtype_size;
+                } else {
+                    w_block = w + (nl*(w_stride/qblock_size) + (k_tile/qblock_size + kb))*qtype_size;
+                }
                 dequant_block(qtype_int, 1, kl, w_shared + nl*TILE_K + kb*qblock_size, w_block);
             }
 
@@ -548,7 +593,7 @@ __global__ void matmul_f16_cuda_impl(
     const half* w_row = w + blockIdx.y*TILE_N*K;
 
     compute_tile_f16<TILE_M, TILE_N, TILE_K>(
-        K, N,
+        K, K, N, K,
         (half*)x_shared, (float*)out_shared, (half*)w_shared,
         x_row, out_tile, w_row
     );
@@ -570,7 +615,7 @@ __global__ void matmul_wmma_f16_cuda_impl(
     const half* w_row = w + blockIdx.y*TILE_N*K;
 
     compute_tile_wmma_f16<TILE_M, TILE_N, TILE_K>(
-        K, N,
+        K, K, N, K,
         (half*)x_shared, (float*)out_shared, (half*)w_shared,
         x_row, out_tile, w_row
     );
@@ -596,7 +641,7 @@ __global__ void matmul_quant_cuda_impl(
 
     compute_tile_quant<TILE_M, TILE_N, TILE_K>(
         qtype_int, qblock_size, qtype_size,
-        K, N,
+        K, K, N, K,
         (half*)x_shared, (float*)out_shared, (half*)w_shared,
         x_row, out_tile, w_row
     );
@@ -786,7 +831,10 @@ void embed_cuda(
 template <int TILE_M, int TILE_N, int TILE_K>
 static __device__ void compute_qkv_tile_f16(
     int64_t N_Q, int64_t N_KV, 
-    int64_t K, int64_t q_out_stride, int64_t kv_out_stride,
+    int64_t K, 
+    int64_t x_stride, 
+    int64_t q_out_stride, int64_t kv_out_stride, 
+    int64_t wq_stride, int64_t wkv_stride,
     half* __restrict__ x_shared, // [TILE_M, TILE_K]
     float* __restrict__ q_out_shared, // [TILE_M, TILE_N]
     float* __restrict__ k_out_shared, // [TILE_M, TILE_N]
@@ -835,7 +883,7 @@ static __device__ void compute_qkv_tile_f16(
             for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
                 int ml = idx / TILE_K;
                 int kl = idx % TILE_K;
-                x_shared[ml*TILE_K+kl] = x[ml*K + k_tile + kl];
+                x_shared[ml*TILE_K+kl] = x[ml*x_stride + k_tile + kl];
             }
 
             if (blockIdx.y * TILE_N < N_Q) {
@@ -843,7 +891,7 @@ static __device__ void compute_qkv_tile_f16(
                 for (int idx=threadIdx.x; idx<TILE_N*TILE_K; idx+=blockDim.x) {
                     int nl = idx / TILE_K;
                     int kl = idx % TILE_K;
-                    w_shared[nl*TILE_K + kl] = wq[nl*K + k_tile + kl];
+                    w_shared[nl*TILE_K + kl] = wq[nl*wq_stride + k_tile + kl];
                 }
 
                 __syncthreads();
@@ -864,7 +912,7 @@ static __device__ void compute_qkv_tile_f16(
                 for (int idx=threadIdx.x; idx<TILE_N*TILE_K; idx+=blockDim.x) {
                     int nl = idx / TILE_K;
                     int kl = idx % TILE_K;
-                    w_shared[nl*TILE_K + kl] = wk[nl*K + k_tile + kl];
+                    w_shared[nl*TILE_K + kl] = wk[nl*wkv_stride + k_tile + kl];
                 }
 
                 __syncthreads();
@@ -882,7 +930,7 @@ static __device__ void compute_qkv_tile_f16(
                 for (int idx=threadIdx.x; idx<TILE_N*TILE_K; idx+=blockDim.x) {
                     int nl = idx / TILE_K;
                     int kl = idx % TILE_K;
-                    w_shared[nl*TILE_K + kl] = wv[nl*K + k_tile + kl];
+                    w_shared[nl*TILE_K + kl] = wv[nl*wkv_stride + k_tile + kl];
                 }
 
                 __syncthreads();
@@ -958,7 +1006,9 @@ static __device__ void compute_qkv_tile_quant(
     int64_t q_qtype_size, int64_t k_qtype_size, int64_t v_qtype_size,
     int64_t N_Q, int64_t N_KV,
     int64_t K, 
+    int64_t x_stride,
     int64_t q_out_stride, int64_t kv_out_stride,
+    int64_t wq_stride, int64_t wkv_stride,
     half* __restrict__ x_shared, // [TILE_M, TILE_K]
     float* __restrict__ q_out_shared, // [TILE_M, TILE_N]
     float* __restrict__ k_out_shared, // [TILE_M, TILE_N]
@@ -1007,7 +1057,7 @@ static __device__ void compute_qkv_tile_quant(
             for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
                 int ml = idx / TILE_K;
                 int kl = idx % TILE_K;
-                x_shared[ml*TILE_K+kl] = x[ml*K + k_tile + kl];
+                x_shared[ml*TILE_K+kl] = x[ml*x_stride + k_tile + kl];
             }
 
             if (blockIdx.y * TILE_N < N_Q) {
@@ -1016,7 +1066,7 @@ static __device__ void compute_qkv_tile_quant(
                     int nl = idx / TILE_K;
                     int kb = (idx % TILE_K) / q_qblock_size;
                     int kl = (idx % TILE_K) % q_qblock_size;
-                    const uint8_t* wq_block = wq + (nl*(K/q_qblock_size) + (k_tile/q_qblock_size + kb))*q_qtype_size;
+                    const uint8_t* wq_block = wq + (nl*(wq_stride/q_qblock_size) + (k_tile/q_qblock_size + kb))*q_qtype_size;
                     dequant_block(q_qtype_int, 1, kl, w_shared + nl*TILE_K + kb*q_qblock_size, wq_block);
                 }
 
@@ -1039,7 +1089,7 @@ static __device__ void compute_qkv_tile_quant(
                     int nl = idx / TILE_K;
                     int kb = (idx % TILE_K) / k_qblock_size;
                     int kl = (idx % TILE_K) % k_qblock_size;
-                    const uint8_t* wk_block = wk + (nl*(K/k_qblock_size) + (k_tile/k_qblock_size + kb))*k_qtype_size;
+                    const uint8_t* wk_block = wk + (nl*(wkv_stride/k_qblock_size) + (k_tile/k_qblock_size + kb))*k_qtype_size;
                     dequant_block(k_qtype_int, 1, kl, w_shared + nl*TILE_K + kb*k_qblock_size, wk_block);
                 }
 
@@ -1059,7 +1109,7 @@ static __device__ void compute_qkv_tile_quant(
                     int nl = idx / TILE_K;
                     int kb = (idx % TILE_K) / v_qblock_size;
                     int kl = (idx % TILE_K) % v_qblock_size;
-                    const uint8_t* wv_block = wv + (nl*(K/v_qblock_size) + (k_tile/v_qblock_size + kb))*v_qtype_size;
+                    const uint8_t* wv_block = wv + (nl*(wkv_stride/v_qblock_size) + (k_tile/v_qblock_size + kb))*v_qtype_size;
                     dequant_block(v_qtype_int, 1, kl, w_shared + nl*TILE_K + kb*v_qblock_size, wv_block);
                 }
 
@@ -1156,7 +1206,10 @@ __global__ void qkv_f16_cuda_impl(
 
     compute_qkv_tile_f16<TILE_M, TILE_N, TILE_K>(
         N_Q, N_KV,
-        K, N_Q, N_KV,
+        K, 
+        K,
+        N_Q, N_KV,
+        K, K,
         (half*)x_shared, 
         (float*)q_out_shared, (float*)k_out_shared, (float*)v_out_shared, 
         (half*)w_shared,
@@ -1201,7 +1254,10 @@ __global__ void qkv_quant_cuda_impl(
         k_qtype_int, k_qblock_size, k_qtype_size,
         v_qtype_int, v_qblock_size, v_qtype_size,
         N_Q, N_KV,
-        K, N_Q, N_KV,
+        K, 
+        K,
+        N_Q, N_KV,
+        K, K,
         (half*)x_shared, 
         (float*)q_out_shared, (float*)k_out_shared, (float*)v_out_shared,
         (half*)w_shared,
@@ -1427,17 +1483,16 @@ static __device__ void update_dm(
         float m_old = ms[row_in_tile];
         float d_old = ds[row_in_tile];
         float m_new = fmaxf(m_old, tile_m);
-        float d_new = d_old*expf(m_old-m_new) + tile_d*expf(tile_m-m_new);
+        float d_new = d_old*expf(m_old-m_new) + (tile_m == -INFINITY ? 0.0f : tile_d*expf(tile_m-m_new));
+
         ms[row_in_tile] = m_new;
         ds[row_in_tile] = d_new;
     }
 }
 
-template <int TILE_Q, int TILE_K, int TILE_D, int BLOCK_SIZE>
+template <int TILE_M, int TILE_N, int TILE_K, int BLOCK_SIZE>
 __global__ void flash_attn_cuda_impl(
-    int64_t head_dim, 
-    int64_t L, 
-    int64_t n_kv_heads,
+    int64_t head_dim, int64_t L, int64_t n_kv_heads,
     const uint8_t* __restrict__ mask,
     half* __restrict__ out,
     const half* __restrict__ q,
@@ -1445,22 +1500,25 @@ __global__ void flash_attn_cuda_impl(
     const half* __restrict__ v
 ) {
     
-    constexpr int THR_PER_ROW = BLOCK_SIZE / TILE_Q;
+    constexpr int THR_PER_ROW = BLOCK_SIZE / TILE_M;
     constexpr int WARPS_PER_ROW = (THR_PER_ROW+32-1)/32;
 
-    __shared__ half in_shared[TILE_Q][TILE_D];
-    __shared__ half kv_shared[TILE_K][TILE_D];
-    __shared__ half l_shared[TILE_Q][TILE_K];
+    __shared__ half in_shared[TILE_M][TILE_K];
+    __shared__ half kv_shared[TILE_N][TILE_K];
+    __shared__ half l_shared[TILE_M][TILE_N];
     
-    __shared__ float out_acc_shared[TILE_Q][TILE_K];
-    __shared__ half out_old_shared[TILE_Q][TILE_D];
-    __shared__ half out_new_shared[TILE_Q][TILE_D];
+    __shared__ float out_acc_shared[TILE_M][TILE_N];
+    __shared__ half out_old_shared[TILE_M][TILE_K];
+    __shared__ half out_new_shared[TILE_M][TILE_K];
     
-    __shared__ float ds[TILE_Q];
-    __shared__ float ms[TILE_Q];
+    __shared__ float ds[TILE_M];
+    __shared__ float ms[TILE_M];
 
-    __shared__ float scratch_d[TILE_Q*WARPS_PER_ROW];
-    __shared__ float scratch_m[TILE_Q*WARPS_PER_ROW];
+    __shared__ float ms_old[TILE_M];
+    __shared__ float ds_old[TILE_M];
+
+    __shared__ float scratch_d[TILE_M*WARPS_PER_ROW];
+    __shared__ float scratch_m[TILE_M*WARPS_PER_ROW];
 
     int64_t n_heads = gridDim.y;
     int64_t batch_idx = blockIdx.x;
@@ -1468,81 +1526,95 @@ __global__ void flash_attn_cuda_impl(
     int64_t kv_head_idx = q_head_idx / (n_heads/n_kv_heads);
     int64_t seq_tile = blockIdx.z;
 
-    const half* q_row = q + batch_idx*n_heads*L*head_dim + q_head_idx*L*head_dim + seq_tile*TILE_Q*head_dim;
-    half* out_row = out + batch_idx*n_heads*L*head_dim + q_head_idx*L*head_dim + seq_tile*TILE_Q*head_dim;
+    const half* q_row = q + batch_idx*n_heads*L*head_dim + q_head_idx*L*head_dim + seq_tile*TILE_M*head_dim;
+    half* out_row = out + batch_idx*n_heads*L*head_dim + q_head_idx*L*head_dim + seq_tile*TILE_M*head_dim;
     const half* k_head = k + batch_idx*n_kv_heads*L*head_dim + kv_head_idx*L*head_dim;
     const half* v_head = v + batch_idx*n_kv_heads*L*head_dim + kv_head_idx*L*head_dim;
     // would include q_head_idx*L*L, but pattern is usually the same across all heads
-    const uint8_t* mask_row = mask + batch_idx*L*L + seq_tile*TILE_Q*L;
+    const uint8_t* mask_row = mask + batch_idx*L*L + seq_tile*TILE_M*L;
     
-    if (threadIdx.x<TILE_Q) {
-        ds[threadIdx.x] = 0.0f;
-        ms[threadIdx.x] = -INFINITY;
+    for (int idx=threadIdx.x; idx<TILE_M; idx+=blockDim.x) {
+        ms[idx] = -INFINITY;
+        ds[idx] = 0.0f;
     }
 
     __syncthreads();
 
-    for (int n_tile=0; n_tile<L; n_tile+=TILE_K) {
-        const half* k_row = k_head + n_tile*head_dim;
-        const half* v_row = v_head + n_tile*head_dim;
-        const uint8_t* mask_tile = mask_row + n_tile;
+    for (int k_tile=0; k_tile<L; k_tile+=TILE_N) {
+        const half* k_row = k_head + k_tile*head_dim;
+        const half* v_row = v_head + k_tile*head_dim;
+        const uint8_t* mask_tile = mask_row + k_tile;
 
-        compute_tile_wmma_f16<TILE_Q, TILE_D, TILE_K>(
-            head_dim, TILE_K,
+        compute_tile_wmma_f16<TILE_M, TILE_N, TILE_K>(
+            head_dim, 
+            head_dim,
+            TILE_N,
+            head_dim,
             (half*)in_shared, (float*)out_acc_shared, (half*)kv_shared,
             q_row, (half*)l_shared, k_row
         );
 
-        // apply mask before computing max and scale
-        for (int idx=threadIdx.x; idx<TILE_Q*TILE_K; idx+=blockDim.x) {
-            int r = idx / TILE_K;
-            int c = idx % TILE_K;
+        // apply mask and scale before computing ms and ds
+        for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
+            int r = idx / TILE_N;
+            int c = idx % TILE_N;
 
-            l_shared[r][c] = mask_tile[r*L+c] ? l_shared[r][c] : __float2half(-INFINITY);
+            float scaled_l = __half2float(l_shared[r][c]) / sqrtf((float)head_dim);
+            l_shared[r][c] = mask_tile[r*L+c] ? __float2half(scaled_l) : __float2half(-INFINITY);
         }
 
         __syncthreads();
 
-        float m_old = ms[threadIdx.x/TILE_Q];
-        float d_old = ds[threadIdx.x/TILE_Q];
-
-        update_dm<TILE_Q, TILE_K, THR_PER_ROW>(ds, ms, scratch_d, scratch_m, (half*)l_shared);
+        for (int idx=threadIdx.x; idx<TILE_M; idx+=blockDim.x) {
+            ms_old[idx] = ms[idx];
+            ds_old[idx] = ds[idx];
+        }
 
         __syncthreads();
 
-        float m_new = ms[threadIdx.x/TILE_Q];
-        float d_new = ds[threadIdx.x/TILE_Q];
+        update_dm<TILE_M, TILE_N, THR_PER_ROW>(ds, ms, scratch_d, scratch_m, (half*)l_shared);
 
-        for (int idx=threadIdx.x; idx<TILE_Q*TILE_K; idx+=blockDim.x) {
-            int r = idx/TILE_K;
-            int c = idx%TILE_K;
-            l_shared[r][c] = __float2half(expf(__half2float(l_shared[r][c])-m_new)/d_new);
+        __syncthreads();
+
+        for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
+            int r = idx/TILE_N;
+            int c = idx%TILE_N;
+            
+            l_shared[r][c] = (ds[r] > 0.0f) ? __float2half(expf(__half2float(l_shared[r][c])-ms[r])/ds[r]) : __float2half(0.0f);
         }
 
-        for (int k_tile=0; k_tile<head_dim; k_tile+=TILE_D) {
-            half* out_tile = out_row + k_tile;
-            const half* v_tile = v_row + k_tile;
+        __syncthreads();
 
-            for (int idx=threadIdx.x; idx<TILE_Q*TILE_D; idx+=blockDim.x) {
-                int r = idx/TILE_D;
-                int c = idx%TILE_D;
-                out_old_shared[r][c] =  __float2half(__half2float(out_tile[r*head_dim+c]) * expf(m_old-m_new));
+        for (int d_tile=0; d_tile<head_dim; d_tile+=TILE_K) {
+            half* out_tile = out_row + d_tile;
+            const half* v_tile = v_row + d_tile;
+
+            for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
+                int r = idx/TILE_K;
+                int c = idx%TILE_K;
+                float scale = (ms_old[r] == -INFINITY && ms[r] == -INFINITY) ? 0.0f : expf(ms_old[r]-ms[r]);
+                out_old_shared[r][c] =  __float2half(__half2float(out_tile[r*head_dim+c])*scale);
             }
 
             __syncthreads();
 
-            compute_tile_wmma_f16<TILE_Q, TILE_K, TILE_D>(
-                TILE_K, TILE_D,
-                (half*)in_shared, (float*)out_acc_shared, (half*)kv_shared,
+            compute_tile_wmma_f16<TILE_M, TILE_K, TILE_N, true, true>(
+                TILE_N, 
+                TILE_N,
+                TILE_K,
+                head_dim,
+                (half*)l_shared, (float*)out_acc_shared, (half*)kv_shared,
                 (half*)l_shared, (half*)out_new_shared, v_tile
             );
 
             __syncthreads();
 
-            for (int idx=threadIdx.x; idx<TILE_Q*TILE_D; idx+=blockDim.x) {
-                int r = idx/TILE_D;
-                int c = idx%TILE_D;
-                out_tile[r*head_dim+c] = __float2half(__half2float(out_old_shared[r][c]) + __half2float(out_new_shared[r][c]));
+            for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
+                int r = idx/TILE_K;
+                int c = idx%TILE_K;
+                if (ds[r] > 0.0f) {
+                    out_tile[r*head_dim+c] = __float2half(__half2float(out_old_shared[r][c]) + __half2float(out_new_shared[r][c]));
+                }
             }
         }
     }
@@ -1618,15 +1690,15 @@ void flash_attn_cuda(
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-    constexpr int TILE_Q = 16;
+    constexpr int TILE_M = 16;
     constexpr int TILE_K = 64;
-    constexpr int TILE_D = 64;
+    constexpr int TILE_N = 64;
     constexpr int BLOCK_SIZE = 128;
 
     dim3 block(BLOCK_SIZE); // TODO: tune this or adjust as needed
-    dim3 grid(B, n_heads, (L+TILE_Q-1)/TILE_Q);
+    dim3 grid(B, n_heads, (L+TILE_M-1)/TILE_M);
 
-    flash_attn_cuda_impl<TILE_Q, TILE_K, TILE_D, BLOCK_SIZE><<<grid, block, 0, stream>>>(
+    flash_attn_cuda_impl<TILE_M, TILE_N, TILE_K, BLOCK_SIZE><<<grid, block, 0, stream>>>(
         head_dim, L, n_kv_heads,
         mask_ptr,
         out_ptr, q_ptr, k_ptr, v_ptr
@@ -1669,7 +1741,10 @@ __global__ void moe_scoring_cuda_impl(
         half* out_tile = out_row + n_tile;
 
         compute_tile_f16<TILE_M, TILE_N, TILE_K>(
-            K, TILE_N,
+            K, 
+            K,
+            TILE_N,
+            K,
             (half*)x_shared, (float*)out_shared, (half*)w_shared,
             x_row, (half*)l_shared, w_row
         );
@@ -1789,7 +1864,10 @@ __global__ void swiglu_f16_cuda_impl(
 
     // gate proj stored in hb_row
     compute_tile_wmma_f16<TILE_M, TILE_N, TILE_K>(
-        K_GU, TILE_N,
+        K_GU, 
+        K_GU,
+        TILE_N,
+        K_GU,
         (half*)in_shared, (float*)out_shared, (half*)w_shared, 
         in_row, (half*)hb_shared, ws_gate_row
     );
@@ -1798,7 +1876,10 @@ __global__ void swiglu_f16_cuda_impl(
 
     // up proj stored in hb2
     compute_tile_wmma_f16<TILE_M, TILE_N, TILE_K>(
-        K_GU, TILE_N,
+        K_GU, 
+        K_GU,
+        TILE_N,
+        K_GU,
         (half*)in_shared, (float*)out_shared, (half*)w_shared, 
         in_row, (half*)hb2_shared, ws_up_row
     );
@@ -1866,7 +1947,10 @@ __global__ void swiglu_quant_cuda_impl(
     // gate proj stored in hb_row
     compute_tile_quant<TILE_M, TILE_N, TILE_K>(
         gate_qtype_int, gate_qblock_size, gate_qtype_size,
-        K_GU, TILE_N,
+        K_GU, 
+        K_GU,
+        TILE_N,
+        K_GU,
         (half*)in_shared, (float*)out_shared, (half*)w_shared, 
         in_row, (half*)hb_shared, ws_gate_row
     );
@@ -1874,7 +1958,10 @@ __global__ void swiglu_quant_cuda_impl(
     // up proj stored in hb2
     compute_tile_quant<TILE_M, TILE_N, TILE_K>(
         up_qtype_int, up_qblock_size, up_qtype_size,
-        K_GU, TILE_N,
+        K_GU, 
+        K_GU,
+        TILE_N,
+        K_GU,
         (half*)in_shared, (float*)out_shared, (half*)w_shared, 
         in_row, (half*)hb2_shared, ws_up_row
     );
