@@ -3,8 +3,6 @@
 #include <ATen/core/Tensor.h>
 #include <c10/util/Exception.h>
 
-#include <cstdint>
-
 #include <cuda_runtime.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <mma.h>
@@ -12,6 +10,7 @@
 #include <cassert>
 #include <algorithm>
 #include <type_traits>
+#include <float.h>
 
 #include "quants_impl.cuh"
 #include "impl_common.hpp"
@@ -1468,31 +1467,33 @@ static __device__ void update_dm(
         ml = fmaxf(ml, __half2float(tile[row_in_tile*TILE_N+col])); 
     }
 
-    float tile_m = row_reduce_max<THR_PER_ROW>(scratch_m, ml, row_in_tile, thr_in_row);
+    float row_m = row_reduce_max<THR_PER_ROW>(scratch_m, ml, row_in_tile, thr_in_row);
 
     // compute tile's d vals per row, write to tiles_d
     float dl = 0.0f;
     for (int col=thr_in_row; col<TILE_N; col+=THR_PER_ROW) {
-        dl += expf(__half2float(tile[row_in_tile*TILE_N+col])-tile_m);
+        dl += expf(__half2float(tile[row_in_tile*TILE_N+col])-row_m);
     }
 
-    float tile_d = row_reduce_sum<THR_PER_ROW>(scratch_d, dl, row_in_tile, thr_in_row);
+    float row_d = row_reduce_sum<THR_PER_ROW>(scratch_d, dl, row_in_tile, thr_in_row);
 
     // update m and d
     if (thr_in_row == 0) {
-        float m_old = ms[row_in_tile];
-        float d_old = ds[row_in_tile];
-        float m_new = fmaxf(m_old, tile_m);
-        float d_new = d_old*expf(m_old-m_new) + (tile_m == -INFINITY ? 0.0f : tile_d*expf(tile_m-m_new));
-
-        ms[row_in_tile] = m_new;
-        ds[row_in_tile] = d_new;
+        float row_m_old = ms[row_in_tile];
+        float row_d_old = ds[row_in_tile];
+        float row_m_new = fmaxf(row_m_old, row_m);
+        float row_d_new = row_d_old*expf(row_m_old-row_m_new)+row_d*expf(row_m-row_m_new);
+        ms[row_in_tile] = row_m_new;
+        ds[row_in_tile] = row_d_new;
     }
 }
 
-template <int TILE_M, int TILE_N, int TILE_K, int BLOCK_SIZE>
+// FlashAttention-2 forward pass impl.
+// Refer to: https://arxiv.org/abs/2307.08691
+constexpr float HALF_MIN = -65504.0f;
+template <int TILE_M, int TILE_N, int HEAD_DIM, int BLOCK_SIZE>
 __global__ void flash_attn_cuda_impl(
-    int64_t head_dim, int64_t L, int64_t n_kv_heads,
+    int64_t L, int64_t n_kv_heads,
     const uint8_t* __restrict__ mask,
     half* __restrict__ out,
     const half* __restrict__ q,
@@ -1503,13 +1504,14 @@ __global__ void flash_attn_cuda_impl(
     constexpr int THR_PER_ROW = BLOCK_SIZE / TILE_M;
     constexpr int WARPS_PER_ROW = (THR_PER_ROW+32-1)/32;
 
-    __shared__ half in_shared[TILE_M][TILE_K];
-    __shared__ half kv_shared[TILE_N][TILE_K];
+    __shared__ half in_shared[TILE_M][HEAD_DIM];
+    __shared__ half kv_shared[TILE_N][HEAD_DIM];
     __shared__ half l_shared[TILE_M][TILE_N];
     
-    __shared__ float out_acc_shared[TILE_M][TILE_N];
-    __shared__ half out_old_shared[TILE_M][TILE_K];
-    __shared__ half out_new_shared[TILE_M][TILE_K];
+    __shared__ float qk_acc_shared[TILE_M][TILE_N];
+    __shared__ float out_acc_shared[TILE_M][HEAD_DIM];
+    __shared__ half out_shared[TILE_M][HEAD_DIM];
+    __shared__ half pv_shared[TILE_M][HEAD_DIM];
     
     __shared__ float ds[TILE_M];
     __shared__ float ms[TILE_M];
@@ -1526,31 +1528,35 @@ __global__ void flash_attn_cuda_impl(
     int64_t kv_head_idx = q_head_idx / (n_heads/n_kv_heads);
     int64_t seq_tile = blockIdx.z;
 
-    const half* q_row = q + batch_idx*n_heads*L*head_dim + q_head_idx*L*head_dim + seq_tile*TILE_M*head_dim;
-    half* out_row = out + batch_idx*n_heads*L*head_dim + q_head_idx*L*head_dim + seq_tile*TILE_M*head_dim;
-    const half* k_head = k + batch_idx*n_kv_heads*L*head_dim + kv_head_idx*L*head_dim;
-    const half* v_head = v + batch_idx*n_kv_heads*L*head_dim + kv_head_idx*L*head_dim;
+    const half* q_row = q + batch_idx*n_heads*L*HEAD_DIM + q_head_idx*L*HEAD_DIM + seq_tile*TILE_M*HEAD_DIM;
+    half* out_row = out + batch_idx*n_heads*L*HEAD_DIM + q_head_idx*L*HEAD_DIM + seq_tile*TILE_M*HEAD_DIM;
+    const half* k_head = k + batch_idx*n_kv_heads*L*HEAD_DIM + kv_head_idx*L*HEAD_DIM;
+    const half* v_head = v + batch_idx*n_kv_heads*L*HEAD_DIM + kv_head_idx*L*HEAD_DIM;
     // would include q_head_idx*L*L, but pattern is usually the same across all heads
     const uint8_t* mask_row = mask + batch_idx*L*L + seq_tile*TILE_M*L;
-    
+
     for (int idx=threadIdx.x; idx<TILE_M; idx+=blockDim.x) {
-        ms[idx] = -INFINITY;
+        ms[idx] = HALF_MIN;
         ds[idx] = 0.0f;
+    }
+
+    for (int idx=threadIdx.x; idx<TILE_M*HEAD_DIM; idx+=blockDim.x) {
+        out_shared[idx/HEAD_DIM][idx%HEAD_DIM] = __float2half(0.0f);
     }
 
     __syncthreads();
 
-    for (int k_tile=0; k_tile<L; k_tile+=TILE_N) {
-        const half* k_row = k_head + k_tile*head_dim;
-        const half* v_row = v_head + k_tile*head_dim;
-        const uint8_t* mask_tile = mask_row + k_tile;
+    for (int n_tile=0; n_tile<L; n_tile+=TILE_N) {
+        const half* k_row = k_head + n_tile*HEAD_DIM;
+        const half* v_row = v_head + n_tile*HEAD_DIM;
+        const uint8_t* mask_tile = mask_row + n_tile;
 
-        compute_tile_wmma_f16<TILE_M, TILE_N, TILE_K>(
-            head_dim, 
-            head_dim,
+        compute_tile_wmma_f16<TILE_M, TILE_N, HEAD_DIM>(
+            HEAD_DIM, 
+            HEAD_DIM,
             TILE_N,
-            head_dim,
-            (half*)in_shared, (float*)out_acc_shared, (half*)kv_shared,
+            HEAD_DIM,
+            (half*)in_shared, (float*)qk_acc_shared, (half*)kv_shared,
             q_row, (half*)l_shared, k_row
         );
 
@@ -1559,8 +1565,7 @@ __global__ void flash_attn_cuda_impl(
             int r = idx / TILE_N;
             int c = idx % TILE_N;
 
-            float scaled_l = __half2float(l_shared[r][c]) / sqrtf((float)head_dim);
-            l_shared[r][c] = mask_tile[r*L+c] ? __float2half(scaled_l) : __float2half(-INFINITY);
+            l_shared[r][c] = mask_tile[r*L+c] ? __float2half(__half2float(l_shared[r][c]) / sqrtf((float)HEAD_DIM)) : __float2half(HALF_MIN);
         }
 
         __syncthreads();
@@ -1579,44 +1584,45 @@ __global__ void flash_attn_cuda_impl(
         for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
             int r = idx/TILE_N;
             int c = idx%TILE_N;
-            
-            l_shared[r][c] = (ds[r] > 0.0f) ? __float2half(expf(__half2float(l_shared[r][c])-ms[r])/ds[r]) : __float2half(0.0f);
+            l_shared[r][c] = __float2half(expf(__half2float(l_shared[r][c])-ms[r]));
         }
 
         __syncthreads();
 
-        for (int d_tile=0; d_tile<head_dim; d_tile+=TILE_K) {
-            half* out_tile = out_row + d_tile;
-            const half* v_tile = v_row + d_tile;
+        for (int idx=threadIdx.x; idx<TILE_M*HEAD_DIM; idx+=blockDim.x) {
+            int r = idx/HEAD_DIM;
+            int c = idx%HEAD_DIM;
 
-            for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
-                int r = idx/TILE_K;
-                int c = idx%TILE_K;
-                float scale = (ms_old[r] == -INFINITY && ms[r] == -INFINITY) ? 0.0f : expf(ms_old[r]-ms[r]);
-                out_old_shared[r][c] =  __float2half(__half2float(out_tile[r*head_dim+c])*scale);
-            }
-
-            __syncthreads();
-
-            compute_tile_wmma_f16<TILE_M, TILE_K, TILE_N, true, true>(
-                TILE_N, 
-                TILE_N,
-                TILE_K,
-                head_dim,
-                (half*)l_shared, (float*)out_acc_shared, (half*)kv_shared,
-                (half*)l_shared, (half*)out_new_shared, v_tile
-            );
-
-            __syncthreads();
-
-            for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
-                int r = idx/TILE_K;
-                int c = idx%TILE_K;
-                if (ds[r] > 0.0f) {
-                    out_tile[r*head_dim+c] = __float2half(__half2float(out_old_shared[r][c]) + __half2float(out_new_shared[r][c]));
-                }
-            }
+            out_shared[r][c] = __float2half(__half2float(out_shared[r][c])*expf(ms_old[r]-ms[r]));
         }
+
+        __syncthreads();
+
+        // weird but essentially utilizing V^T^T = V since we are computing l_shared @ V, not V^T
+        // can optimize this later by writing a separate impl that handles not writing shared mem to itself (l_shared), 
+        // just wanted to reuse some code for now and deal w it later during profiling
+        compute_tile_wmma_f16<TILE_M, HEAD_DIM, TILE_N, true, true>(
+            TILE_N,
+            TILE_N,
+            HEAD_DIM,
+            HEAD_DIM,
+            (half*)l_shared, (float*)out_acc_shared, (half*)kv_shared,
+            (half*)l_shared, (half*)pv_shared, v_row
+        );
+
+        __syncthreads();
+
+        for (int idx=threadIdx.x; idx<TILE_M*HEAD_DIM; idx+=blockDim.x) {
+            int r = idx/HEAD_DIM;
+            int c = idx%HEAD_DIM;
+            out_shared[r][c] = __float2half(__half2float(out_shared[r][c]) + __half2float(pv_shared[r][c]));
+        }
+    }
+
+    for (int idx=threadIdx.x; idx<TILE_M*HEAD_DIM; idx+=blockDim.x) {
+        int r = idx/HEAD_DIM;
+        int c = idx%HEAD_DIM;
+        out_row[r*HEAD_DIM+c] = (ds[r] > 0.0f) ? __float2half(__half2float(out_shared[r][c]) / ds[r]) : __float2half(0.0f);
     }
 }
 
@@ -1625,10 +1631,10 @@ void flash_attn_cuda(
     int64_t qblock_size,
     int64_t qtype_size,
     at::Tensor& mask, // [B, 1, L, L]
-    at::Tensor& out,     // [B, n_heads, L, head_dim]
-    const at::Tensor& q, // [B, n_heads, L, head_dim]
-    const at::Tensor& k, // [B, n_kv_heads, L, head_dim]
-    const at::Tensor& v  // [B, n_kv_heads, L, head_dim]
+    at::Tensor& out,     // [B, n_heads, L, HEAD_DIM]
+    const at::Tensor& q, // [B, n_heads, L, HEAD_DIM]
+    const at::Tensor& k, // [B, n_kv_heads, L, HEAD_DIM]
+    const at::Tensor& v  // [B, n_kv_heads, L, HEAD_DIM]
 ) {
     // validation
     TORCH_INTERNAL_ASSERT(
@@ -1685,21 +1691,22 @@ void flash_attn_cuda(
     int64_t B = q.size(0);
     int64_t n_heads = q.size(1);
     int64_t n_kv_heads = k.size(1);
-    int64_t L = q.size(2);
     int64_t head_dim = q.size(-1);
+    TORCH_CHECK(head_dim == 128);
+    int64_t L = q.size(2);
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
     constexpr int TILE_M = 16;
-    constexpr int TILE_K = 64;
+    constexpr int HEAD_DIM = 128;
     constexpr int TILE_N = 64;
     constexpr int BLOCK_SIZE = 128;
 
     dim3 block(BLOCK_SIZE); // TODO: tune this or adjust as needed
     dim3 grid(B, n_heads, (L+TILE_M-1)/TILE_M);
 
-    flash_attn_cuda_impl<TILE_M, TILE_N, TILE_K, BLOCK_SIZE><<<grid, block, 0, stream>>>(
-        head_dim, L, n_kv_heads,
+    flash_attn_cuda_impl<TILE_M, TILE_N, HEAD_DIM, BLOCK_SIZE><<<grid, block, 0, stream>>>(
+        L, n_kv_heads,
         mask_ptr,
         out_ptr, q_ptr, k_ptr, v_ptr
     );

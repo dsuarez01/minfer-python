@@ -289,8 +289,8 @@ def test_flash_attn(backend):
     input_A_V = input_A_V.repeat_interleave(n_rep, dim=1)
 
     expected_A = F.scaled_dot_product_attention(input_A_Q, input_A_K, input_A_V, attn_mask=mask_A)
-
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-1), "flash_attn"
+    
+    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-3), "flash_attn"
 
     # Q shape [B // dp_size, n_heads, L, head_dim], K and V shape [B // dp_size, n_kv_heads, L, head_dim]
     input_B_Q = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
@@ -316,7 +316,7 @@ def test_flash_attn(backend):
 
     expected_B = F.scaled_dot_product_attention(input_B_Q, input_B_K, input_B_V, attn_mask=mask_B)
 
-    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=1e-1), "flash_attn"
+    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=1e-3), "flash_attn"
     # output act. shape [B // dp_size, L, hidden_dim]
 
 # just the usual matmul + softmax before topk expert selection

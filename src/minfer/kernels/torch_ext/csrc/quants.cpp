@@ -10,6 +10,10 @@
 
 namespace minfer {
 
+#ifdef _OPENMP
+printf("[quants.cpp] OpenMP threads: %d\n", omp_get_max_threads());
+#endif
+
 template <typename T>
 void dequant_row_cpu(
     GGMLQuantizationType qtype,
@@ -56,9 +60,6 @@ void dequant_cpu(
     int64_t qblock_size, // num deq elems in block
     int64_t qtype_size // byte size of block
 ) {
-    #ifdef _OPENMP
-    printf("Dequant OpenMP threads: %d\n", omp_get_max_threads());
-    #endif
 
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
     TORCH_CHECK(x.dim() == 2 && y.dim() == 2);
@@ -145,9 +146,6 @@ void quant_cpu(
     int64_t qblock_size, // num deq elems in block
     int64_t qtype_size // byte size of block
 ) {
-    #ifdef _OPENMP
-    printf("Quant OpenMP threads: %d\n", omp_get_max_threads());
-    #endif
 
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
     TORCH_CHECK(x.dim() == 2 && y.dim() == 2);
