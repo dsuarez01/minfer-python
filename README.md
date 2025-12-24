@@ -2,7 +2,7 @@
 
 Benchmarking inference on (decoder-only) LLM models.
 
-Kernels written using Triton and CUDA as the underlying backend.
+Kernels written using CUDA as the underlying backend.
 
 Currently the kernels are stubs, and they successfully compile as tested on my university cluster setup. 
 

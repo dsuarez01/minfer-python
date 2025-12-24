@@ -1,4 +1,4 @@
-# TODO: modify ALL tests to use RefKernelBackend once ready (for now, only test_dequant uses it)
+# TODO: eventually add in Triton?
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -18,7 +18,7 @@ SUPPORTED_QTYPES = [
     "MXFP4"
 ]
 
-@pytest.mark.parametrize("backend", ["torch_ext"]) # TODO: add triton once fixed (same applies to the rest of the kernels)
+@pytest.mark.parametrize("backend", ["torch_ext"])
 @pytest.mark.parametrize("shape", [(1024,6144), (16384,6144)])
 @pytest.mark.parametrize("qtype_name", SUPPORTED_QTYPES)
 def test_dequant(backend, qtype_name, shape):
@@ -289,7 +289,7 @@ def test_flash_attn(backend):
         qtype, qblock_size, qtype_size, mask_A, actual_A, input_A_Q, input_A_K, input_A_V
     )
     
-    # pytorch SPDA doesn't handle GQA on its own
+    # pytorch SDPA doesn't handle GQA on its own
     n_rep = n_heads // n_kv_heads
     input_A_K = input_A_K.repeat_interleave(n_rep, dim=1)
     input_A_V = input_A_V.repeat_interleave(n_rep, dim=1)
@@ -321,7 +321,7 @@ def test_flash_attn(backend):
         qtype, qblock_size, qtype_size, mask_B, actual_B, input_B_Q, input_B_K, input_B_V
     )
 
-    # pytorch SPDA doesn't handle GQA on its own
+    # pytorch SDPA doesn't handle GQA on its own
     n_rep = n_heads // n_kv_heads
     input_B_K = input_B_K.repeat_interleave(n_rep, dim=1)
     input_B_V = input_B_V.repeat_interleave(n_rep, dim=1)
