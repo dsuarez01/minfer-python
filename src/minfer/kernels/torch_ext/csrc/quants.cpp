@@ -4,15 +4,12 @@
 
 #include <omp.h>
 #include <cassert>
+#include <iostream>
 
 #include "impl_common.hpp"
 #include "quants_impl.hpp"
 
 namespace minfer {
-
-#ifdef _OPENMP
-printf("[quants.cpp] OpenMP threads: %d\n", omp_get_max_threads());
-#endif
 
 template <typename T>
 void dequant_row_cpu(
@@ -183,7 +180,9 @@ TORCH_LIBRARY_IMPL(minfer, CPU, m) {
 }
 
 static struct Initializer {
+    
     Initializer() {
+
         // NOTE: 2-3 min to initialize upon first import
         iq2xs_init_impl(static_cast<int>(GGMLQuantizationType::IQ2_XXS));
         iq2xs_init_impl(static_cast<int>(GGMLQuantizationType::IQ2_XS));

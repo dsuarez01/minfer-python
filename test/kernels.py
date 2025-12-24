@@ -268,11 +268,16 @@ def test_flash_attn(backend):
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
-    # Q shape [B // dp_size, n_heads, L, head_dim], K and V shape [B // dp_size, n_kv_heads, L, head_dim]
-    input_A_Q = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
-    input_A_K = (1/head_dim**0.5) * torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
-    input_A_V = (1/head_dim**0.5) * torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
+    # expected Q shape [B // dp_size, n_heads, L, head_dim], K and V shape [B // dp_size, n_kv_heads, L, head_dim]
+    input_A_Q = torch.randn((B,L,n_heads*head_dim), dtype=torch.float16).cuda()
+    input_A_Q = input_A_Q.view((B,L,n_heads,head_dim)).transpose(1,2)
     
+    input_A_K = (1/head_dim**0.5) * torch.randn((B,L,n_kv_heads*head_dim), dtype=torch.float16).cuda()
+    input_A_K = input_A_K.view((B,L,n_kv_heads,head_dim)).transpose(1,2)
+    
+    input_A_V = (1/head_dim**0.5) * torch.randn((B,L,n_kv_heads*head_dim), dtype=torch.float16).cuda()
+    input_A_V = input_A_V.view((B,L,n_kv_heads,head_dim)).transpose(1,2)
+
     # NOTE: weird bug with torch tril and triu on CUDA, see e.g. https://github.com/pytorch/pytorch/issues/136611
     # mask_A = torch.ones(B, n_heads, L, L, dtype=torch.uint8).tril()
     # mask_A = mask_A.cuda()
@@ -284,6 +289,7 @@ def test_flash_attn(backend):
         qtype, qblock_size, qtype_size, mask_A, actual_A, input_A_Q, input_A_K, input_A_V
     )
     
+    # pytorch SPDA doesn't handle GQA on its own
     n_rep = n_heads // n_kv_heads
     input_A_K = input_A_K.repeat_interleave(n_rep, dim=1)
     input_A_V = input_A_V.repeat_interleave(n_rep, dim=1)
@@ -292,10 +298,15 @@ def test_flash_attn(backend):
     
     assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-3), "flash_attn"
 
-    # Q shape [B // dp_size, n_heads, L, head_dim], K and V shape [B // dp_size, n_kv_heads, L, head_dim]
-    input_B_Q = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
-    input_B_K = (1/head_dim**0.5) * torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
-    input_B_V = (1/head_dim**0.5) * torch.randn((B,n_kv_heads,L,head_dim), dtype=torch.float16).cuda()
+    # expected Q shape [B // dp_size, n_heads, L, head_dim], K and V shape [B // dp_size, n_kv_heads, L, head_dim]
+    input_B_Q = torch.randn((B,L,n_heads*head_dim), dtype=torch.float16).cuda()
+    input_B_Q = input_B_Q.view((B,L,n_heads,head_dim)).transpose(1,2)
+    
+    input_B_K = (1/head_dim**0.5) * torch.randn((B,L,n_kv_heads*head_dim), dtype=torch.float16).cuda()
+    input_B_K = input_B_K.view((B,L,n_kv_heads,head_dim)).transpose(1,2)
+    
+    input_B_V = (1/head_dim**0.5) * torch.randn((B,L,n_kv_heads*head_dim), dtype=torch.float16).cuda()
+    input_B_V = input_B_V.view((B,L,n_kv_heads,head_dim)).transpose(1,2)
 
     # NOTE: weird bug with torch tril and triu on CUDA, see e.g. https://github.com/pytorch/pytorch/issues/136611
     # mask_B = (torch.tril(torch.ones(L, L), window_size-1) * torch.triu(torch.ones(L, L), -(window_size-1))).bool()
@@ -310,6 +321,7 @@ def test_flash_attn(backend):
         qtype, qblock_size, qtype_size, mask_B, actual_B, input_B_Q, input_B_K, input_B_V
     )
 
+    # pytorch SPDA doesn't handle GQA on its own
     n_rep = n_heads // n_kv_heads
     input_B_K = input_B_K.repeat_interleave(n_rep, dim=1)
     input_B_V = input_B_V.repeat_interleave(n_rep, dim=1)

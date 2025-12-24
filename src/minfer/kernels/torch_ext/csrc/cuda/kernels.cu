@@ -1491,8 +1491,13 @@ static __device__ void update_dm(
 // FlashAttention-2 forward pass impl.
 // Refer to: https://arxiv.org/abs/2307.08691
 constexpr float HALF_MIN = -65504.0f;
+struct QKVStrides {
+    int64_t q0, q1, q2;
+    int64_t kv0, kv1, kv2;
+};
 template <int TILE_M, int TILE_N, int HEAD_DIM, int BLOCK_SIZE>
 __global__ void flash_attn_cuda_impl(
+    QKVStrides strides,
     int64_t L, int64_t n_kv_heads,
     const uint8_t* __restrict__ mask,
     half* __restrict__ out,
@@ -1528,12 +1533,12 @@ __global__ void flash_attn_cuda_impl(
     int64_t kv_head_idx = q_head_idx / (n_heads/n_kv_heads);
     int64_t seq_tile = blockIdx.z;
 
-    const half* q_row = q + batch_idx*n_heads*L*HEAD_DIM + q_head_idx*L*HEAD_DIM + seq_tile*TILE_M*HEAD_DIM;
+    const half* q_row = q + batch_idx*strides.q0 + q_head_idx*strides.q1 + seq_tile*TILE_M*strides.q2;
+    const half* k_head = k + batch_idx*strides.kv0 + kv_head_idx*strides.kv1;
+    const half* v_head = v + batch_idx*strides.kv0 + kv_head_idx*strides.kv1;
+    
     half* out_row = out + batch_idx*n_heads*L*HEAD_DIM + q_head_idx*L*HEAD_DIM + seq_tile*TILE_M*HEAD_DIM;
-    const half* k_head = k + batch_idx*n_kv_heads*L*HEAD_DIM + kv_head_idx*L*HEAD_DIM;
-    const half* v_head = v + batch_idx*n_kv_heads*L*HEAD_DIM + kv_head_idx*L*HEAD_DIM;
-    // would include q_head_idx*L*L, but pattern is usually the same across all heads
-    const uint8_t* mask_row = mask + batch_idx*L*L + seq_tile*TILE_M*L;
+    const uint8_t* mask_row = mask + batch_idx*L*L + seq_tile*TILE_M*L; // [B, 1, L, L]
 
     for (int idx=threadIdx.x; idx<TILE_M; idx+=blockDim.x) {
         ms[idx] = HALF_MIN;
@@ -1547,15 +1552,15 @@ __global__ void flash_attn_cuda_impl(
     __syncthreads();
 
     for (int n_tile=0; n_tile<L; n_tile+=TILE_N) {
-        const half* k_row = k_head + n_tile*HEAD_DIM;
-        const half* v_row = v_head + n_tile*HEAD_DIM;
+        const half* k_row = k_head + n_tile*strides.kv2;
+        const half* v_row = v_head + n_tile*strides.kv2;
         const uint8_t* mask_tile = mask_row + n_tile;
 
         compute_tile_wmma_f16<TILE_M, TILE_N, HEAD_DIM>(
             HEAD_DIM, 
-            HEAD_DIM,
+            strides.q2,
             TILE_N,
-            HEAD_DIM,
+            strides.kv2,
             (half*)in_shared, (float*)qk_acc_shared, (half*)kv_shared,
             q_row, (half*)l_shared, k_row
         );
@@ -1605,7 +1610,7 @@ __global__ void flash_attn_cuda_impl(
             TILE_N,
             TILE_N,
             HEAD_DIM,
-            HEAD_DIM,
+            strides.kv2,
             (half*)l_shared, (float*)out_acc_shared, (half*)kv_shared,
             (half*)l_shared, (half*)pv_shared, v_row
         );
@@ -1652,6 +1657,9 @@ void flash_attn_cuda(
         (k.stride(-1) == 1) &&
         (v.stride(-1) == 1) &&
         (out.stride(-1) == 1) &&
+        (k.stride(0) == v.stride(0)) &&
+        (k.stride(1) == v.stride(1)) &&
+        (k.stride(2) == v.stride(2)) &&
         (mask.is_contiguous())
     );
 
@@ -1682,6 +1690,11 @@ void flash_attn_cuda(
         (q.size(3) == k.size(3))
     );
 
+    QKVStrides strides = {
+        q.stride(0), q.stride(1), q.stride(2),
+        k.stride(0), k.stride(1), k.stride(2)
+    };
+
     const half* q_ptr = reinterpret_cast<const half*>(q.data_ptr<at::Half>());
     const half* k_ptr = reinterpret_cast<const half*>(k.data_ptr<at::Half>());
     const half* v_ptr = reinterpret_cast<const half*>(v.data_ptr<at::Half>());
@@ -1706,6 +1719,7 @@ void flash_attn_cuda(
     dim3 grid(B, n_heads, (L+TILE_M-1)/TILE_M);
 
     flash_attn_cuda_impl<TILE_M, TILE_N, HEAD_DIM, BLOCK_SIZE><<<grid, block, 0, stream>>>(
+        strides,
         L, n_kv_heads,
         mask_ptr,
         out_ptr, q_ptr, k_ptr, v_ptr
