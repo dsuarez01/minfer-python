@@ -182,7 +182,6 @@ TORCH_LIBRARY_IMPL(minfer, CPU, m) {
 static struct Initializer {
     
     Initializer() {
-
         // NOTE: 2-3 min to initialize upon first import
         iq2xs_init_impl(static_cast<int>(GGMLQuantizationType::IQ2_XXS));
         iq2xs_init_impl(static_cast<int>(GGMLQuantizationType::IQ2_XS));

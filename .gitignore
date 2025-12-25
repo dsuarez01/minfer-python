@@ -7,6 +7,9 @@ run_setup.sh
 # directory models downloaded to
 gguf
 
+# misc.
+./logs
+
 # python-specific
 .venv
 
