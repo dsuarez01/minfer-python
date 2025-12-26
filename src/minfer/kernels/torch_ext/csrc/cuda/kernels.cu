@@ -94,7 +94,6 @@ static __device__ float blockreduce_max(float* vs, float v, int tid) {
 // might template this later on to additionally support float
 static __device__ void dequant_block(
     int64_t qtype_int,
-    int64_t stride,
     int64_t tid,
     half* __restrict__ y,
     const uint8_t* __restrict__ w
@@ -102,30 +101,30 @@ static __device__ void dequant_block(
     GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
 
     switch (qtype) {
-        case GGMLQuantizationType::Q4_0: dequant_block_q4_0<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::Q4_1: dequant_block_q4_1<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::Q5_0: dequant_block_q5_0<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::Q5_1: dequant_block_q5_1<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::Q8_0: dequant_block_q8_0<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::MXFP4: dequant_block_mxfp4<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::Q2_K: dequant_block_q2_K<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::Q3_K: dequant_block_q3_K<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::Q4_K: dequant_block_q4_K<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::Q5_K: dequant_block_q5_K<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::Q6_K: dequant_block_q6_K<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::TQ1_0: dequant_block_tq1_0<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::TQ2_0: dequant_block_tq2_0<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::IQ2_XXS: dequant_block_iq2_xxs<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::IQ2_XS: dequant_block_iq2_xs<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::IQ2_S: dequant_block_iq2_s<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::IQ3_XXS: dequant_block_iq3_xxs<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::IQ3_S: dequant_block_iq3_s<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::IQ1_S: dequant_block_iq1_s<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::IQ1_M: dequant_block_iq1_m<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::IQ4_NL: dequant_block_iq4_nl<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::IQ4_XS: dequant_block_iq4_xs<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::Q8_K: dequant_block_q8_K<half>(w, y, stride, tid); break;
-        case GGMLQuantizationType::BF16: dequant_block_bf16<half>(w, y, stride, tid); break;
+        case GGMLQuantizationType::Q4_0: dequant_block_q4_0<half>(w, y, tid); break;
+        case GGMLQuantizationType::Q4_1: dequant_block_q4_1<half>(w, y, tid); break;
+        case GGMLQuantizationType::Q5_0: dequant_block_q5_0<half>(w, y, tid); break;
+        case GGMLQuantizationType::Q5_1: dequant_block_q5_1<half>(w, y, tid); break;
+        case GGMLQuantizationType::Q8_0: dequant_block_q8_0<half>(w, y, tid); break;
+        case GGMLQuantizationType::MXFP4: dequant_block_mxfp4<half>(w, y, tid); break;
+        case GGMLQuantizationType::Q2_K: dequant_block_q2_K<half>(w, y, tid); break;
+        case GGMLQuantizationType::Q3_K: dequant_block_q3_K<half>(w, y, tid); break;
+        case GGMLQuantizationType::Q4_K: dequant_block_q4_K<half>(w, y, tid); break;
+        case GGMLQuantizationType::Q5_K: dequant_block_q5_K<half>(w, y, tid); break;
+        case GGMLQuantizationType::Q6_K: dequant_block_q6_K<half>(w, y, tid); break;
+        case GGMLQuantizationType::TQ1_0: dequant_block_tq1_0<half>(w, y, tid); break;
+        case GGMLQuantizationType::TQ2_0: dequant_block_tq2_0<half>(w, y, tid); break;
+        case GGMLQuantizationType::IQ2_XXS: dequant_block_iq2_xxs<half>(w, y, tid); break;
+        case GGMLQuantizationType::IQ2_XS: dequant_block_iq2_xs<half>(w, y, tid); break;
+        case GGMLQuantizationType::IQ2_S: dequant_block_iq2_s<half>(w, y, tid); break;
+        case GGMLQuantizationType::IQ3_XXS: dequant_block_iq3_xxs<half>(w, y, tid); break;
+        case GGMLQuantizationType::IQ3_S: dequant_block_iq3_s<half>(w, y, tid); break;
+        case GGMLQuantizationType::IQ1_S: dequant_block_iq1_s<half>(w, y, tid); break;
+        case GGMLQuantizationType::IQ1_M: dequant_block_iq1_m<half>(w, y, tid); break;
+        case GGMLQuantizationType::IQ4_NL: dequant_block_iq4_nl<half>(w, y, tid); break;
+        case GGMLQuantizationType::IQ4_XS: dequant_block_iq4_xs<half>(w, y, tid); break;
+        case GGMLQuantizationType::Q8_K: dequant_block_q8_K<half>(w, y, tid); break;
+        case GGMLQuantizationType::BF16: dequant_block_bf16<half>(w, y, tid); break;
         default: assert(false && "Unsupported dtype"); // this gets compiled out in non-debug builds...
     }
 }
@@ -134,8 +133,8 @@ __global__ void rmsnorm_cuda_impl(
     int64_t dim,
     float eps,
     const half* __restrict__ in,
-    half* __restrict__ out,
-    const half* __restrict__ w
+    const half* __restrict__ w,
+    at::Tensor& out
 ) {
 
     const half* vec_in = in + blockIdx.x * dim;
@@ -164,8 +163,8 @@ __global__ void rmsnorm_cuda_impl(
 void rmsnorm_cuda(
     double eps, 
     const at::Tensor& in, 
-    at::Tensor& out, 
-    const at::Tensor& w
+    const at::Tensor& w,
+    at::Tensor& out
 ) {
     // checks
     TORCH_INTERNAL_ASSERT(in.device().type() == at::DeviceType::CUDA);
@@ -197,7 +196,7 @@ void rmsnorm_cuda(
     block_size = (block_size+32-1)/32 * 32;
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    rmsnorm_cuda_impl<<<n_blocks, block_size, 0, stream>>>(dim, eps, in_ptr, out_ptr, w_ptr);
+    rmsnorm_cuda_impl<<<n_blocks, block_size, 0, stream>>>(dim, eps, in_ptr, w_ptr, out_ptr);
 }
 
 __global__ void il_rope_cuda_impl(
@@ -313,14 +312,12 @@ void neox_rope_cuda(
 template <int TILE_DIM>
 static __device__ void compute_tile_f16(
     int64_t M, int64_t K, int64_t N,
-    int64_t x_stride,
-    int64_t out_stride,
-    int64_t w_stride,
+    int64_t x_stride, int64_t w_stride, int64_t out_stride,
     half (&x_shared)[TILE_DIM][TILE_DIM],
     half (&w_shared)[TILE_DIM][TILE_DIM+2], // avoid bank conflict
     const half* __restrict__ x,
-    half* __restrict__ out,
-    const half* __restrict__ w
+    const half* __restrict__ w,
+    half* __restrict__ out
 ) {
     int r = threadIdx.y;
     int c = threadIdx.x;
@@ -348,190 +345,93 @@ static __device__ void compute_tile_f16(
     }
 }
 
-// helper to compute TILE_M x TILE_N portion of result
-template <int TILE_M, int TILE_N, int TILE_K, bool row_major_x = true, bool row_major_w = false>
+
+// helper to compute WMMA_M x WMMA_N portion of result
+const int WMMA_M = 16;
+const int WMMA_N = 16;
+const int WMMA_K = 16;
 static __device__ void compute_tile_wmma_f16(
-    int64_t K,
-    int64_t x_stride,
-    int64_t out_stride,
-    int64_t w_stride,
-    half* __restrict__ x_shared, // [TILE_M, TILE_K]
-    float* __restrict__ out_shared, // [TILE_M, TILE_N]
-    half* __restrict__ w_shared, // [TILE_N, TILE_K]
+    int64_t M, int64_t K, int64_t N,
+    int64_t x_stride, int64_t w_stride, int64_t out_stride,
     const half* __restrict__ x,
-    half* __restrict__ out,
-    const half* __restrict__ w
+    const half* __restrict__ w,
+    half* __restrict__ out
 ) {
-    constexpr int NUM_SUBTILES_M = (TILE_M/16);
-    constexpr int NUM_SUBTILES_N = (TILE_N/16);
+    int warpIdInBlock = threadIdx.x / 32;
+    int warpsPerBlock = blockDim.x / 32;
 
-    // wmma operates on 16x16 subtiles
-    constexpr int NUM_SUBTILES = NUM_SUBTILES_M*NUM_SUBTILES_N;
+    int localRow = warpIdInBlock*WMMA_M;
 
+    int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
+    int globalColN = blockIdx.y*WMMA_N;
 
-    int warp_id = threadIdx.x / 32;
-    int num_warps = blockDim.x / 32;
-    int tiles_per_warp = NUM_SUBTILES / num_warps;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> acc_frag;
+    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
+    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag;
 
-    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag;
-    wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a_frag;
-    wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b_frag;
+    wmma::fill_fragment(acc_frag, 0.0f);
 
-    // split work over the subtiles (arranged in a grid of TILE_SIZE/16xTILE_SIZE/16), each of size 16x16.
-    for (int i=0; i<tiles_per_warp; ++i) {
-        int tile_id = warp_id * tiles_per_warp + i;
-        int m_subtile = (tile_id / NUM_SUBTILES_N)*16;
-        int n_subtile = (tile_id % NUM_SUBTILES_N)*16;
-
-        wmma::fill_fragment(acc_frag, 0.0f);
-
-        // K-dimension processed in TILE_K chunks
-        for (int64_t k_tile=0; k_tile<K; k_tile+=TILE_K) {
-            
-            // coop load x tile and w tile to shared mem
-            for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
-                int ml = idx / TILE_K;
-                int kl = idx % TILE_K;
-                if constexpr (row_major_x) {
-                    x_shared[ml*TILE_K+kl] = x[ml*x_stride + k_tile + kl];
-                } else {
-                    x_shared[ml*TILE_K+kl] = x[(k_tile+kl)*x_stride + ml];
-                }
-            }
-
-            // coop load of weight to shared mem
-            for (int idx=threadIdx.x; idx<TILE_N*TILE_K; idx+=blockDim.x) {
-                int nl = idx / TILE_K;
-                int kl = idx % TILE_K;
-                if constexpr (row_major_w) {
-                    w_shared[nl*TILE_K + kl] = w[(k_tile+kl)*w_stride + nl];
-                } else {
-                    w_shared[nl*TILE_K + kl] = w[nl*w_stride + k_tile + kl];
-                }
-            }
-
-            __syncthreads();
-
-            // process TILE_K with WMMA in chunks of 16
-            for (int k_subtile=0; k_subtile<TILE_K; k_subtile+=16) {
-                wmma::load_matrix_sync(a_frag, x_shared+m_subtile*TILE_K+k_subtile, TILE_K);
-                wmma::load_matrix_sync(b_frag, w_shared+n_subtile*TILE_K+k_subtile, TILE_K);
-                wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
-            }
-
-            __syncthreads();
+    for (int k=0; k<K; k+=WMMA_K) {
+        if (globalRowM<M && globalColN<N) {
+            wmma::load_matrix_sync(a_frag, x+localRow*x_stride+k, x_stride);
+            wmma::load_matrix_sync(b_frag, w+k, w_stride);
+            wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
         }
-
-        wmma::store_matrix_sync(
-            out_shared + m_subtile*TILE_N + n_subtile,
-            acc_frag,
-            TILE_N,
-            wmma::mem_row_major
-        );
     }
 
-    __syncthreads();
-
-    for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
-        int r = idx / TILE_N;
-        int c = idx % TILE_N;
-        out[r*out_stride+c] = __float2half(out_shared[r*TILE_N+c]);
+    if (globalRowM<M && globalColN<N) {
+        wmma::store_matrix_sync(out + localRow*out_stride, acc_frag, out_stride, wmma::mem_row_major);
     }
 }
 
-// helper to compute TILE_M x TILE_N portion of result
-template <int TILE_M, int TILE_N, int TILE_K, bool row_major_x = true, bool row_major_w = false>
+// helper to compute WMMA_M x WMMA_N portion of result
 static __device__ void compute_tile_quant(
-    int64_t qtype_int,
-    int64_t qblock_size,
-    int64_t qtype_size,
-    int64_t K,
-    int64_t x_stride,
-    int64_t out_stride,
-    int64_t w_stride,
-    half* __restrict__ x_shared, // [TILE_M, TILE_K]
-    float* __restrict__ out_shared, // [TILE_M, TILE_N]
-    half* __restrict__ w_shared, // [TILE_N, TILE_K]
+    int64_t qtype_int, int64_t qblock_size, int64_t qtype_size,
+    int64_t M, int64_t K, int64_t N,
+    int64_t x_stride, int64_t w_stride, int64_t out_stride,
+    half (&w_shared)[WMMA_N][256],
     const half* __restrict__ x,
-    half* __restrict__ out,
-    const uint8_t* __restrict__ w
+    const uint8_t* __restrict__ w,
+    half* __restrict__ out
 ) {
-    constexpr int NUM_SUBTILES_M = (TILE_M/16);
-    constexpr int NUM_SUBTILES_N = (TILE_N/16);
+    int warpIdInBlock = threadIdx.x / 32;
+    int warpsPerBlock = blockDim.x / 32;
 
-    // wmma operates on 16x16 subtiles
-    constexpr int NUM_SUBTILES = NUM_SUBTILES_M*NUM_SUBTILES_N;
+    int localRow = warpIdInBlock*WMMA_M;
+    int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
+    int globalColN = blockIdx.y*WMMA_N;
 
-    int warp_id = threadIdx.x / 32;
-    int num_warps = blockDim.x / 32;
-    int tiles_per_warp = NUM_SUBTILES / num_warps;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> acc_frag;
+    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
+    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag;
 
-    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag;
-    wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a_frag;
-    wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b_frag;
+    wmma::fill_fragment(acc_frag, 0.0f);
 
-    // split work over the subtiles (arranged in a grid of TILE_SIZE/16xTILE_SIZE/16), each of size 16x16.
-    for (int i=0; i<tiles_per_warp; ++i) {
-        int tile_id = warp_id * tiles_per_warp + i;
-        int m_subtile = (tile_id / NUM_SUBTILES_N)*16;
-        int n_subtile = (tile_id % NUM_SUBTILES_N)*16;
+    for (int k=0; k<K; k+=256) {
 
-        wmma::fill_fragment(acc_frag, 0.0f);
-
-        // K-dimension processed in TILE_K chunks
-        for (int64_t k_tile=0; k_tile<K; k_tile+=TILE_K) {
-            
-            // coop load x tile and w tile to shared mem
-            for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
-                int ml = idx / TILE_K;
-                int kl = idx % TILE_K;
-                if constexpr (row_major_x) {
-                    x_shared[ml*TILE_K+kl] = x[ml*x_stride + k_tile + kl];
-                } else {
-                    x_shared[ml*TILE_K+kl] = x[(k_tile+kl)*x_stride + ml];
-                }
-            }
-
-            // coop load of weight to shared mem
-            for (int idx=threadIdx.x; idx<TILE_N*TILE_K; idx+=blockDim.x) {
-                int nl = idx / TILE_K;
-                int kb = (idx % TILE_K) / qblock_size;
-                int kl = (idx % TILE_K) % qblock_size;
-                const uint8_t* w_block;
-                if constexpr (row_major_w) {
-                    w_block = w + ((k_tile/qblock_size + kb)*(w_stride/qblock_size) + nl)*qtype_size;
-                } else {
-                    w_block = w + (nl*(w_stride/qblock_size) + (k_tile/qblock_size + kb))*qtype_size;
-                }
-                dequant_block(qtype_int, 1, kl, w_shared + nl*TILE_K + kb*qblock_size, w_block);
-            }
-
-            __syncthreads();
-
-            // process TILE_K with WMMA in chunks of 16
-            for (int k_subtile=0; k_subtile<TILE_K; k_subtile+=16) {
-                wmma::load_matrix_sync(a_frag, x_shared+m_subtile*TILE_K+k_subtile, TILE_K);
-                wmma::load_matrix_sync(b_frag, w_shared+n_subtile*TILE_K+k_subtile, TILE_K);
-                wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
-            }
-
-            __syncthreads();
+        // dequantize 16x256 tile of w into w_shared
+        for (int l=threadIdx.x; l<WMMA_N*256; l+=blockDim.x) {
+            int r = l / 256;
+            int c = l % 256;
+            const uint8_t* w_block = w + r*w_stride + ((k+c)/qblock_size)*qtype_size;
+            dequant_block(qtype_int, (k+c)%qblock_size, &w_shared[r][c], w_block);
         }
 
-        wmma::store_matrix_sync(
-            out_shared + m_subtile*TILE_N + n_subtile,
-            acc_frag,
-            TILE_N,
-            wmma::mem_row_major
-        );
+        __syncthreads();
+
+        for (int kk=0; kk<256; kk+=WMMA_K) {
+            if (globalRowM<M && globalColN<N) {
+                wmma::load_matrix_sync(a_frag, x + localRow*x_stride + k+kk, x_stride);
+                wmma::load_matrix_sync(b_frag, &w_shared[0][kk], 256);
+                wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
+            }
+        }
+
+        __syncthreads();
     }
 
-    __syncthreads();
-
-    for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
-        int r = idx/TILE_N;
-        int c = idx%TILE_N;
-        out[r*out_stride+c] = __float2half(out_shared[r*TILE_N+c]);
+    if (globalRowM<M && globalColN<N) {
+        wmma::store_matrix_sync(out + localRow*out_stride, acc_frag, out_stride, wmma::mem_row_major);
     }
 }
 
@@ -539,8 +439,8 @@ template <int TILE_DIM>
 __global__ void matmul_f16_cuda_impl(
     int64_t M, int64_t K, int64_t N,
     const half* __restrict__ x,
-    half* __restrict__ out,
-    const half* __restrict__ w
+    const half* __restrict__ w,
+    half* __restrict__ out
 ) {
     __shared__ half x_shared[TILE_DIM][TILE_DIM];
     __shared__ half w_shared[TILE_DIM][TILE_DIM+2];
@@ -551,57 +451,57 @@ __global__ void matmul_f16_cuda_impl(
 
     compute_tile_f16<TILE_DIM>(
         M, K, N,
-        K, N, K,
+        K, N, N,
         x_shared, w_shared,
-        x_row, out_tile, w_row
+        x_row, w_row, out_tile
     );
 }
 
-template <int TILE_M, int TILE_N, int TILE_K>
 __global__ void matmul_wmma_f16_cuda_impl(
     int64_t M, int64_t K, int64_t N,
     const half* __restrict__ x,
-    half* __restrict__ out,
-    const half* __restrict__ w
+    const half* __restrict__ w,
+    half* __restrict__ out
 ) {
-    __shared__ half x_shared[TILE_M][TILE_K];
-    __shared__ float out_shared[TILE_M][TILE_N];
-    __shared__ half w_shared[TILE_N][TILE_K];
 
-    const half* x_row = x + blockIdx.x*TILE_M*K;
-    half* out_tile = out + blockIdx.x*TILE_M*N + blockIdx.y*TILE_N;
-    const half* w_row = w + blockIdx.y*TILE_N*K;
+    int warpsPerBlock = blockDim.x / 32;
+    int rowM = blockIdx.x*warpsPerBlock*WMMA_M;
+    int rowN = blockIdx.y*WMMA_N;
 
-    compute_tile_wmma_f16<TILE_M, TILE_N, TILE_K>(
-        K, K, N, K,
-        (half*)x_shared, (float*)out_shared, (half*)w_shared,
-        x_row, out_tile, w_row
+    const half* x_row = x + rowM*K;
+    const half* w_row = w + rowN*K;
+    half* out_tile = out + rowM*N + rowN;
+
+    compute_tile_wmma_f16(
+        M, K, N,
+        K, N, N,
+        x_row, w_row, out_tile
     );
 }
 
-template <int TILE_M, int TILE_N, int TILE_K>
 __global__ void matmul_quant_cuda_impl(
-    int64_t qtype_int,
-    int64_t qblock_size,
-    int64_t qtype_size,
+    int64_t qtype_int, int64_t qblock_size, int64_t qtype_size,
     int64_t M, int64_t K, int64_t N,
     const half* __restrict__ x,
-    half* __restrict__ out,
-    const uint8_t* __restrict__ w
+    const uint8_t* __restrict__ w,
+    half* __restrict__ out
 ) {
-    __shared__ half x_shared[TILE_M][TILE_K];
-    __shared__ float out_shared[TILE_M][TILE_N];
-    __shared__ half w_shared[TILE_N][TILE_K];
+    __shared__ half w_shared[WMMA_N][256];
 
-    const half* x_row = x + blockIdx.x*TILE_M*K;
-    half* out_tile = out + blockIdx.x*TILE_M*N + blockIdx.y*TILE_N;
-    const uint8_t* w_row = w + blockIdx.y*TILE_N*(K/qblock_size)*qtype_size;
+    int warpsPerBlock = blockDim.x / 32;
+    int rowM = blockIdx.x*warpsPerBlock*WMMA_M;
+    int rowN = blockIdx.y*WMMA_N;
 
-    compute_tile_quant<TILE_M, TILE_N, TILE_K>(
+    const half* x_row = x + rowM*K;
+    const uint8_t* w_row = w + rowN*(K/qblock_size)*qtype_size;
+    half* out_tile = out + rowM*N + rowN;
+
+    compute_tile_quant(
         qtype_int, qblock_size, qtype_size,
-        K, K, N, K,
-        (half*)x_shared, (float*)out_shared, (half*)w_shared,
-        x_row, out_tile, w_row
+        M, K, N,
+        K, N, N,
+        w_shared,
+        x_row, w_row, out_tile
     );
 }
 
@@ -649,41 +549,46 @@ void matmul_cuda(
         const half* w_ptr = reinterpret_cast<const half*>(w.data_ptr<at::Half>());
         
         if (N >= 16) {
-            constexpr int TILE_SIZE = 64;
-            constexpr int BLOCK_SIZE = 512; // i think this is 1 subtile per warp (512/32=16 warps, (64/16)*(64/16)=16 subtiles)
-            dim3 grid((M+TILE_SIZE-1)/TILE_SIZE, (N+TILE_SIZE-1)/TILE_SIZE);
+            constexpr int WARPS_PER_BLOCK = 4;
+            constexpr int BLOCK_SIZE = WARPS_PER_BLOCK*32;
+            int rowsM = WARPS_PER_BLOCK*WMMA_M;
+            dim3 grid((M+rowsM-1)/rowsM, (N+WMMA_N-1)/WMMA_N);
             dim3 block(BLOCK_SIZE);
-            matmul_wmma_f16_cuda_impl<TILE_SIZE, TILE_SIZE, TILE_SIZE><<<grid, block, 0, stream>>>(
-                M, K, N, x_ptr, out_ptr, w_ptr
+            matmul_wmma_f16_cuda_impl<<<grid, block, 0, stream>>>(
+                M, K, N, 
+                x_ptr, w_ptr, out_ptr
             );
         } else {
             constexpr int TILE_DIM = 8;
             dim3 grid((M+TILE_DIM-1)/TILE_DIM, (N+TILE_DIM-1)/TILE_DIM);
             dim3 block(TILE_DIM, TILE_DIM);
             matmul_f16_cuda_impl<TILE_DIM><<<grid, block, 0, stream>>>(
-                M, K, N, x_ptr, out_ptr, w_ptr
+                M, K, N, 
+                x_ptr, w_ptr, out_ptr
             );
         }
     } else {
         TORCH_CHECK(w.size(-1) == ((x.size(-1) / qblock_size) * qtype_size));
         const uint8_t* w_ptr = w.data_ptr<uint8_t>();
-        constexpr int TILE_SIZE = 32;
-        constexpr int TILE_K = 256;
-        constexpr int BLOCK_SIZE = 128; // also 1 subtile per warp
-        dim3 grid((M+TILE_SIZE-1)/TILE_SIZE, (N+TILE_SIZE-1)/TILE_SIZE);
+        constexpr int WARPS_PER_BLOCK = 4;
+        constexpr int BLOCK_SIZE = WARPS_PER_BLOCK*32;
+        int rowsM = WARPS_PER_BLOCK*WMMA_M;
+        dim3 grid((M+rowM-1)/rowsM, (N+WMMA_N-1)/WMMA_N);
         dim3 block(BLOCK_SIZE);
 
-        matmul_quant_cuda_impl<TILE_SIZE, TILE_SIZE, TILE_K><<<grid, block, 0, stream>>>(
-            qtype_int, qblock_size, qtype_size, M, K, N, x_ptr, out_ptr, w_ptr
+        matmul_quant_cuda_impl<<<grid, block, 0, stream>>>(
+            qtype_int, qblock_size, qtype_size, 
+            M, K, N, 
+            x_ptr, w_ptr, out_ptr
         );
     }
 }
 
 __global__ void embed_f16_cuda_impl(
     int64_t hidden_dim,
-    half* __restrict__ x,
     const int64_t* __restrict__ token_ids,
-    const half* __restrict__ w
+    const half* __restrict__ w,
+    half* __restrict__ x
 ) {
     int64_t L = gridDim.y;
 
@@ -705,9 +610,9 @@ __global__ void embed_quant_cuda_impl(
     int64_t qtype_size,
     int64_t b, // bytes per row
     int64_t k, // dequant elems per row
-    half* __restrict__ x,
     const int64_t* __restrict__ token_ids,
-    const uint8_t* __restrict__ w
+    const uint8_t* __restrict__ w,
+    half* __restrict__ x
 ) {
     int64_t L = gridDim.y;
 
@@ -718,18 +623,16 @@ __global__ void embed_quant_cuda_impl(
     
     const uint8_t* w_block = w + token_id*b + block_in_row*qtype_size;
     half* x_block = x + iB*L*k + iL*k + block_in_row*qblock_size;
-    dequant_block(qtype_int, 1, threadIdx.x, x_block, w_block);
+    dequant_block(qtype_int, threadIdx.x, x_block, w_block);
 }
 
-// NOTE: for now this assumes that the embedding matrix is quantized
-// (it usually is)
 void embed_cuda(
     int64_t qtype_int,
     int64_t qblock_size,
     int64_t qtype_size,
-    at::Tensor& x, // [B,L,D]
     const at::Tensor& token_ids, // [B,L]
-    const at::Tensor& w // [vocab_size, hidden_dim (possibly bytes)]
+    const at::Tensor& w, // [vocab_size, hidden_dim (possibly bytes)]
+    at::Tensor& x // [B,L,D]
 ) {
     TORCH_CHECK(is_valid_qtype(qtype_int));
     auto qtype = static_cast<GGMLQuantizationType>(qtype_int);
@@ -766,7 +669,7 @@ void embed_cuda(
         const half* w_ptr = reinterpret_cast<const half*>(w.data_ptr<at::Half>());
         dim3 grid(B, L);
         embed_f16_cuda_impl<<<grid, 1024, 0, stream>>>(
-            hidden_dim, x_ptr, token_ids_ptr, w_ptr
+            hidden_dim, token_ids_ptr, w_ptr, x_ptr
         );
     } else {
         TORCH_CHECK(w.size(-1) == ((x.size(-1) / qblock_size) * qtype_size));
@@ -776,449 +679,283 @@ void embed_cuda(
         int64_t k = hidden_dim; // dequant elems per row
         dim3 grid(B, L, n_qblocks_per_row);
         embed_quant_cuda_impl<<<grid, qblock_size, 0, stream>>>(
-            qtype_int, qblock_size, qtype_size, b, k, x_ptr, token_ids_ptr, w_ptr
+            qtype_int, qblock_size, qtype_size, b, k, token_ids_ptr, w_ptr, x_ptr
         );
     }
 }
 
-// helper to compute TILE_M x TILE_N portion of result for QKV projections
+// helper to compute WMMA_M x WMMA_N portion of result for QKV projections
 // reduces loads from global mem of input x by x3 factor
-template <int TILE_M, int TILE_N, int TILE_K>
+template <int WARPS_PER_BLOCK>
 static __device__ void compute_qkv_tile_f16(
-    int64_t N_Q, int64_t N_KV, 
-    int64_t K, 
-    int64_t x_stride, 
-    int64_t q_out_stride, int64_t kv_out_stride, 
-    int64_t wq_stride, int64_t wkv_stride,
-    half* __restrict__ x_shared, // [TILE_M, TILE_K]
-    float* __restrict__ q_out_shared, // [TILE_M, TILE_N]
-    float* __restrict__ k_out_shared, // [TILE_M, TILE_N]
-    float* __restrict__ v_out_shared, // [TILE_M, TILE_N]
-    half* __restrict__ w_shared, // [TILE_N, TILE_K]
+    int64_t M, int64_t K, int64_t N_Q, int64_t N_KV,
+    half (&x_shared) [WARPS_PER_BLOCK*WMMA_M][WMMA_K],
     const half* __restrict__ x,
-    half* __restrict__ q_out,
-    half* __restrict__ k_out,
-    half* __restrict__ v_out,
     const half* __restrict__ wq,
     const half* __restrict__ wk,
-    const half* __restrict__ wv
-
+    const half* __restrict__ wv,
+    half* __restrict__ q_out,
+    half* __restrict__ k_out,
+    half* __restrict__ v_out
 ) {
-    constexpr int NUM_SUBTILES_M = (TILE_M/16);
-    constexpr int NUM_SUBTILES_N = (TILE_N/16);
+    int warpIdInBlock = threadIdx.x / 32;
+    int warpsPerBlock = blockDim.x / 32;
 
-    // wmma operates on 16x16 subtiles
-    constexpr int NUM_SUBTILES = NUM_SUBTILES_M*NUM_SUBTILES_N;
+    int localRow = warpIdInBlock*WMMA_M;
 
-    int warp_id = threadIdx.x / 32;
-    int num_warps = blockDim.x / 32;
-    int tiles_per_warp = NUM_SUBTILES / num_warps;
+    int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
+    int globalColN = blockIdx.y*WMMA_N;
 
-    wmma::fragment<wmma::accumulator, 16, 16, 16, float> q_acc_frag;
-    wmma::fragment<wmma::accumulator, 16, 16, 16, float> k_acc_frag;
-    wmma::fragment<wmma::accumulator, 16, 16, 16, float> v_acc_frag;
-    
-    wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a_frag;
-    wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b_frag;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> q_acc_frag;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> k_acc_frag;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> v_acc_frag;
+    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
+    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag;
 
-    // split work over the subtiles (arranged in a grid of TILE_SIZE/16xTILE_SIZE/16), each of size 16x16.
-    for (int i=0; i<tiles_per_warp; ++i) {
-        int tile_id = warp_id * tiles_per_warp + i;
-        int m_subtile = (tile_id / NUM_SUBTILES_N)*16;
-        int n_subtile = (tile_id % NUM_SUBTILES_N)*16;
+    wmma::fill_fragment(q_acc_frag, 0.0f);
+    wmma::fill_fragment(k_acc_frag, 0.0f);
+    wmma::fill_fragment(v_acc_frag, 0.0f);
 
-        wmma::fill_fragment(q_acc_frag, 0.0f);
-        wmma::fill_fragment(k_acc_frag, 0.0f);
-        wmma::fill_fragment(v_acc_frag, 0.0f);
+    for (int k=0; k<K; k+=WMMA_K) {
 
-        // K-dimension processed in TILE_K chunks
-        for (int64_t k_tile=0; k_tile<K; k_tile+=TILE_K) {
-            
-            // coop load x tile to shared mem
-            for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
-                int ml = idx / TILE_K;
-                int kl = idx % TILE_K;
-                x_shared[ml*TILE_K+kl] = x[ml*x_stride + k_tile + kl];
-            }
-
-            if (blockIdx.y * TILE_N < N_Q) {
-                // coop load of wq to shared mem
-                for (int idx=threadIdx.x; idx<TILE_N*TILE_K; idx+=blockDim.x) {
-                    int nl = idx / TILE_K;
-                    int kl = idx % TILE_K;
-                    w_shared[nl*TILE_K + kl] = wq[nl*wq_stride + k_tile + kl];
-                }
-
-                __syncthreads();
-
-                // process TILE_K with WMMA in chunks of 16
-                for (int k_subtile=0; k_subtile<TILE_K; k_subtile+=16) {
-                    wmma::load_matrix_sync(a_frag, x_shared+m_subtile*TILE_K+k_subtile, TILE_K);
-                    wmma::load_matrix_sync(b_frag, w_shared+n_subtile*TILE_K+k_subtile, TILE_K);
-                    wmma::mma_sync(q_acc_frag, a_frag, b_frag, q_acc_frag);
-                }
-            }
-
-            __syncthreads();
-
-            if (blockIdx.y * TILE_N < N_KV) {
-                
-                // coop load of wk to shared mem
-                for (int idx=threadIdx.x; idx<TILE_N*TILE_K; idx+=blockDim.x) {
-                    int nl = idx / TILE_K;
-                    int kl = idx % TILE_K;
-                    w_shared[nl*TILE_K + kl] = wk[nl*wkv_stride + k_tile + kl];
-                }
-
-                __syncthreads();
-
-                // process TILE_K with WMMA in chunks of 16
-                for (int k_subtile=0; k_subtile<TILE_K; k_subtile+=16) {
-                    wmma::load_matrix_sync(a_frag, x_shared+m_subtile*TILE_K+k_subtile, TILE_K);
-                    wmma::load_matrix_sync(b_frag, w_shared+n_subtile*TILE_K+k_subtile, TILE_K);
-                    wmma::mma_sync(k_acc_frag, a_frag, b_frag, k_acc_frag);
-                }
-
-                __syncthreads();
-
-                // coop load of wv to shared mem
-                for (int idx=threadIdx.x; idx<TILE_N*TILE_K; idx+=blockDim.x) {
-                    int nl = idx / TILE_K;
-                    int kl = idx % TILE_K;
-                    w_shared[nl*TILE_K + kl] = wv[nl*wkv_stride + k_tile + kl];
-                }
-
-                __syncthreads();
-
-                // process TILE_K with WMMA in chunks of 16
-                for (int k_subtile=0; k_subtile<TILE_K; k_subtile+=16) {
-                    wmma::load_matrix_sync(a_frag, x_shared+m_subtile*TILE_K+k_subtile, TILE_K);
-                    wmma::load_matrix_sync(b_frag, w_shared+n_subtile*TILE_K+k_subtile, TILE_K);
-                    wmma::mma_sync(v_acc_frag, a_frag, b_frag, v_acc_frag);
-                }
-            }
-
-            __syncthreads();
+        for (int l=threadIdx.x; l<WARPS_PER_BLOCK*WMMA_M*WMMA_K; l+=blockDim.x) {
+            int r = l / WMMA_K;
+            int c = l % WMMA_K;            
+            x_shared[r][c] = x[r*K+k+c];
         }
 
-        if (blockIdx.y * TILE_N < N_Q) {
-            wmma::store_matrix_sync(
-                q_out_shared + m_subtile*TILE_N + n_subtile,
-                q_acc_frag,
-                TILE_N,
-                wmma::mem_row_major
-            );
-        }
-        
-        if (blockIdx.y * TILE_N < N_KV) {
-            wmma::store_matrix_sync(
-                k_out_shared + m_subtile*TILE_N + n_subtile,
-                k_acc_frag,
-                TILE_N,
-                wmma::mem_row_major
-            );
+        __syncthreads();
 
-            wmma::store_matrix_sync(
-                v_out_shared + m_subtile*TILE_N + n_subtile,
-                v_acc_frag,
-                TILE_N,
-                wmma::mem_row_major
-            );
+        if (globalRowM<M && globalColN<N_Q) {
+            wmma::load_matrix_sync(a_frag, &x_shared[localRow][0], WMMA_K);
+            wmma::load_matrix_sync(b_frag, wq+k, K);
+            wmma::mma_sync(q_acc_frag, a_frag, b_frag, q_acc_frag);
         }
+
+        if (globalRowM<M && globalColN<N_KV) {
+            wmma::load_matrix_sync(a_frag, &x_shared[localRow][0], WMMA_K);
+            wmma::load_matrix_sync(b_frag, wk+k, K);
+            wmma::mma_sync(k_acc_frag, a_frag, b_frag, k_acc_frag);
+
+            wmma::load_matrix_sync(a_frag, &x_shared[localRow][0], WMMA_K);
+            wmma::load_matrix_sync(b_frag, wv+k, K);
+            wmma::mma_sync(v_acc_frag, a_frag, b_frag, v_acc_frag);
+        }
+
+        __syncthreads();
     }
 
-    __syncthreads();
-
-    if (blockIdx.y * TILE_N < N_Q) {
-        for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
-            int r = idx / TILE_N;
-            int c = idx % TILE_N;
-            q_out[r*q_out_stride+c] = __float2half(q_out_shared[r*TILE_N+c]);
-        }
+    if (globalRowM<M && globalColN<N_Q) {
+        wmma::store_matrix_sync(q_out + localRow*N_Q, q_acc_frag, N_Q, wmma::mem_row_major);
     }
 
-    if (blockIdx.y * TILE_N < N_KV) {
-        for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
-            int r = idx / TILE_N;
-            int c = idx % TILE_N;
-            k_out[r*kv_out_stride+c] = __float2half(k_out_shared[r*TILE_N+c]);
-        }
+    if (globalRowM<M && globalColN<N_KV) {
+        wmma::store_matrix_sync(k_out + localRow*N_KV, k_acc_frag, N_KV, wmma::mem_row_major);
+    }
 
-        for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
-            int r = idx / TILE_N;
-            int c = idx % TILE_N;
-            v_out[r*kv_out_stride+c] = __float2half(v_out_shared[r*TILE_N+c]);
-        }
+    if (globalRowM<M && globalColN<N_KV) {
+        wmma::store_matrix_sync(v_out + localRow*N_KV, v_acc_frag, N_KV, wmma::mem_row_major);
     }
 }
 
 // helper to compute TILE_M x TILE_N portion of result for QKV projections
 // reduces loads from global mem of input x by x3 factor
-template <int TILE_M, int TILE_N, int TILE_K>
+template <int WARPS_PER_BLOCK>
 static __device__ void compute_qkv_tile_quant(
     int64_t q_qtype_int, int64_t k_qtype_int, int64_t v_qtype_int,
     int64_t q_qblock_size,  int64_t k_qblock_size, int64_t v_qblock_size,
     int64_t q_qtype_size, int64_t k_qtype_size, int64_t v_qtype_size,
-    int64_t N_Q, int64_t N_KV,
-    int64_t K, 
-    int64_t x_stride,
-    int64_t q_out_stride, int64_t kv_out_stride,
-    int64_t wq_stride, int64_t wkv_stride,
-    half* __restrict__ x_shared, // [TILE_M, TILE_K]
-    float* __restrict__ q_out_shared, // [TILE_M, TILE_N]
-    float* __restrict__ k_out_shared, // [TILE_M, TILE_N]
-    float* __restrict__ v_out_shared, // [TILE_M, TILE_N]
-    half* __restrict__ w_shared, // [TILE_N, TILE_K]
+    int64_t M, int64_t K, int64_t N_Q, int64_t N_KV,
+    half* x_shared,   // [WARPS_PER_BLOCK*WMMA_M][256]
+    half* wq_shared,  // [WMMA_N][256]
+    half* wk_shared,  // [WMMA_N][256]
+    half* wv_shared,  // [WMMA_N][256]
     const half* __restrict__ x,
-    half* __restrict__ q_out,
-    half* __restrict__ k_out,
-    half* __restrict__ v_out,
     const uint8_t* __restrict__ wq,
     const uint8_t* __restrict__ wk,
-    const uint8_t* __restrict__ wv
-
+    const uint8_t* __restrict__ wv,
+    half* __restrict__ q_out,
+    half* __restrict__ k_out,
+    half* __restrict__ v_out
 ) {
-    constexpr int NUM_SUBTILES_M = (TILE_M/16);
-    constexpr int NUM_SUBTILES_N = (TILE_N/16);
+    int warpIdInBlock = threadIdx.x / 32;
+    int warpsPerBlock = blockDim.x / 32;
 
-    // wmma operates on 16x16 subtiles
-    constexpr int NUM_SUBTILES = NUM_SUBTILES_M*NUM_SUBTILES_N;
+    int localRow = warpIdInBlock*WMMA_M;
 
-    int warp_id = threadIdx.x / 32;
-    int num_warps = blockDim.x / 32;
-    int tiles_per_warp = NUM_SUBTILES / num_warps;
+    int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
+    int globalColN = blockIdx.y*WMMA_N;
 
-    wmma::fragment<wmma::accumulator, 16, 16, 16, float> q_acc_frag;
-    wmma::fragment<wmma::accumulator, 16, 16, 16, float> k_acc_frag;
-    wmma::fragment<wmma::accumulator, 16, 16, 16, float> v_acc_frag;
-    
-    wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a_frag;
-    wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b_frag;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> q_acc_frag;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> k_acc_frag;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> v_acc_frag;
+    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
+    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag;
 
-    // split work over the subtiles (arranged in a grid of TILE_SIZE/16xTILE_SIZE/16), each of size 16x16.
-    for (int i=0; i<tiles_per_warp; ++i) {
-        int tile_id = warp_id * tiles_per_warp + i;
-        int m_subtile = (tile_id / NUM_SUBTILES_N)*16;
-        int n_subtile = (tile_id % NUM_SUBTILES_N)*16;
+    wmma::fill_fragment(q_acc_frag, 0.0f);
+    wmma::fill_fragment(k_acc_frag, 0.0f);
+    wmma::fill_fragment(v_acc_frag, 0.0f);
 
-        wmma::fill_fragment(q_acc_frag, 0.0f);
-        wmma::fill_fragment(k_acc_frag, 0.0f);
-        wmma::fill_fragment(v_acc_frag, 0.0f);
 
-        // K-dimension processed in TILE_K chunks
-        for (int64_t k_tile=0; k_tile<K; k_tile+=TILE_K) {
-            
-            // coop load x tile to shared mem
-            for (int idx=threadIdx.x; idx<TILE_M*TILE_K; idx+=blockDim.x) {
-                int ml = idx / TILE_K;
-                int kl = idx % TILE_K;
-                x_shared[ml*TILE_K+kl] = x[ml*x_stride + k_tile + kl];
-            }
+    // in this approach we try to hide dequant latency behind compute
+    // hopefully this helps
+    for (int k=0; k<K; k+=256) {
 
-            if (blockIdx.y * TILE_N < N_Q) {
-                // coop load of wq to shared mem
-                for (int idx=threadIdx.x; idx<TILE_N*TILE_K; idx+=blockDim.x) {
-                    int nl = idx / TILE_K;
-                    int kb = (idx % TILE_K) / q_qblock_size;
-                    int kl = (idx % TILE_K) % q_qblock_size;
-                    const uint8_t* wq_block = wq + (nl*(wq_stride/q_qblock_size) + (k_tile/q_qblock_size + kb))*q_qtype_size;
-                    dequant_block(q_qtype_int, 1, kl, w_shared + nl*TILE_K + kb*q_qblock_size, wq_block);
-                }
-
-                __syncthreads();
-
-                // process TILE_K with WMMA in chunks of 16
-                for (int k_subtile=0; k_subtile<TILE_K; k_subtile+=16) {
-                    wmma::load_matrix_sync(a_frag, x_shared+m_subtile*TILE_K+k_subtile, TILE_K);
-                    wmma::load_matrix_sync(b_frag, w_shared+n_subtile*TILE_K+k_subtile, TILE_K);
-                    wmma::mma_sync(q_acc_frag, a_frag, b_frag, q_acc_frag);
-                }
-            }
-
-            __syncthreads();
-
-            if (blockIdx.y * TILE_N < N_KV) {
-                
-                // coop load of wk to shared mem
-                for (int idx=threadIdx.x; idx<TILE_N*TILE_K; idx+=blockDim.x) {
-                    int nl = idx / TILE_K;
-                    int kb = (idx % TILE_K) / k_qblock_size;
-                    int kl = (idx % TILE_K) % k_qblock_size;
-                    const uint8_t* wk_block = wk + (nl*(wkv_stride/k_qblock_size) + (k_tile/k_qblock_size + kb))*k_qtype_size;
-                    dequant_block(k_qtype_int, 1, kl, w_shared + nl*TILE_K + kb*k_qblock_size, wk_block);
-                }
-
-                __syncthreads();
-
-                // process TILE_K with WMMA in chunks of 16
-                for (int k_subtile=0; k_subtile<TILE_K; k_subtile+=16) {
-                    wmma::load_matrix_sync(a_frag, x_shared+m_subtile*TILE_K+k_subtile, TILE_K);
-                    wmma::load_matrix_sync(b_frag, w_shared+n_subtile*TILE_K+k_subtile, TILE_K);
-                    wmma::mma_sync(k_acc_frag, a_frag, b_frag, k_acc_frag);
-                }
-
-                __syncthreads();
-
-                // coop load of wv to shared mem
-                for (int idx=threadIdx.x; idx<TILE_N*TILE_K; idx+=blockDim.x) {
-                    int nl = idx / TILE_K;
-                    int kb = (idx % TILE_K) / v_qblock_size;
-                    int kl = (idx % TILE_K) % v_qblock_size;
-                    const uint8_t* wv_block = wv + (nl*(wkv_stride/v_qblock_size) + (k_tile/v_qblock_size + kb))*v_qtype_size;
-                    dequant_block(v_qtype_int, 1, kl, w_shared + nl*TILE_K + kb*v_qblock_size, wv_block);
-                }
-
-                __syncthreads();
-
-                // process TILE_K with WMMA in chunks of 16
-                for (int k_subtile=0; k_subtile<TILE_K; k_subtile+=16) {
-                    wmma::load_matrix_sync(a_frag, x_shared+m_subtile*TILE_K+k_subtile, TILE_K);
-                    wmma::load_matrix_sync(b_frag, w_shared+n_subtile*TILE_K+k_subtile, TILE_K);
-                    wmma::mma_sync(v_acc_frag, a_frag, b_frag, v_acc_frag);
-                }
-            }
-
-            __syncthreads();
+        for (int l=threadIdx.x; l<WARPS_PER_BLOCK*WMMA_M*256; l+=blockDim.x) {
+            int r = l / 256;
+            int c = l % 256;            
+            x_shared[r*256+c] = x[r*K+k+c];
         }
 
-        if (blockIdx.y * TILE_N < N_Q) {
-            wmma::store_matrix_sync(
-                q_out_shared + m_subtile*TILE_N + n_subtile,
-                q_acc_frag,
-                TILE_N,
-                wmma::mem_row_major
-            );
+        // dequantize 16x256 tile of wq into wq_shared
+        for (int l=threadIdx.x; l<WMMA_N*256; l+=blockDim.x) {
+            int r = l / 256;
+            int c = l % 256;
+            const uint8_t* wq_block = wq + r*(K/q_qblock_size)*q_qtype_size + ((k+c)/q_qblock_size)*q_qtype_size;
+            dequant_block(q_qtype_int, (k+c)%q_qblock_size, &wq_shared[r*256+c], wq_block);
+        }
+
+        __syncthreads();
+
+        for (int kk=0; kk<256; kk+=WMMA_K) {
+            if (globalRowM<M && globalColN<N_Q) {
+                wmma::load_matrix_sync(a_frag, x_shared+localRow*256+kk, 256);
+                wmma::load_matrix_sync(b_frag, wq_shared+kk, 256);
+                wmma::mma_sync(q_acc_frag, a_frag, b_frag, q_acc_frag);
+            }
         }
         
-        if (blockIdx.y * TILE_N < N_KV) {
-            wmma::store_matrix_sync(
-                k_out_shared + m_subtile*TILE_N + n_subtile,
-                k_acc_frag,
-                TILE_N,
-                wmma::mem_row_major
-            );
-
-            wmma::store_matrix_sync(
-                v_out_shared + m_subtile*TILE_N + n_subtile,
-                v_acc_frag,
-                TILE_N,
-                wmma::mem_row_major
-            );
+        // dequantize 16x256 tile of wk into wk_shared
+        for (int l=threadIdx.x; l<WMMA_N*256; l+=blockDim.x) {
+            int r = l / 256;
+            int c = l % 256;
+            const uint8_t* wk_block = wk + r*(K/k_qblock_size)*k_qtype_size + ((k+c)/k_qblock_size)*k_qtype_size;
+            dequant_block(k_qtype_int, (k+c)%k_qblock_size, &wk_shared[r*256+c], wk_block);
         }
+
+        __syncthreads();
+
+        for (int kk=0; kk<256; kk+=WMMA_K) {
+            if (globalRowM<M && globalColN<N_KV) {
+                wmma::load_matrix_sync(a_frag, x_shared+localRow*256+kk, 256);
+                wmma::load_matrix_sync(b_frag, wk_shared+kk, 256);
+                wmma::mma_sync(k_acc_frag, a_frag, b_frag, k_acc_frag);
+            }
+        }
+
+        // dequantize 16x256 tile of wv into wv_shared
+        for (int l=threadIdx.x; l<WMMA_N*256; l+=blockDim.x) {
+            int r = l / 256;
+            int c = l % 256;
+            const uint8_t* wv_block = wv + r*(K/v_qblock_size)*v_qtype_size + ((k+c)/v_qblock_size)*v_qtype_size;
+            dequant_block(v_qtype_int, (k+c)%v_qblock_size, &wv_shared[r*256+c], wv_block);
+        }
+
+        __syncthreads();
+
+        for (int kk=0; kk<256; kk+=WMMA_K) {
+            if (globalRowM<M && globalColN<N_KV) {
+                wmma::load_matrix_sync(a_frag, x_shared+localRow*256+kk, 256);
+                wmma::load_matrix_sync(b_frag, wv_shared+kk, 256);
+                wmma::mma_sync(v_acc_frag, a_frag, b_frag, v_acc_frag);
+            }
+        }
+
+        __syncthreads();
     }
 
-    __syncthreads();
-
-    if (blockIdx.y * TILE_N < N_Q) {
-        for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
-            int r = idx / TILE_N;
-            int c = idx % TILE_N;
-            q_out[r*q_out_stride+c] = __float2half(q_out_shared[r*TILE_N+c]);
-        }
+    if (globalRowM<M && globalColN<N_Q) {
+        wmma::store_matrix_sync(q_out + localRow*N_Q, q_acc_frag, N_Q, wmma::mem_row_major);
     }
 
-    if (blockIdx.y * TILE_N < N_KV) {
-        for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
-            int r = idx / TILE_N;
-            int c = idx % TILE_N;
-            k_out[r*kv_out_stride+c] = __float2half(k_out_shared[r*TILE_N+c]);
-        }
+    if (globalRowM<M && globalColN<N_KV) {
+        wmma::store_matrix_sync(k_out + localRow*N_KV, k_acc_frag, N_KV, wmma::mem_row_major);
+    }
 
-        for (int idx=threadIdx.x; idx<TILE_M*TILE_N; idx+=blockDim.x) {
-            int r = idx / TILE_N;
-            int c = idx % TILE_N;
-            v_out[r*kv_out_stride+c] = __float2half(v_out_shared[r*TILE_N+c]);
-        }
+    if (globalRowM<M && globalColN<N_KV) {
+        wmma::store_matrix_sync(v_out + localRow*N_KV, v_acc_frag, N_KV, wmma::mem_row_major);
     }
 }
 
-template <int TILE_M, int TILE_N, int TILE_K>
+template <int WARPS_PER_BLOCK>
 __global__ void qkv_f16_cuda_impl(
     int64_t M, int64_t K, int64_t N_Q, int64_t N_KV,
     const half* __restrict__ x,
-    half* __restrict__ q_out,
-    half* __restrict__ k_out,
-    half* __restrict__ v_out,
     const half* __restrict__ wq,
     const half* __restrict__ wk,
-    const half* __restrict__ wv
+    const half* __restrict__ wv,
+    half* __restrict__ q_out,
+    half* __restrict__ k_out,
+    half* __restrict__ v_out
 ) {
 
-    __shared__ half x_shared[TILE_M][TILE_K];
-    __shared__ float q_out_shared[TILE_M][TILE_N];
-    __shared__ float k_out_shared[TILE_M][TILE_N];
-    __shared__ float v_out_shared[TILE_M][TILE_N];
-    __shared__ half w_shared[TILE_K][TILE_N];
+    __shared__ half x_shared[WARPS_PER_BLOCK*WMMA_M][WMMA_K];
 
-    const half* x_row = x + blockIdx.x*TILE_M*K;
-    half* q_out_tile = q_out + blockIdx.x*TILE_M*N_Q + blockIdx.y*TILE_N;
-    half* k_out_tile = k_out + blockIdx.x*TILE_M*N_KV + blockIdx.y*TILE_N;
-    half* v_out_tile = v_out + blockIdx.x*TILE_M*N_KV + blockIdx.y*TILE_N;
+    int warpsPerBlock = blockDim.x / 32;
+    int rowM = blockIdx.x*warpsPerBlock*WMMA_M;
+    int rowN = blockIdx.y*WMMA_N;
+
+    const half* x_row = x + rowM*K;
+
+    const half* wq_row = wq + rowN*K;
+    const half* wk_row = wk + rowN*K;
+    const half* wv_row = wv + rowN*K;
+
+    half* q_out_tile = q_out + rowM*N_Q + rowN;
+    half* k_out_tile = k_out + rowM*N_KV + rowN;
+    half* v_out_tile = v_out + rowM*N_KV + rowN;
     
-    const half* wq_row = wq + blockIdx.y*TILE_N*K;
-    const half* wk_row = wk + blockIdx.y*TILE_N*K;
-    const half* wv_row = wv + blockIdx.y*TILE_N*K;
-
-    compute_qkv_tile_f16<TILE_M, TILE_N, TILE_K>(
-        N_Q, N_KV,
-        K, 
-        K,
-        N_Q, N_KV,
-        K, K,
-        (half*)x_shared, 
-        (float*)q_out_shared, (float*)k_out_shared, (float*)v_out_shared, 
-        (half*)w_shared,
-        x_row,
-        q_out_tile, k_out_tile, v_out_tile,
-        wq_row, wk_row, wv_row
+    compute_qkv_tile_f16<WARPS_PER_BLOCK>(
+        M, K, N_Q, N_KV,
+        x_shared,
+        x_row, wq_row, wk_row, wv_row,
+        q_out_tile, k_out_tile, v_out_tile
     );
 }
 
-template <int TILE_M, int TILE_N, int TILE_K>
+template <int WARPS_PER_BLOCK>
 __global__ void qkv_quant_cuda_impl(
     int64_t q_qtype_int, int64_t k_qtype_int, int64_t v_qtype_int,
     int64_t q_qblock_size,  int64_t k_qblock_size, int64_t v_qblock_size,
     int64_t q_qtype_size, int64_t k_qtype_size, int64_t v_qtype_size,
     int64_t M, int64_t K, int64_t N_Q, int64_t N_KV,
     const half* __restrict__ x,
-    half* __restrict__ q_out,
-    half* __restrict__ k_out,
-    half* __restrict__ v_out,
     const uint8_t* __restrict__ wq,
     const uint8_t* __restrict__ wk,
-    const uint8_t* __restrict__ wv
+    const uint8_t* __restrict__ wv,
+    half* __restrict__ q_out,
+    half* __restrict__ k_out,
+    half* __restrict__ v_out
 ) {
 
-    __shared__ half x_shared[TILE_M][TILE_K];
-    __shared__ float q_out_shared[TILE_M][TILE_N];
-    __shared__ float k_out_shared[TILE_M][TILE_N];
-    __shared__ float v_out_shared[TILE_M][TILE_N];
-    __shared__ half w_shared[TILE_K][TILE_N];
+    extern __shared__ char smem[];
+    half* x_shared = (half*)smem;
+    half* wq_shared = x_shared + WARPS_PER_BLOCK*WMMA_M*256;
+    half* wk_shared = wq_shared + WMMA_N*256;
+    half* wv_shared = wk_shared + WMMA_N*256;
 
-    const half* x_row = x + blockIdx.x*TILE_M*K;
-    half* q_out_tile = q_out + blockIdx.x*TILE_M*N_Q + blockIdx.y*TILE_N;
-    half* k_out_tile = k_out + blockIdx.x*TILE_M*N_KV + blockIdx.y*TILE_N;
-    half* v_out_tile = v_out + blockIdx.x*TILE_M*N_KV + blockIdx.y*TILE_N;
+    int warpsPerBlock = blockDim.x / 32;
+    int rowM = blockIdx.x*warpsPerBlock*WMMA_M;
+    int rowN = blockIdx.y*WMMA_N;
+
+    const half* x_row = x + rowM*K;
+
+    const uint8_t* wq_row = wq + rowN*(K/q_qblock_size)*q_qtype_size;
+    const uint8_t* wk_row = wk + rowN*(K/k_qblock_size)*k_qtype_size;
+    const uint8_t* wv_row = wv + rowN*(K/v_qblock_size)*v_qtype_size;
+
+    half* q_out_tile = q_out + rowM*N_Q + rowN;
+    half* k_out_tile = k_out + rowM*N_KV + rowN;
+    half* v_out_tile = v_out + rowM*N_KV + rowN;
     
-    const uint8_t* wq_row = wq + blockIdx.y*TILE_N*(K/q_qblock_size)*q_qtype_size;
-    const uint8_t* wk_row = wk + blockIdx.y*TILE_N*(K/k_qblock_size)*k_qtype_size;
-    const uint8_t* wv_row = wv + blockIdx.y*TILE_N*(K/v_qblock_size)*v_qtype_size;
-
-    compute_qkv_tile_quant<TILE_M, TILE_N, TILE_K>(
+    compute_qkv_tile_quant<WARPS_PER_BLOCK>(
         q_qtype_int, q_qblock_size, q_qtype_size,
         k_qtype_int, k_qblock_size, k_qtype_size,
         v_qtype_int, v_qblock_size, v_qtype_size,
-        N_Q, N_KV,
-        K, 
-        K,
-        N_Q, N_KV,
-        K, K,
-        (half*)x_shared, 
-        (float*)q_out_shared, (float*)k_out_shared, (float*)v_out_shared,
-        (half*)w_shared,
-        x_row,
-        q_out_tile, k_out_tile, v_out_tile,
-        wq_row, wk_row, wv_row
+        M, K, N_Q, N_KV,
+        x_shared, wq_shared, wk_shared, wv_shared,
+        x_row, wq_row, wk_row, wv_row,
+        q_out_tile, k_out_tile, v_out_tile
     );
 }
 
@@ -1227,12 +964,12 @@ void qkv_cuda(
     int64_t q_qblock_size, int64_t k_qblock_size, int64_t v_qblock_size,
     int64_t q_qtype_size, int64_t k_qtype_size, int64_t v_qtype_size,
     const at::Tensor& x, // [B, L, hidden_dim]
-    at::Tensor& q_out, // [B, L, q_dim]
-    at::Tensor& k_out, // [B, L, kv_dim]
-    at::Tensor& v_out, // [B, L, kv_dim]
     const at::Tensor& wq, // [hidden_dim, q_dim (possibly in bytes)]
     const at::Tensor& wk, // [hidden_dim, kv_dim (possibly in bytes)]
-    const at::Tensor& wv // [hidden_dim, kv_dim (possibly in bytes)]
+    const at::Tensor& wv, // [hidden_dim, kv_dim (possibly in bytes)]
+    at::Tensor& q_out, // [B, L, q_dim]
+    at::Tensor& k_out, // [B, L, kv_dim]
+    at::Tensor& v_out // [B, L, kv_dim]
 ) {
     // validation
     TORCH_CHECK(is_valid_qtype(q_qtype_int) && is_valid_qtype(k_qtype_int) && is_valid_qtype(v_qtype_int));
@@ -1315,18 +1052,15 @@ void qkv_cuda(
         const half* wv_ptr = reinterpret_cast<const half*>(wv.data_ptr<at::Half>());
 
         // will probably need to adjust these
-        constexpr int TILE_SIZE = 32;
-        constexpr int TILE_K = 256;
-        constexpr int BLOCK_SIZE = 128; // 1 subtile per warp
-    
-        dim3 block(BLOCK_SIZE); 
-        dim3 grid((M+TILE_SIZE-1)/TILE_SIZE, (N+TILE_SIZE-1)/TILE_SIZE);
+        constexpr int WARPS_PER_BLOCK = 4;
+        constexpr int BLOCK_SIZE = WARPS_PER_BLOCK*32;
+        constexpr int ROWS_M = WARPS_PER_BLOCK*WMMA_M;
+        dim3 grid((M+ROWS_M-1)/ROWS_M, (N+WMMA_N-1)/WMMA_N);
 
-        qkv_f16_cuda_impl<TILE_SIZE, TILE_SIZE, TILE_K><<<grid, block, 0, stream>>>(
+        qkv_f16_cuda_impl<WARPS_PER_BLOCK><<<grid, block, 0, stream>>>(
             M, K, N_Q, N_KV,
-            x_ptr,
-            q_out_ptr, k_out_ptr, v_out_ptr,
-            wq_ptr, wk_ptr, wv_ptr
+            x_ptr, wq_ptr, wk_ptr, wv_ptr,
+            q_out_ptr, k_out_ptr, v_out_ptr
         );
     } else {
 
@@ -1341,21 +1075,20 @@ void qkv_cuda(
         const uint8_t* wv_ptr = wv.data_ptr<uint8_t>();
 
         // will probably need to adjust these
-        constexpr int TILE_SIZE = 32;
-        constexpr int TILE_K = 256;
-        constexpr int BLOCK_SIZE = 128; // 1 subtile per warp
-    
-        dim3 block(BLOCK_SIZE); 
-        dim3 grid((M+TILE_SIZE-1)/TILE_SIZE, (N+TILE_SIZE-1)/TILE_SIZE);
+        constexpr int WARPS_PER_BLOCK = 4;
+        constexpr int BLOCK_SIZE = WARPS_PER_BLOCK*32;
+        constexpr int ROWS_M = WARPS_PER_BLOCK*WMMA_M;
+        dim3 grid((M+ROWS_M-1)/ROWS_M, (N+WMMA_N-1)/WMMA_N);
 
-        qkv_quant_cuda_impl<TILE_SIZE, TILE_SIZE, TILE_K><<<grid, block, 0, stream>>>(
+        size_t smem_size = (WARPS_PER_BLOCK*WMMA_M*256 + 3*WMMA_N*256)*sizeof(half);
+
+        qkv_quant_cuda_impl<WARPS_PER_BLOCK><<<grid, block, smem, stream>>>(
             q_qtype_int, k_qtype_int, v_qtype_int,
             q_qblock_size, k_qblock_size, v_qblock_size,
             q_qtype_size, k_qtype_size, v_qtype_size,
             M, K, N_Q, N_KV,
-            x_ptr,
-            q_out_ptr, k_out_ptr, v_out_ptr,
-            wq_ptr, wk_ptr, wv_ptr
+            x_ptr, wq_ptr, wk_ptr, wv_ptr,
+            q_out_ptr, k_out_ptr, v_out_ptr
         );
     }
 }

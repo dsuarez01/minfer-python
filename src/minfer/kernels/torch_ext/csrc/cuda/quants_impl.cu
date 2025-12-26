@@ -69,7 +69,6 @@ template <typename T>
 __device__ void dequant_block_q4_0(
     const uint8_t* w,
     T* __restrict__ y,
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK4_0) return;
@@ -81,14 +80,13 @@ __device__ void dequant_block_q4_0(
 
     int x = ((block->qs[idx%(QK4_0/2)] >> 4*(idx/(QK4_0/2))) & 0x0F);
 
-    y[idx*stride] = convert_float<T>((x-8)*d);
+    y[idx] = convert_float<T>((x-8)*d);
 }
 
 template <typename T>
 __device__ void dequant_block_q4_1(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y,
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK4_1) return;
@@ -101,14 +99,13 @@ __device__ void dequant_block_q4_1(
 
     int x = ((block->qs[idx%(QK4_1/2)] >> 4*(idx/(QK4_1/2))) & 0x0F);
 
-    y[idx*stride] = convert_float<T>(x*d+m);
+    y[idx] = convert_float<T>(x*d+m);
 }
 
 template <typename T>
 __device__ void dequant_block_q5_0(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK5_0) return;
@@ -123,14 +120,13 @@ __device__ void dequant_block_q5_0(
     uint8_t xh = ((qh >> idx) << 4) & 0x10;
     int32_t x = ((block->qs[idx%(QK5_0/2)] >> 4*(idx/(QK5_0/2))) & 0x0F) | xh;
 
-    y[idx*stride] = convert_float<T>((x-16)*d);
+    y[idx] = convert_float<T>((x-16)*d);
 }
 
 template <typename T>
 __device__ void dequant_block_q5_1(
     const uint8_t * __restrict__ w,
     T * __restrict__ y,
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK5_1) return;
@@ -147,14 +143,13 @@ __device__ void dequant_block_q5_1(
     uint8_t xh = ((qh >> idx) << 4) & 0x10;
     int x = ((block->qs[idx%(QK5_1/2)] >> 4*(idx/(QK5_1/2))) & 0x0F) | xh;
 
-    y[idx*stride] = convert_float<T>(x*d + m);
+    y[idx] = convert_float<T>(x*d + m);
 }
 
 template <typename T>
 __device__ void dequant_block_q8_0(
     const uint8_t * __restrict__ w,
     T * __restrict__ y,
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK8_0) return;
@@ -164,14 +159,13 @@ __device__ void dequant_block_q8_0(
 
     int idx = tid;
 
-    y[idx*stride] = convert_float<T>(block->qs[idx]*d);
+    y[idx] = convert_float<T>(block->qs[idx]*d);
 }
 
 template <typename T>
 __device__ void dequant_block_mxfp4(
     const uint8_t * __restrict__ w, 
-    T * __restrict__ y, 
-    int64_t stride,
+    T * __restrict__ y,
     int tid
 ) {
     if (tid >= QK_MXFP4) return;
@@ -183,14 +177,13 @@ __device__ void dequant_block_mxfp4(
 
     int8_t x = kvalues_mxfp4[((block->qs[idx%(QK_MXFP4/2)] >> 4*(idx/(QK_MXFP4/2))) & 0x0F)];
     
-    y[idx*stride] = convert_float<T>(x*d);
+    y[idx] = convert_float<T>(x*d);
 }
 
 template <typename T>
 __device__ void dequant_block_q2_K(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK_K) return;
@@ -215,14 +208,13 @@ __device__ void dequant_block_q2_K(
 
     int8_t x = (q[l] >> 2*j) & 3;
 
-    y[idx * stride] = convert_float<T>(dl*x-ml);
+    y[idx] = convert_float<T>(dl*x-ml);
 }
 
 template <typename T>
 __device__ void dequant_block_q3_K(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK_K) return;
@@ -260,14 +252,13 @@ __device__ void dequant_block_q3_K(
     int hbit_off =  4*((hm[l] & m) == 0);
     int8_t x = (q[l] >> 2*j) & 3;
 
-    y[idx*stride] = convert_float<T>(dl*(x-hbit_off));
+    y[idx] = convert_float<T>(dl*(x-hbit_off));
 }
 
 template <typename T>
 __device__ void dequant_block_q4_K(
     const uint8_t * __restrict__ w,
     T * __restrict__ y,
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK_K) return;
@@ -291,14 +282,13 @@ __device__ void dequant_block_q4_K(
     float dl = d*sc;
     float ml = min*m;
     
-    y[idx*stride] = convert_float<T>(dl*((q[l%32] >> 4*(l/32))&0xF)-ml);
+    y[idx] = convert_float<T>(dl*((q[l%32] >> 4*(l/32))&0xF)-ml);
 }
 
 template <typename T>
 __device__ void dequant_block_q5_K(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK_K) return;
@@ -326,14 +316,13 @@ __device__ void dequant_block_q5_K(
 
     int hbit_off = ((qh[l%32] & u) != 0) << 4;
 
-    y[idx*stride] = convert_float<T>(dl * (((ql[l%32]>>4*(l/32)) & 0xF) + hbit_off) - ml);
+    y[idx] = convert_float<T>(dl * (((ql[l%32]>>4*(l/32)) & 0xF) + hbit_off) - ml);
 }
 
 template <typename T>
 __device__ void dequant_block_q6_K(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK_K) return;
@@ -355,14 +344,13 @@ __device__ void dequant_block_q6_K(
     
     int8_t q = (int8_t)(((ql[l+32*(j%2)] >> 4*(j/2)) & 0xF) | (((qh[l] >> (j*2)) & 3) << 4)) - 32;
     
-    y[idx*stride] = convert_float<T>(d * sc[is+j*2] * q);
+    y[idx] = convert_float<T>(d * sc[is+j*2] * q);
 }
 
 template <typename T>
 __device__ void dequant_block_tq1_0(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK_K) return;
@@ -401,14 +389,13 @@ __device__ void dequant_block_tq1_0(
     
     uint8_t q = q_byte*pow3[n];
     int16_t xi = ((uint16_t)q*3) >> 8;
-    y[idx*stride] = convert_float<T>((float)(xi-1) * d);
+    y[idx] = convert_float<T>((float)(xi-1) * d);
 }
 
 template <typename T>
 __device__ void dequant_block_tq2_0(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK_K) return;
@@ -423,14 +410,13 @@ __device__ void dequant_block_tq2_0(
     int m = idx%32;
     
     int8_t q = (block->qs[j+m] >> (l*2)) & 3;
-    y[idx*stride] = convert_float<T>((float)(q-1)*d);
+    y[idx] = convert_float<T>((float)(q-1)*d);
 }
 
 template <typename T>
 __device__ void dequant_block_iq2_xxs(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK_K) return;
@@ -454,14 +440,13 @@ __device__ void dequant_block_iq2_xxs(
     uint8_t signs = ksigns_iq2xs[(aux32[1] >> 7*l) & 127];
     float sign = signs & kmask_iq2xs[j] ? -1.f : 1.f;
 
-    y[idx*stride] = convert_float<T>(db * grid[j] * sign);
+    y[idx] = convert_float<T>(db * grid[j] * sign);
 }
 
 template <typename T>
 __device__ void dequant_block_iq2_xs(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK_K) return;
@@ -483,14 +468,13 @@ __device__ void dequant_block_iq2_xs(
     uint8_t signs = ksigns_iq2xs[block->qs[4*ib32+l] >> 9];
     float sign = signs & kmask_iq2xs[j] ? -1.f : 1.f;
     
-    y[idx*stride] = convert_float<T>(db[l/2] * grid[j] * sign);
+    y[idx] = convert_float<T>(db[l/2] * grid[j] * sign);
 }
 
 template <typename T>
 __device__ void dequant_block_iq2_s(
     const uint8_t * __restrict__ w, 
-    T * __restrict__ y, 
-    int64_t stride,
+    T * __restrict__ y,
     int tid
 ) {
     if (tid >= QK_K) return;
@@ -516,14 +500,13 @@ __device__ void dequant_block_iq2_s(
     const uint8_t * grid = (const uint8_t *)(iq2s_grid + (qs[l] | (qh[ib32] << (8-2*l) & 0x300)));
     float sign = signs[l] & kmask_iq2xs[j] ? -1.f : 1.f;
 
-    y[idx*stride] = convert_float<T>(dl * grid[j] * sign);
+    y[idx] = convert_float<T>(dl * grid[j] * sign);
 }
 
 template <typename T>
 __device__ void dequant_block_iq3_xxs(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK_K) return;
@@ -549,14 +532,13 @@ __device__ void dequant_block_iq3_xxs(
 
     float sign = signs & kmask_iq2xs[j] ? -1.f : 1.f;
 
-    y[idx*stride] = convert_float<T>(db * grid[j%4] * sign);
+    y[idx] = convert_float<T>(db * grid[j%4] * sign);
 }
 
 template <typename T>
 __device__ void dequant_block_iq3_s(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK_K) return;
@@ -579,14 +561,13 @@ __device__ void dequant_block_iq3_s(
     float db = d * (1 + 2*((block->scales[ib32] >> 4*(l/4)) & 0xf));
     float sign = (signs[l%4] & kmask_iq2xs[j]) ? -1.f : 1.f;
 
-    y[idx*stride] = convert_float<T>(db * grid[j%4] * sign);
+    y[idx] = convert_float<T>(db * grid[j%4] * sign);
 }
 
 template <typename T>
 __device__ void dequant_block_iq1_s(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK_K) return;
@@ -608,14 +589,13 @@ __device__ void dequant_block_iq1_s(
     
     const int8_t * grid = (const int8_t *)(iq1s_grid + (qs[l] | (((qh[ib] >> (3*l)) & 7) << 8)));
     
-    y[idx*stride] = convert_float<T>(dl * (grid[j] + delta));
+    y[idx] = convert_float<T>(dl * (grid[j] + delta));
 }
 
 template <typename T>
 __device__ void dequant_block_iq1_m(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK_K) return;
@@ -653,14 +633,13 @@ __device__ void dequant_block_iq1_m(
 
     const int8_t * grid = (const int8_t *)(iq1s_grid + idx_grid[l]);
 
-    y[idx*stride] = convert_float<T>(dl * (grid[j] + delta[l]));
+    y[idx] = convert_float<T>(dl * (grid[j] + delta[l]));
 }
 
 template <typename T>
 __device__ void dequant_block_iq4_nl(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK4_NL) return;
@@ -671,14 +650,13 @@ __device__ void dequant_block_iq4_nl(
 
     int idx = tid;
 
-    y[idx*stride] = convert_float<T>(d * kvalues_iq4_nl[(qs[idx%(QK4_NL/2)] >> 4*(idx/(QK4_NL/2))) & 0xF]);
+    y[idx] = convert_float<T>(d * kvalues_iq4_nl[(qs[idx%(QK4_NL/2)] >> 4*(idx/(QK4_NL/2))) & 0xF]);
 }
 
 template <typename T>
 __device__ void dequant_block_iq4_xs(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK_K) return;
@@ -698,14 +676,13 @@ __device__ void dequant_block_iq4_xs(
     
     int8_t x = kvalues_iq4_nl[(qs[j%16] >> 4*(j/16)) & 0xF];
 
-    y[idx*stride] = convert_float<T>(dl*x);
+    y[idx] = convert_float<T>(dl*x);
 }
 
 template <typename T>
 __device__ void dequant_block_q8_K(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK_K) return;
@@ -714,14 +691,13 @@ __device__ void dequant_block_q8_K(
     
     int idx = tid;
     
-    y[idx*stride] = convert_float<T>(block->d * block->qs[idx]);
+    y[idx] = convert_float<T>(block->d * block->qs[idx]);
 }
 
 template <typename T>
 __device__ void dequant_block_bf16(
     const uint8_t * __restrict__ w,
     T * __restrict__ y,
-    int64_t stride,
     int tid
 ) {
     if (tid >= QK_K) return;
@@ -729,7 +705,7 @@ __device__ void dequant_block_bf16(
     int idx = tid;
 
     const uint16_t* block = reinterpret_cast<const uint16_t*>(w);
-    y[idx*stride] = convert_bf16<T>(block[idx]);
+    y[idx] = convert_bf16<T>(block[idx]);
 }
 
 // explicit instantiations of templates:
@@ -737,54 +713,54 @@ __device__ void dequant_block_bf16(
 // block
 
 // float
-template __device__ void dequant_block_q4_0<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q4_1<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q5_0<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q5_1<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q8_0<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_mxfp4<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q2_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q3_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q4_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q5_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q6_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_tq1_0<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_tq2_0<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq2_xxs<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq2_xs<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq2_s<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq3_xxs<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq3_s<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq1_s<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq1_m<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq4_nl<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq4_xs<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q8_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_bf16<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int64_t stride, int tid);
+template __device__ void dequant_block_q4_0<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_q4_1<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_q5_0<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_q5_1<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_q8_0<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_mxfp4<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_q2_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_q3_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_q4_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_q5_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_q6_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_tq1_0<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_tq2_0<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_iq2_xxs<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_iq2_xs<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_iq2_s<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_iq3_xxs<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_iq3_s<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_iq1_s<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_iq1_m<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_iq4_nl<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_iq4_xs<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_q8_K<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
+template __device__ void dequant_block_bf16<float>(const uint8_t* __restrict__ w, float* __restrict__ y, int tid);
 
 
 // half
-template __device__ void dequant_block_q4_0<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q4_1<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q5_0<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q5_1<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q8_0<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_mxfp4<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q2_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q3_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q4_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q5_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q6_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_tq1_0<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_tq2_0<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq2_xxs<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq2_xs<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq2_s<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq3_xxs<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq3_s<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq1_s<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq1_m<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq4_nl<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_iq4_xs<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_q8_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
-template __device__ void dequant_block_bf16<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int64_t stride, int tid);
+template __device__ void dequant_block_q4_0<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_q4_1<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_q5_0<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_q5_1<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_q8_0<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_mxfp4<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_q2_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_q3_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_q4_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_q5_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_q6_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_tq1_0<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_tq2_0<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_iq2_xxs<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_iq2_xs<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_iq2_s<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_iq3_xxs<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_iq3_s<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_iq1_s<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_iq1_m<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_iq4_nl<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_iq4_xs<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_q8_K<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
+template __device__ void dequant_block_bf16<half>(const uint8_t* __restrict__ w, half* __restrict__ y, int tid);
