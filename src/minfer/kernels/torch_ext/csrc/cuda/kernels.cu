@@ -328,11 +328,12 @@ static __device__ void compute_tile_f16(
 
     for (int64_t k=0; k<K; k+=TILE_DIM) {
         
-        x_shared[r][c] = (global_r<M && k+c<K) ? x[r*x_stride+k+c] : __float2half(0.0f);
-        w_shared[c][r] = (blockIdx.y*TILE_DIM+r<N && k+c<K) ? w[r*w_stride+k+c] : __float2half(0.0f);
+        x_shared[r][c] = x[r*x_stride+k+c];
+        w_shared[c][r] = w[r*w_stride+k+c];
 
         __syncthreads();
         
+        #pragma unroll
         for (int kk=0; kk<TILE_DIM; ++kk) {
             acc += __half2float(x_shared[r][kk]) * __half2float(w_shared[kk][c]);
         }
@@ -340,13 +341,11 @@ static __device__ void compute_tile_f16(
         __syncthreads();
     }
 
-    if (global_r<M && global_c<N) {
-        out[r*out_stride+c] = __float2half(acc);
-    }
+    out[r*out_stride+c] = __float2half(acc);
 }
 
 
-// helper to compute WMMA_M x WMMA_N portion of result
+// helper to compute WMMA_M x WMMA_N portion of result (X@W.T)
 const int WMMA_M = 16;
 const int WMMA_N = 16;
 const int WMMA_K = 16;
@@ -372,16 +371,43 @@ static __device__ void compute_tile_wmma_f16(
     wmma::fill_fragment(acc_frag, 0.0f);
 
     for (int k=0; k<K; k+=WMMA_K) {
-        if (globalRowM<M && globalColN<N) {
-            wmma::load_matrix_sync(a_frag, x+localRow*x_stride+k, x_stride);
-            wmma::load_matrix_sync(b_frag, w+k, w_stride);
-            wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
-        }
+        wmma::load_matrix_sync(a_frag, x+localRow*x_stride+k, x_stride);
+        wmma::load_matrix_sync(b_frag, w+k, w_stride);
+        wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
     }
 
-    if (globalRowM<M && globalColN<N) {
-        wmma::store_matrix_sync(out + localRow*out_stride, acc_frag, out_stride, wmma::mem_row_major);
+    wmma::store_matrix_sync(out + localRow*out_stride, acc_frag, out_stride, wmma::mem_row_major);
+}
+
+// helper to compute WMMA_M x WMMA_N portion of result (X@W)
+static __device__ void compute_tile_wmma_f16_T(
+    int64_t M, int64_t K, int64_t N,
+    int64_t x_stride, int64_t w_stride, int64_t out_stride,
+    const half* __restrict__ x,
+    const half* __restrict__ w,
+    half* __restrict__ out
+) {
+    int warpIdInBlock = threadIdx.x / 32;
+    int warpsPerBlock = blockDim.x / 32;
+
+    int localRow = warpIdInBlock*WMMA_M;
+
+    int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
+    int globalColN = blockIdx.y*WMMA_N;
+
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> acc_frag;
+    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
+    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> b_frag;
+
+    wmma::fill_fragment(acc_frag, 0.0f);
+
+    for (int k=0; k<K; k+=WMMA_K) {
+        wmma::load_matrix_sync(a_frag, x+localRow*x_stride+k, x_stride);
+        wmma::load_matrix_sync(b_frag, w+k, w_stride);
+        wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
     }
+
+    wmma::store_matrix_sync(out + localRow*out_stride, acc_frag, out_stride, wmma::mem_row_major);
 }
 
 // helper to compute WMMA_M x WMMA_N portion of result
@@ -419,20 +445,17 @@ static __device__ void compute_tile_quant(
 
         __syncthreads();
 
+        #pragma unroll
         for (int kk=0; kk<256; kk+=WMMA_K) {
-            if (globalRowM<M && globalColN<N) {
-                wmma::load_matrix_sync(a_frag, x + localRow*x_stride + k+kk, x_stride);
-                wmma::load_matrix_sync(b_frag, &w_shared[0][kk], 256);
-                wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
-            }
+            wmma::load_matrix_sync(a_frag, x + localRow*x_stride + k+kk, x_stride);
+            wmma::load_matrix_sync(b_frag, &w_shared[0][kk], 256);
+            wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
         }
 
         __syncthreads();
     }
 
-    if (globalRowM<M && globalColN<N) {
-        wmma::store_matrix_sync(out + localRow*out_stride, acc_frag, out_stride, wmma::mem_row_major);
-    }
+    wmma::store_matrix_sync(out + localRow*out_stride, acc_frag, out_stride, wmma::mem_row_major);
 }
 
 template <int TILE_DIM>
@@ -477,6 +500,28 @@ __global__ void matmul_wmma_f16_cuda_impl(
         K, N, N,
         x_row, w_row, out_tile
     );
+}
+
+__global__ void matmul_wmma_f16_T_cuda_impl(
+    int64_t M, int64_t K, int64_t N,
+    const half* __restrict__ x,
+    const half* __restrict__ w,
+    half* __restrict__ out
+) {
+    // TODO: complete me!
+    // int warpsPerBlock = blockDim.x / 32;
+    // int rowM = blockIdx.x*warpsPerBlock*WMMA_M;
+    // int rowN = blockIdx.y*WMMA_N;
+
+    // const half* x_row = x + rowM*K;
+    // const half* w_row = w + rowN*K;
+    // half* out_tile = out + rowM*N + rowN;
+
+    // compute_tile_wmma_f16_T(
+    //     M, K, N,
+    //     K, N, N,
+    //     x_row, w_row, out_tile
+    // );
 }
 
 __global__ void matmul_quant_cuda_impl(
@@ -551,8 +596,8 @@ void matmul_cuda(
         if (N >= 16) {
             constexpr int WARPS_PER_BLOCK = 4;
             constexpr int BLOCK_SIZE = WARPS_PER_BLOCK*32;
-            int rowsM = WARPS_PER_BLOCK*WMMA_M;
-            dim3 grid((M+rowsM-1)/rowsM, (N+WMMA_N-1)/WMMA_N);
+            constexpr int ROWS_M = WARPS_PER_BLOCK*WMMA_M;
+            dim3 grid((M+ROWS_M-1)/ROWS_M, (N+WMMA_N-1)/WMMA_N);
             dim3 block(BLOCK_SIZE);
             matmul_wmma_f16_cuda_impl<<<grid, block, 0, stream>>>(
                 M, K, N, 
@@ -572,8 +617,8 @@ void matmul_cuda(
         const uint8_t* w_ptr = w.data_ptr<uint8_t>();
         constexpr int WARPS_PER_BLOCK = 4;
         constexpr int BLOCK_SIZE = WARPS_PER_BLOCK*32;
-        int rowsM = WARPS_PER_BLOCK*WMMA_M;
-        dim3 grid((M+rowM-1)/rowsM, (N+WMMA_N-1)/WMMA_N);
+        constexpr int ROWS_M = WARPS_PER_BLOCK*WMMA_M;
+        dim3 grid((M+ROWS_M-1)/ROWS_M, (N+WMMA_N-1)/WMMA_N);
         dim3 block(BLOCK_SIZE);
 
         matmul_quant_cuda_impl<<<grid, block, 0, stream>>>(
@@ -726,13 +771,11 @@ static __device__ void compute_qkv_tile_f16(
 
         __syncthreads();
 
-        if (globalRowM<M && globalColN<N_Q) {
-            wmma::load_matrix_sync(a_frag, &x_shared[localRow][0], WMMA_K);
-            wmma::load_matrix_sync(b_frag, wq+k, K);
-            wmma::mma_sync(q_acc_frag, a_frag, b_frag, q_acc_frag);
-        }
+        wmma::load_matrix_sync(a_frag, &x_shared[localRow][0], WMMA_K);
+        wmma::load_matrix_sync(b_frag, wq+k, K);
+        wmma::mma_sync(q_acc_frag, a_frag, b_frag, q_acc_frag);
 
-        if (globalRowM<M && globalColN<N_KV) {
+        if (globalColN < N_KV) {
             wmma::load_matrix_sync(a_frag, &x_shared[localRow][0], WMMA_K);
             wmma::load_matrix_sync(b_frag, wk+k, K);
             wmma::mma_sync(k_acc_frag, a_frag, b_frag, k_acc_frag);
@@ -745,11 +788,9 @@ static __device__ void compute_qkv_tile_f16(
         __syncthreads();
     }
 
-    if (globalRowM<M && globalColN<N_Q) {
-        wmma::store_matrix_sync(q_out + localRow*N_Q, q_acc_frag, N_Q, wmma::mem_row_major);
-    }
+    wmma::store_matrix_sync(q_out + localRow*N_Q, q_acc_frag, N_Q, wmma::mem_row_major);
 
-    if (globalRowM<M && globalColN<N_KV) {
+    if (globalColN < N_KV) {
         wmma::store_matrix_sync(k_out + localRow*N_KV, k_acc_frag, N_KV, wmma::mem_row_major);
         wmma::store_matrix_sync(v_out + localRow*N_KV, v_acc_frag, N_KV, wmma::mem_row_major);
     }
@@ -782,9 +823,6 @@ static __device__ void compute_qkv_tile_quant(
 
     int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
     int globalColN = blockIdx.y*WMMA_N;
-
-    // all of the warps in a block do Q
-    bool do_kv = (globalRowM < M && globalColN < N_KV);
 
     wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> q_acc_frag;
     wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> k_acc_frag;
@@ -823,7 +861,7 @@ static __device__ void compute_qkv_tile_quant(
             wmma::mma_sync(q_acc_frag, a_frag, b_frag, q_acc_frag);
         }
         
-        if (do_kv) {
+        if (globalColN < N_KV) {
             // dequantize 16x256 tile of wk into wk_shared
             for (int l=threadIdx.x; l<WMMA_N*256; l+=blockDim.x) {
                 int r = l / 256;
@@ -835,7 +873,7 @@ static __device__ void compute_qkv_tile_quant(
         
         __syncthreads();
 
-        if (do_kv) {
+        if (globalColN < N_KV) {
             #pragma unroll
             for (int kk=0; kk<256; kk+=WMMA_K) {
                 wmma::load_matrix_sync(a_frag, x_shared+localRow*256+kk, 256);
@@ -844,7 +882,7 @@ static __device__ void compute_qkv_tile_quant(
             }
         }
         
-        if (do_kv) {
+        if (globalColN < N_KV) {
             // dequantize 16x256 tile of wv into wv_shared
             for (int l=threadIdx.x; l<WMMA_N*256; l+=blockDim.x) {
                 int r = l / 256;
@@ -857,7 +895,7 @@ static __device__ void compute_qkv_tile_quant(
 
         __syncthreads();
 
-        if (do_kv) {
+        if (globalColN < N_KV) {
             #pragma unroll
             for (int kk=0; kk<256; kk+=WMMA_K) {
                 wmma::load_matrix_sync(a_frag, x_shared+localRow*256+kk, 256);
@@ -869,15 +907,12 @@ static __device__ void compute_qkv_tile_quant(
         __syncthreads();
     }
 
-    if (globalRowM < M) {
-        wmma::store_matrix_sync(q_out + localRow*N_Q, q_acc_frag, N_Q, wmma::mem_row_major);
-    }
+    wmma::store_matrix_sync(q_out + localRow*N_Q, q_acc_frag, N_Q, wmma::mem_row_major);
 
-    if (do_kv) {
+    if (globalColN < N_KV) {
         wmma::store_matrix_sync(k_out + localRow*N_KV, k_acc_frag, N_KV, wmma::mem_row_major);
         wmma::store_matrix_sync(v_out + localRow*N_KV, v_acc_frag, N_KV, wmma::mem_row_major);
-    }
-    
+    }   
 }
 
 template <int WARPS_PER_BLOCK>
@@ -931,6 +966,7 @@ __global__ void qkv_quant_cuda_impl(
     half* __restrict__ v_out
 ) {
 
+    // smem requirements exceed 48KB static limit on V100
     extern __shared__ char smem[];
     half* x_shared = (half*)smem;
     half* wq_shared = x_shared + WARPS_PER_BLOCK*WMMA_M*256;
@@ -1187,37 +1223,29 @@ struct QKVStrides {
     int64_t q0, q1, q2;
     int64_t kv0, kv1, kv2;
 };
-template <int TILE_M, int TILE_N, int HEAD_DIM, int BLOCK_SIZE>
+template <int WARPS_PER_BLOCK, int HEAD_DIM>
 __global__ void flash_attn_cuda_impl(
     QKVStrides strides,
     int64_t L, int64_t n_kv_heads,
-    const uint8_t* __restrict__ mask,
-    half* __restrict__ out,
     const half* __restrict__ q,
     const half* __restrict__ k,
-    const half* __restrict__ v
+    const half* __restrict__ v,
+    const uint8_t* __restrict__ mask,
+    half* __restrict__ out
 ) {
     
     constexpr int THR_PER_ROW = BLOCK_SIZE / TILE_M;
     constexpr int WARPS_PER_ROW = (THR_PER_ROW+32-1)/32;
 
-    __shared__ half in_shared[TILE_M][HEAD_DIM];
-    __shared__ half kv_shared[TILE_N][HEAD_DIM];
-    __shared__ half l_shared[TILE_M][TILE_N];
+    __shared__ half l_shared[WARPS_PER_BLOCK*WMMA_M][WMMA_N];
+    __shared__ half pv_shared[WARPS_PER_BLOCK*WMMA_M][HEAD_DIM];
+    __shared__ half out_shared[WARPS_PER_BLOCK*WMMA_M][HEAD_DIM];
     
-    __shared__ float qk_acc_shared[TILE_M][TILE_N];
-    __shared__ float out_acc_shared[TILE_M][HEAD_DIM];
-    __shared__ half out_shared[TILE_M][HEAD_DIM];
-    __shared__ half pv_shared[TILE_M][HEAD_DIM];
-    
-    __shared__ float ds[TILE_M];
-    __shared__ float ms[TILE_M];
+    __shared__ float ds[WARPS_PER_BLOCK*WMMA_M];
+    __shared__ float ms[WARPS_PER_BLOCK*WMMA_M];
 
-    __shared__ float ms_old[TILE_M];
-    __shared__ float ds_old[TILE_M];
-
-    __shared__ float scratch_d[TILE_M*WARPS_PER_ROW];
-    __shared__ float scratch_m[TILE_M*WARPS_PER_ROW];
+    __shared__ float ms_old[WARPS_PER_BLOCK*WMMA_M];
+    __shared__ float ds_old[WARPS_PER_BLOCK*WMMA_M];
 
     int64_t n_heads = gridDim.y;
     int64_t batch_idx = blockIdx.x;
@@ -1327,19 +1355,19 @@ void flash_attn_cuda(
     int64_t qtype_int,
     int64_t qblock_size,
     int64_t qtype_size,
-    at::Tensor& mask, // [B, 1, L, L]
-    at::Tensor& out,     // [B, n_heads, L, HEAD_DIM]
     const at::Tensor& q, // [B, n_heads, L, HEAD_DIM]
     const at::Tensor& k, // [B, n_kv_heads, L, HEAD_DIM]
-    const at::Tensor& v  // [B, n_kv_heads, L, HEAD_DIM]
+    const at::Tensor& v,  // [B, n_kv_heads, L, HEAD_DIM]
+    at::Tensor& mask, // [B, 1, L, L]
+    at::Tensor& out     // [B, n_heads, L, HEAD_DIM]
 ) {
     // validation
     TORCH_INTERNAL_ASSERT(
         (q.device().type() == at::DeviceType::CUDA) &&
         (k.device().type() == at::DeviceType::CUDA) && 
         (v.device().type() == at::DeviceType::CUDA) &&
-        (out.device().type() == at::DeviceType::CUDA) &&
-        (mask.device().type() == at::DeviceType::CUDA)
+        (mask.device().type() == at::DeviceType::CUDA) &&
+        (out.device().type() == at::DeviceType::CUDA)
     );
 
     // contiguity in the last dimension
@@ -1402,19 +1430,19 @@ void flash_attn_cuda(
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-    constexpr int TILE_M = 16;
+    constexpr int WARPS_PER_BLOCK = 4; // TODO: tune this or adjust as needed
+    constexpr int BLOCK_SIZE = WARPS_PER_BLOCK*32;
+    constexpr int ROWS_M = WARPS_PER_BLOCK*WMMA_M;
     constexpr int HEAD_DIM = 128;
-    constexpr int TILE_N = 64;
-    constexpr int BLOCK_SIZE = 128;
+    dim3 grid(B, n_heads, (M+ROWS_M-1)/ROWS_M);
+    dim3 block(BLOCK_SIZE);
 
-    dim3 block(BLOCK_SIZE); // TODO: tune this or adjust as needed
-    dim3 grid(B, n_heads, (L+TILE_M-1)/TILE_M);
-
-    flash_attn_cuda_impl<TILE_M, TILE_N, HEAD_DIM, BLOCK_SIZE><<<grid, block, 0, stream>>>(
+    flash_attn_cuda_impl<WARPS_PER_BLOCK, HEAD_DIM><<<grid, block, 0, stream>>>(
         strides,
         L, n_kv_heads,
+        q_ptr, k_ptr, v_ptr,
         mask_ptr,
-        out_ptr, q_ptr, k_ptr, v_ptr
+        out_ptr
     );
 }
 
