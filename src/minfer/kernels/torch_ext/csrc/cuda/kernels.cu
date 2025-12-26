@@ -786,6 +786,9 @@ static __device__ void compute_qkv_tile_quant(
     int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
     int globalColN = blockIdx.y*WMMA_N;
 
+    bool do_q = (globalRowM < M && globalColN < N_Q);
+    bool do_kv = (globalRowM < M && globalColN < N_KV);
+
     wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> q_acc_frag;
     wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> k_acc_frag;
     wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> v_acc_frag;
@@ -817,8 +820,9 @@ static __device__ void compute_qkv_tile_quant(
 
         __syncthreads();
 
-        for (int kk=0; kk<256; kk+=WMMA_K) {
-            if (globalRowM<M && globalColN<N_Q) {
+        if (do_q) {
+            #pragma unroll
+            for (int kk=0; kk<256; kk+=WMMA_K) {
                 wmma::load_matrix_sync(a_frag, x_shared+localRow*256+kk, 256);
                 wmma::load_matrix_sync(b_frag, wq_shared+kk, 256);
                 wmma::mma_sync(q_acc_frag, a_frag, b_frag, q_acc_frag);
@@ -835,14 +839,16 @@ static __device__ void compute_qkv_tile_quant(
 
         __syncthreads();
 
-        for (int kk=0; kk<256; kk+=WMMA_K) {
-            if (globalRowM<M && globalColN<N_KV) {
+
+        if (do_kv) {
+            #pragma unroll
+            for (int kk=0; kk<256; kk+=WMMA_K) {
                 wmma::load_matrix_sync(a_frag, x_shared+localRow*256+kk, 256);
                 wmma::load_matrix_sync(b_frag, wk_shared+kk, 256);
                 wmma::mma_sync(k_acc_frag, a_frag, b_frag, k_acc_frag);
             }
         }
-
+        
         // dequantize 16x256 tile of wv into wv_shared
         for (int l=threadIdx.x; l<WMMA_N*256; l+=blockDim.x) {
             int r = l / 256;
@@ -853,8 +859,9 @@ static __device__ void compute_qkv_tile_quant(
 
         __syncthreads();
 
-        for (int kk=0; kk<256; kk+=WMMA_K) {
-            if (globalRowM<M && globalColN<N_KV) {
+        if (do_kv) {
+            #pragma unroll
+            for (int kk=0; kk<256; kk+=WMMA_K) {
                 wmma::load_matrix_sync(a_frag, x_shared+localRow*256+kk, 256);
                 wmma::load_matrix_sync(b_frag, wv_shared+kk, 256);
                 wmma::mma_sync(v_acc_frag, a_frag, b_frag, v_acc_frag);
@@ -864,15 +871,12 @@ static __device__ void compute_qkv_tile_quant(
         __syncthreads();
     }
 
-    if (globalRowM<M && globalColN<N_Q) {
+    if (do_q) {
         wmma::store_matrix_sync(q_out + localRow*N_Q, q_acc_frag, N_Q, wmma::mem_row_major);
     }
 
-    if (globalRowM<M && globalColN<N_KV) {
+    if (do_kv) {
         wmma::store_matrix_sync(k_out + localRow*N_KV, k_acc_frag, N_KV, wmma::mem_row_major);
-    }
-
-    if (globalRowM<M && globalColN<N_KV) {
         wmma::store_matrix_sync(v_out + localRow*N_KV, v_acc_frag, N_KV, wmma::mem_row_major);
     }
 }
