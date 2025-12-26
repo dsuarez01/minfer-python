@@ -751,9 +751,6 @@ static __device__ void compute_qkv_tile_f16(
 
     if (globalRowM<M && globalColN<N_KV) {
         wmma::store_matrix_sync(k_out + localRow*N_KV, k_acc_frag, N_KV, wmma::mem_row_major);
-    }
-
-    if (globalRowM<M && globalColN<N_KV) {
         wmma::store_matrix_sync(v_out + localRow*N_KV, v_acc_frag, N_KV, wmma::mem_row_major);
     }
 }
@@ -786,7 +783,7 @@ static __device__ void compute_qkv_tile_quant(
     int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
     int globalColN = blockIdx.y*WMMA_N;
 
-    bool do_q = (globalRowM < M && globalColN < N_Q);
+    // all of the warps in a block do Q
     bool do_kv = (globalRowM < M && globalColN < N_KV);
 
     wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> q_acc_frag;
@@ -798,7 +795,6 @@ static __device__ void compute_qkv_tile_quant(
     wmma::fill_fragment(q_acc_frag, 0.0f);
     wmma::fill_fragment(k_acc_frag, 0.0f);
     wmma::fill_fragment(v_acc_frag, 0.0f);
-
 
     // in this approach we try to hide dequant latency behind compute
     // hopefully this helps
@@ -820,25 +816,24 @@ static __device__ void compute_qkv_tile_quant(
 
         __syncthreads();
 
-        if (do_q) {
-            #pragma unroll
-            for (int kk=0; kk<256; kk+=WMMA_K) {
-                wmma::load_matrix_sync(a_frag, x_shared+localRow*256+kk, 256);
-                wmma::load_matrix_sync(b_frag, wq_shared+kk, 256);
-                wmma::mma_sync(q_acc_frag, a_frag, b_frag, q_acc_frag);
+        #pragma unroll
+        for (int kk=0; kk<256; kk+=WMMA_K) {
+            wmma::load_matrix_sync(a_frag, x_shared+localRow*256+kk, 256);
+            wmma::load_matrix_sync(b_frag, wq_shared+kk, 256);
+            wmma::mma_sync(q_acc_frag, a_frag, b_frag, q_acc_frag);
+        }
+        
+        if (do_kv) {
+            // dequantize 16x256 tile of wk into wk_shared
+            for (int l=threadIdx.x; l<WMMA_N*256; l+=blockDim.x) {
+                int r = l / 256;
+                int c = l % 256;
+                const uint8_t* wk_block = wk + r*(K/k_qblock_size)*k_qtype_size + ((k+c)/k_qblock_size)*k_qtype_size;
+                dequant_block(k_qtype_int, (k+c)%k_qblock_size, &wk_shared[r*256+c], wk_block);
             }
         }
         
-        // dequantize 16x256 tile of wk into wk_shared
-        for (int l=threadIdx.x; l<WMMA_N*256; l+=blockDim.x) {
-            int r = l / 256;
-            int c = l % 256;
-            const uint8_t* wk_block = wk + r*(K/k_qblock_size)*k_qtype_size + ((k+c)/k_qblock_size)*k_qtype_size;
-            dequant_block(k_qtype_int, (k+c)%k_qblock_size, &wk_shared[r*256+c], wk_block);
-        }
-
         __syncthreads();
-
 
         if (do_kv) {
             #pragma unroll
@@ -849,13 +844,16 @@ static __device__ void compute_qkv_tile_quant(
             }
         }
         
-        // dequantize 16x256 tile of wv into wv_shared
-        for (int l=threadIdx.x; l<WMMA_N*256; l+=blockDim.x) {
-            int r = l / 256;
-            int c = l % 256;
-            const uint8_t* wv_block = wv + r*(K/v_qblock_size)*v_qtype_size + ((k+c)/v_qblock_size)*v_qtype_size;
-            dequant_block(v_qtype_int, (k+c)%v_qblock_size, &wv_shared[r*256+c], wv_block);
+        if (do_kv) {
+            // dequantize 16x256 tile of wv into wv_shared
+            for (int l=threadIdx.x; l<WMMA_N*256; l+=blockDim.x) {
+                int r = l / 256;
+                int c = l % 256;
+                const uint8_t* wv_block = wv + r*(K/v_qblock_size)*v_qtype_size + ((k+c)/v_qblock_size)*v_qtype_size;
+                dequant_block(v_qtype_int, (k+c)%v_qblock_size, &wv_shared[r*256+c], wv_block);
+            }
         }
+        
 
         __syncthreads();
 
@@ -867,11 +865,11 @@ static __device__ void compute_qkv_tile_quant(
                 wmma::mma_sync(v_acc_frag, a_frag, b_frag, v_acc_frag);
             }
         }
-
+        
         __syncthreads();
     }
 
-    if (do_q) {
+    if (globalRowM < M) {
         wmma::store_matrix_sync(q_out + localRow*N_Q, q_acc_frag, N_Q, wmma::mem_row_major);
     }
 
@@ -879,6 +877,7 @@ static __device__ void compute_qkv_tile_quant(
         wmma::store_matrix_sync(k_out + localRow*N_KV, k_acc_frag, N_KV, wmma::mem_row_major);
         wmma::store_matrix_sync(v_out + localRow*N_KV, v_acc_frag, N_KV, wmma::mem_row_major);
     }
+    
 }
 
 template <int WARPS_PER_BLOCK>
