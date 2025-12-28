@@ -16,10 +16,10 @@ namespace minfer {
 template <typename T>
 __global__ void dequant_cuda_(
     GGMLQuantizationType qtype,
-    const uint8_t* __restrict__ xr,
-    T* __restrict__ y,
     int64_t qblock_size,
     int64_t qtype_size,
+    const uint8_t* __restrict__ xr,
+    T* __restrict__ y,
     int64_t b,
     int64_t k
 ) {
@@ -64,10 +64,10 @@ __global__ void dequant_cuda_(
 // no need for larger since this is just to test the impl
 void dequant_cuda(
     int64_t qtype_int, 
-    const at::Tensor& x, 
-    at::Tensor& y, 
     int64_t qblock_size, // num deq elems in block
-    int64_t qtype_size // byte size of block
+    int64_t qtype_size, // byte size of block
+    const at::Tensor& x, 
+    at::Tensor& y
 ) {
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
     TORCH_CHECK(x.dim() == 2 && y.dim() == 2);
@@ -92,12 +92,12 @@ void dequant_cuda(
     switch (y.scalar_type()) {
         case at::kFloat: {
             float* __restrict__ y_ptr = y.data_ptr<float>();
-            dequant_cuda_<float><<<grid, qblock_size, 0, stream>>>(qtype, x_ptr, y_ptr, qblock_size, qtype_size, x.size(-1), y.size(-1));
+            dequant_cuda_<float><<<grid, qblock_size, 0, stream>>>(qtype, qblock_size, qtype_size, x_ptr, y_ptr, x.size(-1), y.size(-1));
             break;
         }
         case at::kHalf: {
             half* __restrict__ y_ptr = reinterpret_cast<half*>(y.data_ptr<at::Half>());
-            dequant_cuda_<half><<<grid, qblock_size, 0, stream>>>(qtype, x_ptr, y_ptr, qblock_size, qtype_size, x.size(-1), y.size(-1));
+            dequant_cuda_<half><<<grid, qblock_size, 0, stream>>>(qtype, qblock_size, qtype_size, x_ptr, y_ptr, x.size(-1), y.size(-1));
             break;
         }
         default: TORCH_CHECK(false, "Expected y scalar dtype to be float32 or float16, got ", y.scalar_type()); break;

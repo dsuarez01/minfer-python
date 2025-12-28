@@ -367,7 +367,7 @@ static __device__ void compute_tile_wmma_f16_T(
 
     for (int k=0; k<K; k+=WMMA_K) {
         wmma::load_matrix_sync(a_frag, x+localRow*x_stride+k, x_stride);
-        wmma::load_matrix_sync(b_frag, w+k, w_stride);
+        wmma::load_matrix_sync(b_frag, w+k*w_stride, w_stride);
         wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
     }
 
@@ -450,20 +450,20 @@ __global__ void matmul_wmma_f16_T_cuda_impl(
     const half* __restrict__ w,
     half* __restrict__ out
 ) {
-    // TODO: complete me!
-    // int warpsPerBlock = blockDim.x / 32;
-    // int rowM = blockIdx.x*warpsPerBlock*WMMA_M;
-    // int rowN = blockIdx.y*WMMA_N;
 
-    // const half* x_row = x + rowM*K;
-    // const half* w_row = w + rowN*K;
-    // half* out_tile = out + rowM*N + rowN;
+    int warpsPerBlock = blockDim.x / 32;
+    int rowM = blockIdx.x*warpsPerBlock*WMMA_M;
+    int rowN = blockIdx.y*WMMA_N;
 
-    // compute_tile_wmma_f16_T(
-    //     M, K, N,
-    //     K, K, N,
-    //     x_row, w_row, out_tile
-    // );
+    const half* x_row = x + rowM*K;
+    const half* w_col = w + rowN;
+    half* out_tile = out + rowM*N + rowN;
+
+    compute_tile_wmma_f16_T(
+        M, K, N,
+        K, N, N,
+        x_row, w_col, out_tile
+    );
 }
 
 __global__ void matmul_quant_cuda_impl(
@@ -497,8 +497,8 @@ void matmul_cuda(
     int64_t qblock_size,
     int64_t qtype_size,
     const at::Tensor& x, // [B,L,in_dim]
-    at::Tensor& out, // [B,L,out_dim]
-    const at::Tensor& w // [out_dim, in_dim (possibly bytes)]
+    const at::Tensor& w, // [out_dim, in_dim (possibly bytes)]
+    at::Tensor& out // [B,L,out_dim]
 ) {
     TORCH_CHECK(is_valid_qtype(qtype_int));
     auto qtype = static_cast<GGMLQuantizationType>(qtype_int);
@@ -520,35 +520,45 @@ void matmul_cuda(
     TORCH_CHECK(w.is_contiguous());
 
     TORCH_CHECK(x.size(0) == out.size(0) && x.size(1) == out.size(1));
-    TORCH_CHECK(w.size(0) == out.size(-1));
+    TORCH_CHECK(w.size(-1) == ((x.size(-1) / qblock_size) * qtype_size) || x.size(-1) == w.size(-1) || x.size(-1) == w.size(0));
+    TORCH_CHECK(w.size(0) == out.size(-1) || w.size(1) == out.size(-1));
 
     const half* x_ptr = reinterpret_cast<const half*>(x.data_ptr<at::Half>());
     half* out_ptr = reinterpret_cast<half*>(out.data_ptr<at::Half>());
 
     int64_t M = x.numel() / x.size(-1);
     int64_t K = x.size(-1);
-    int64_t N = w.size(0);
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
     if (qtype == GGMLQuantizationType::F16) {
-        TORCH_CHECK(w.size(-1) == x.size(-1));
         const half* w_ptr = reinterpret_cast<const half*>(w.data_ptr<at::Half>());
         constexpr int WARPS_PER_BLOCK = 4;
         constexpr int BLOCK_SIZE = WARPS_PER_BLOCK*32;
         constexpr int ROWS_M = WARPS_PER_BLOCK*WMMA_M;
-        dim3 grid((M+ROWS_M-1)/ROWS_M, (N+WMMA_N-1)/WMMA_N);
         dim3 block(BLOCK_SIZE);
-        matmul_wmma_f16_cuda_impl<<<grid, block, 0, stream>>>(
-            M, K, N, 
-            x_ptr, w_ptr, out_ptr
-        );
+
+        if (x.size(-1) == w.size(-1)) {
+            int64_t N = w.size(0);
+            dim3 grid((M+ROWS_M-1)/ROWS_M, (N+WMMA_N-1)/WMMA_N);
+            matmul_wmma_f16_cuda_impl<<<grid, block, 0, stream>>>(
+                M, K, N, 
+                x_ptr, w_ptr, out_ptr
+            );
+        } else if (x.size(-1) == w.size(0)) {
+            int64_t N = w.size(1);
+            dim3 grid((M+ROWS_M-1)/ROWS_M, (N+WMMA_N-1)/WMMA_N);
+            matmul_wmma_f16_T_cuda_impl<<<grid, block, 0, stream>>>(
+                M, K, N,
+                x_ptr, w_ptr, out_ptr
+            );
+        }
     } else {
-        TORCH_CHECK(w.size(-1) == ((x.size(-1) / qblock_size) * qtype_size));
         const uint8_t* w_ptr = w.data_ptr<uint8_t>();
         constexpr int WARPS_PER_BLOCK = 4;
         constexpr int BLOCK_SIZE = WARPS_PER_BLOCK*32;
         constexpr int ROWS_M = WARPS_PER_BLOCK*WMMA_M;
+        int64_t N = w.size(0);
         dim3 grid((M+ROWS_M-1)/ROWS_M, (N+WMMA_N-1)/WMMA_N);
         dim3 block(BLOCK_SIZE);
 
@@ -1444,26 +1454,20 @@ __global__ void moe_scoring_cuda_impl(
 
 template <int TILE_M, int N_EXPS>
 void dispatch_top_k(
-    int64_t top_k,
-    int64_t M, int64_t K,
+    int64_t top_k, int64_t M, int64_t K,
     const half* x_ptr, const half* w_ptr,
     uint8_t* act_exps_ptr, half* act_exps_scores_ptr, half* scores_ptr,
-    dim3 grid, dim3 block, cudaStream_t stream
+    cudaStream_t stream
 ) {
+    dim3 grid((M+TILE_M-1)/TILE_M);
+    dim3 block(TILE_M*N_EXPS);
+    
     switch (top_k) {
-        case 1: moe_scoring_cuda_impl<TILE_M, N_EXPS, 1><<<grid, block, 0, stream>>>(
-            M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr
-        ); break;
-        case 2: moe_scoring_cuda_impl<TILE_M, N_EXPS, 2><<<grid, block, 0, stream>>>(
-            M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr
-        ); break;
-        case 4: moe_scoring_cuda_impl<TILE_M, N_EXPS, 4><<<grid, block, 0, stream>>>(
-            M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr
-        ); break;
-        case 8: moe_scoring_cuda_impl<TILE_M, N_EXPS, 8><<<grid, block, 0, stream>>>(
-            M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr
-        ); break;
-        default: TORCH_CHECK(false, "unsupported top_k");
+        case 1: moe_scoring_cuda_impl<TILE_M, N_EXPS, 1><<<grid, block, 0, stream>>>(M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr); break;
+        case 2: moe_scoring_cuda_impl<TILE_M, N_EXPS, 2><<<grid, block, 0, stream>>>(M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr); break;
+        case 4: moe_scoring_cuda_impl<TILE_M, N_EXPS, 4><<<grid, block, 0, stream>>>(M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr); break;
+        case 8: moe_scoring_cuda_impl<TILE_M, N_EXPS, 8><<<grid, block, 0, stream>>>(M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr); break;
+        default: TORCH_CHECK(false, "unsupported top_k: ", top_k);
     }
 }
 
@@ -1509,31 +1513,14 @@ void moe_scoring_cuda(
     int64_t top_k = act_exps.size(-1);
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    
-    constexpr int TILE_M = 64;
-
-    dim3 grid((M+TILE_M-1)/TILE_M);
-    dim3 block(TILE_M*n_exps);
 
     switch (n_exps) {
-        case 8:   dispatch_top_k<TILE_M, 8>(
-            top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, grid, block, stream
-        ); break;
-        case 16:  dispatch_top_k<TILE_M, 16>(
-            top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, grid, block, stream
-        ); break;
-        case 32:  dispatch_top_k<TILE_M, 32>(
-            top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, grid, block, stream
-        ); break;
-        case 64:  dispatch_top_k<TILE_M, 64>(
-            top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, grid, block, stream
-        ); break;
-        case 128: dispatch_top_k<TILE_M, 128>(
-            top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, grid, block, stream
-        ); break;
-        case 256: dispatch_top_k<TILE_M, 256>(
-            top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, grid, block, stream
-        ); break;
+        case 8:   dispatch_top_k<128, 8>(top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, stream); break;
+        case 16:  dispatch_top_k<64, 16>(top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, stream); break;
+        case 32:  dispatch_top_k<32, 32>(top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, stream); break;
+        case 64:  dispatch_top_k<16, 64>(top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, stream); break;
+        case 128: dispatch_top_k<8, 128>(top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, stream); break;
+        case 256: dispatch_top_k<4, 256>(top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, stream); break;
         default: TORCH_CHECK(false, "unsupported n_exps: ", n_exps);
     }
 }
@@ -1625,7 +1612,7 @@ __global__ void swiglu_quant_cuda_impl(
         up_qtype_int, up_qblock_size, up_qtype_size,
         M, K_GU, N_GU,
         K_GU, K_GU, WMMA_N,
-        w_up_shared
+        w_up_shared,
         in_row, ws_up_row, (half*)hb2_shared
     );
 
@@ -1788,17 +1775,17 @@ void ffn_cuda(
 }
 
 TORCH_LIBRARY(minfer, m) {
-    m.def("dequant(int qtype, Tensor x, Tensor(a!) y, int qblock_size, int qtype_size) -> ()");
-    m.def("quant(int qtype, Tensor x, Tensor(a!) y, int qblock_size, int qtype_size) -> ()");
-    m.def("rmsnorm(float eps, Tensor input, Tensor(a!) out, Tensor w) -> ()");
+    m.def("dequant(int qtype, int qblock_size, int qtype_size, Tensor x, Tensor(a!) y) -> ()");
+    m.def("quant(int qtype, int qblock_size, int qtype_size, Tensor x, Tensor(a!) y) -> ()");
+    m.def("rmsnorm(float eps, Tensor input, Tensor w, Tensor(a!) out) -> ()");
     m.def("il_rope(int rotary_dim, int start_pos, float freq_base, Tensor(a!) x) -> ()");
     m.def("neox_rope(int rotary_dim, int start_pos, float freq_base, Tensor(a!) x) -> ()");
-    m.def("matmul(int qtype_int, int qblock_size, int qtype_size, Tensor x, Tensor(a!) out, Tensor w) -> ()");
-    m.def("embed(int qtype_int, int qblock_size, int qtype_size, Tensor(a!) x, Tensor token_ids, Tensor w) -> ()");
-    m.def("qkv(int q_qtype_int, int k_qtype_int, int v_qtype_int, int q_qblock_size, int k_qblock_size, int v_qblock_size, int q_qtype_size, int k_qtype_size, int v_qtype_size, Tensor x, Tensor(a!) q_out, Tensor(a!) k_out, Tensor(a!) v_out, Tensor wq, Tensor wk, Tensor wv) -> ()");
-    m.def("flash_attn(int qtype_int, int qblock_size, int qtype_size, Tensor mask, Tensor(a!) out, Tensor q, Tensor k, Tensor v) -> ()");
-    m.def("moe_scoring(int qtype_int, int qblock_size, int qtype_size, Tensor x, Tensor(a!) out, Tensor w) -> ()");
-    m.def("ffn(int up_qtype_int, int gate_qtype_int, int down_qtype_int, int up_qblock_size, int gate_qblock_size, int down_qblock_size, int up_qtype_size, int gate_qtype_size, int down_qtype_size, Tensor input, Tensor(a!) out, Tensor(a!) hb, Tensor(a!) hb2, Tensor ws_up, Tensor ws_gate, Tensor ws_down) -> ()");
+    m.def("matmul(int qtype_int, int qblock_size, int qtype_size, Tensor x, Tensor w, Tensor(a!) out) -> ()");
+    m.def("embed(int qtype_int, int qblock_size, int qtype_size, Tensor token_ids, Tensor w, Tensor(a!) x) -> ()");
+    m.def("qkv(int q_qtype_int, int k_qtype_int, int v_qtype_int, int q_qblock_size, int k_qblock_size, int v_qblock_size, int q_qtype_size, int k_qtype_size, int v_qtype_size, Tensor x, Tensor wq, Tensor wk, Tensor wv, Tensor(a!) q_out, Tensor(a!) k_out, Tensor(a!) v_out) -> ()");
+    m.def("flash_attn(int qtype_int, int qblock_size, int qtype_size, Tensor q, Tensor k, Tensor v, Tensor(a!) mask, Tensor(a!) out) -> ()");
+    m.def("moe_scoring(int qtype_int, int qblock_size, int qtype_size, Tensor x, Tensor w, Tensor(a!) act_exps, Tensor(a!) act_exps_scores, Tensor(a!) scores) -> ()");
+    m.def("ffn(int up_qtype_int, int gate_qtype_int, int down_qtype_int, int up_qblock_size, int gate_qblock_size, int down_qblock_size, int up_qtype_size, int gate_qtype_size, int down_qtype_size, Tensor input, Tensor ws_up, Tensor ws_gate, Tensor ws_down, Tensor(a!) hb, Tensor(a!) hb2, Tensor(a!) out) -> ()");
 }
 
 // TODO: add this back in once finished

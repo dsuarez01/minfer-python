@@ -52,10 +52,10 @@ void dequant_row_cpu(
 // no need for larger since this is just to test the impl
 void dequant_cpu(
     int64_t qtype_int,
-    const at::Tensor& x,
-    at::Tensor& y,
     int64_t qblock_size, // num deq elems in block
-    int64_t qtype_size // byte size of block
+    int64_t qtype_size, // byte size of block
+    const at::Tensor& x,
+    at::Tensor& y
 ) {
 
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
@@ -138,10 +138,10 @@ void quant_row_cpu(
 // no need for larger since this is just to test the impl
 void quant_cpu(
     int64_t qtype_int,
-    const at::Tensor& x,
-    at::Tensor& y,
     int64_t qblock_size, // num deq elems in block
-    int64_t qtype_size // byte size of block
+    int64_t qtype_size, // byte size of block
+    const at::Tensor& x,
+    at::Tensor& y
 ) {
 
     TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
