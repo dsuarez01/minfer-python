@@ -134,7 +134,7 @@ __global__ void rmsnorm_cuda_impl(
     float eps,
     const half* __restrict__ in,
     const half* __restrict__ w,
-    at::Tensor& out
+    half* __restrict__ out
 ) {
 
     const half* vec_in = in + blockIdx.x * dim;
@@ -309,86 +309,6 @@ void neox_rope_cuda(
     neox_rope_cuda_impl<<<grid, 32, 0, stream>>>(n_heads, rotary_dim, head_dim, start_pos, freq_base, x_ptr);
 }
 
-template <int TILE_DIM>
-static __device__ void compute_tile_f16(
-    int64_t M, int64_t K, int64_t N,
-    int64_t x_stride, int64_t w_stride, int64_t out_stride,
-    half (&x_shared)[TILE_DIM][TILE_DIM],
-    half (&w_shared)[TILE_DIM][TILE_DIM+2], // avoid bank conflict
-    const half* __restrict__ x,
-    const half* __restrict__ w,
-    half* __restrict__ out
-) {
-    int r = threadIdx.y;
-    int c = threadIdx.x;
-    int global_r = blockIdx.x*TILE_DIM+r;
-    int global_c = blockIdx.y*TILE_DIM+c;
-
-    float acc = 0.0f;
-
-    for (int64_t k=0; k<K; k+=TILE_DIM) {
-        
-        x_shared[r][c] = x[r*x_stride+k+c];
-        w_shared[c][r] = w[r*w_stride+k+c];
-
-        __syncthreads();
-        
-        #pragma unroll
-        for (int kk=0; kk<TILE_DIM; ++kk) {
-            acc += __half2float(x_shared[r][kk]) * __half2float(w_shared[kk][c]);
-        }
-        
-        __syncthreads();
-    }
-
-    out[r*out_stride+c] = __float2half(acc);
-}
-
-template <int TILE_M, int TILE_N, int TILE_K>
-static __device__ void compute_tile_f16(
-    int64_t M, int64_t K, int64_t N,
-    int64_t x_stride, int64_t w_stride, int64_t out_stride,
-    half (&x_shared)[TILE_M][TILE_K],
-    half (&w_shared)[TILE_N][TILE_K],
-    const half* __restrict__ x,
-    const half* __restrict__ w,
-    half* __restrict__ out
-) {
-    int tid = threadIdx.y*blockDim.x + threadIdx.x;
-    int num_threads = blockDim.x*blockDim.y;
-    
-    int r = threadIdx.y;
-    int c = threadIdx.x;
-
-    float acc = 0.0f;
-
-    for (int64_t k=0; k<K; k+=TILE_K) {
-        
-        for (int i=tid; i<TILE_M*TILE_K; i+=num_threads) {
-            int rr = i / TILE_K;
-            int cc = i % TILE_K;
-            x_shared[rr][cc] = x[rr*x_stride + k+cc];
-        }
-
-        for (int i=tid; i<TILE_N*TILE_K; i+=num_threads) {
-            int rr = i / TILE_K;
-            int cc = i % TILE_K;
-            w_shared[rr][cc] = w[rr*w_stride + k+cc];
-        }
-
-        __syncthreads();
-        
-        #pragma unroll
-        for (int kk=0; kk<TILE_K; ++kk) {
-            acc += __half2float(x_shared[r][kk]) * __half2float(w_shared[c][kk]);
-        }
-        
-        __syncthreads();
-    }
-        
-    out[r*out_stride + c] = __float2half(acc);
-}
-
 // helper to compute WMMA_M x WMMA_N portion of result (X@W.T)
 const int WMMA_M = 16;
 const int WMMA_N = 16;
@@ -500,28 +420,6 @@ static __device__ void compute_tile_quant(
     }
 
     wmma::store_matrix_sync(out + localRow*out_stride, acc_frag, out_stride, wmma::mem_row_major);
-}
-
-template <int TILE_M, int TILE_N, int TILE_K>
-__global__ void matmul_f16_cuda_impl(
-    int64_t M, int64_t K, int64_t N,
-    const half* __restrict__ x,
-    const half* __restrict__ w,
-    half* __restrict__ out
-) {
-    __shared__ half x_shared[TILE_M][TILE_K];
-    __shared__ half w_shared[TILE_N][TILE_K];
-
-    const half* x_row = x + blockIdx.x*TILE_M*K;
-    half* out_tile = out + blockIdx.x*TILE_M*N + blockIdx.y*TILE_N;
-    const half* w_row = w + blockIdx.y*TILE_N*K;
-
-    compute_tile_f16<TILE_M, TILE_N, TILE_K>(
-        M, K, N,
-        K, K, N,
-        x_shared, w_shared,
-        x_row, w_row, out_tile
-    );
 }
 
 __global__ void matmul_wmma_f16_cuda_impl(
@@ -636,28 +534,15 @@ void matmul_cuda(
     if (qtype == GGMLQuantizationType::F16) {
         TORCH_CHECK(w.size(-1) == x.size(-1));
         const half* w_ptr = reinterpret_cast<const half*>(w.data_ptr<at::Half>());
-        
-        if (N >= 16) {
-            constexpr int WARPS_PER_BLOCK = 4;
-            constexpr int BLOCK_SIZE = WARPS_PER_BLOCK*32;
-            constexpr int ROWS_M = WARPS_PER_BLOCK*WMMA_M;
-            dim3 grid((M+ROWS_M-1)/ROWS_M, (N+WMMA_N-1)/WMMA_N);
-            dim3 block(BLOCK_SIZE);
-            matmul_wmma_f16_cuda_impl<<<grid, block, 0, stream>>>(
-                M, K, N, 
-                x_ptr, w_ptr, out_ptr
-            );
-        } else {
-            constexpr int TILE_M = 32;
-            constexpr int TILE_N = 8;
-            constexpr int TILE_K = 32;
-            dim3 grid((M+TILE_M-1)/TILE_M, (N+TILE_N-1)/TILE_N);
-            dim3 block(TILE_N, TILE_M);
-            matmul_f16_cuda_impl<TILE_M, TILE_N, TILE_K><<<grid, block, 0, stream>>>(
-                M, K, N,
-                x_ptr, w_ptr, out_ptr
-            );
-        }
+        constexpr int WARPS_PER_BLOCK = 4;
+        constexpr int BLOCK_SIZE = WARPS_PER_BLOCK*32;
+        constexpr int ROWS_M = WARPS_PER_BLOCK*WMMA_M;
+        dim3 grid((M+ROWS_M-1)/ROWS_M, (N+WMMA_N-1)/WMMA_N);
+        dim3 block(BLOCK_SIZE);
+        matmul_wmma_f16_cuda_impl<<<grid, block, 0, stream>>>(
+            M, K, N, 
+            x_ptr, w_ptr, out_ptr
+        );
     } else {
         TORCH_CHECK(w.size(-1) == ((x.size(-1) / qblock_size) * qtype_size));
         const uint8_t* w_ptr = w.data_ptr<uint8_t>();
@@ -1185,9 +1070,8 @@ static __device__ void update_dm(
     float* __restrict__ ms,
     const half (&tile)[WARPS_PER_BLOCK*WMMA_M][WMMA_N]
 ) {
-    int tid = threadIdx.y * blockDim.x + threadIdx.x;
-    int warpId = tid/32;
-    int lane = tid%32;
+    int warpId = threadIdx.x/32;
+    int lane = threadIdx.x%32;
     int rowInWarp = lane/2;
     int thrInRow = lane%2;
     int globalRow = warpId*WMMA_M+rowInWarp;
@@ -1436,64 +1320,150 @@ void flash_attn_cuda(
     );
 }
 
-template <int WARPS_PER_BLOCK>
+template <int THR_PER_ROW>
+static __device__ float row_reduce_max(float* vs, float v, int row_in_tile, int thr_in_row) {
+
+    v = warp_reduce_max<THR_PER_ROW>(v);
+
+    constexpr int WARPS_PER_ROW = (THR_PER_ROW+32-1)/32;
+
+    int warp_in_row = thr_in_row / 32;
+    if (thr_in_row % 32 == 0) vs[row_in_tile*WARPS_PER_ROW+warp_in_row]=v;
+    __syncthreads();
+    
+    if (THR_PER_ROW/32 > 0 && warp_in_row == 0 && thr_in_row < WARPS_PER_ROW) {
+        v = vs[row_in_tile*WARPS_PER_ROW + thr_in_row];
+        v = warp_reduce_max(v);
+    }
+
+    if (thr_in_row == 0) vs[row_in_tile*WARPS_PER_ROW] = v;
+    __syncthreads();
+    return vs[row_in_tile*WARPS_PER_ROW];
+}
+
+template <int THR_PER_ROW>
+static __device__ float row_reduce_sum(float* vs, float v, int row_in_tile, int thr_in_row) {
+
+    v = warp_reduce_sum<THR_PER_ROW>(v);
+
+    constexpr int WARPS_PER_ROW = (THR_PER_ROW+32-1)/32;
+
+    int warp_in_row = thr_in_row / 32;
+    if (thr_in_row % 32 == 0) vs[row_in_tile*WARPS_PER_ROW+warp_in_row]=v;
+    __syncthreads();
+    
+    if (THR_PER_ROW/32 > 0 && warp_in_row == 0 && thr_in_row < WARPS_PER_ROW) {
+        v = vs[row_in_tile*WARPS_PER_ROW + thr_in_row];
+        v = warp_reduce_sum(v);
+    }
+
+    if (thr_in_row == 0) vs[row_in_tile*WARPS_PER_ROW] = v;
+    __syncthreads();
+    return vs[row_in_tile*WARPS_PER_ROW];
+}
+
+template <int TILE_M, int N_EXPS, int TOP_K>
 __global__ void moe_scoring_cuda_impl(
-    int64_t M, int64_t K, int64_t N,
+    int64_t M, int64_t K,
     const half* __restrict__ x,
     const half* __restrict__ w,
-    half* __restrict__ out
+    uint8_t* __restrict__ act_exps,
+    half* __restrict__ act_exps_scores,
+    half* __restrict__ scores
 ) {
 
-    __shared__ half l_shared[WARPS_PER_BLOCK*WMMA_M][WMMA_N];
-    
-    __shared__ float ds[WARPS_PER_BLOCK*WMMA_M];
-    __shared__ float ms[WARPS_PER_BLOCK*WMMA_M];
+    __shared__ half l_shared[TILE_M][N_EXPS];
+    __shared__ float scratch[TILE_M*((N_EXPS+31)/32)];
 
-    const half* x_row = x + blockIdx.x*WARPS_PER_BLOCK*WMMA_M*K;
-    half* out_row = out + blockIdx.x*WARPS_PER_BLOCK*WMMA_M*N;
+    const half* x_row = x + blockIdx.x*TILE_M*K;
+    half* scores_row = scores + blockIdx.x*TILE_M*N_EXPS;
+    uint8_t* act_exps_row = act_exps + blockIdx.x*TILE_M*TOP_K;
+    half* act_exps_scores_row = act_exps_scores + blockIdx.x*TILE_M*TOP_K;
 
-    for (int idx=threadIdx.x; idx<WARPS_PER_BLOCK*WMMA_M; ++idx) {
-        ds[idx] = 0.0f;
-        ms[idx] = -INFINITY;
+    int r = threadIdx.x/N_EXPS;
+    int c = threadIdx.x%N_EXPS;
+
+    // compute logits
+    float acc = 0.0f;
+    for (int k=0; k<K; k+=8) {
+        float4 xv = *reinterpret_cast<const float4*>(x_row+r*K+k);
+        float4 wv = *reinterpret_cast<const float4*>(w+c*K+k);
+        half2* xh = reinterpret_cast<half2*>(&xv);
+        half2* wh = reinterpret_cast<half2*>(&wv);
+        #pragma unroll
+        for (int i=0; i<4; ++i) {
+            acc += __half2float(xh[i].x) * __half2float(wh[i].x);
+            acc += __half2float(xh[i].y) * __half2float(wh[i].y);
+        }
     }
-
+    l_shared[r][c] = __float2half(acc);
     __syncthreads();
 
-    // first pass: compute logits, update running d and m, write to out
-    for (int n_tile=0; n_tile<N; n_tile+=WMMA_N) {
-        const half* w_row = w + n_tile*K;
-        half* out_tile = out_row + n_tile;
+    // softmax
+    float val = __half2float(l_shared[r][c]);
+    float m = row_reduce_max<N_EXPS>(scratch, val, r, c);
+    float exp_val = expf(val-m);
+    float s = row_reduce_sum<N_EXPS>(scratch, exp_val, r, c);
+    float softmax_val = exp_val/s;
+    l_shared[r][c] = __float2half(softmax_val);
+    scores_row[r*N_EXPS+c] = __float2half(softmax_val);
+    __syncthreads();
 
-        compute_tile_f16(
-            M, K, N,
-            K, K, WMMA_N,
-            x_row, w_row, (half*)l_shared
-        );
+    // insertion sort topK, one thread per row
+    if (c == 0) {
+        float top_vals[TOP_K];
+        int top_idx[TOP_K];
 
-        __syncthreads();
-
-        update_dm<WARPS_PER_BLOCK>(ds, ms, l_shared);
-
-        for (int idx=threadIdx.x; idx<WARPS_PER_BLOCK*WMMA_M*WMMA_N; idx+=blockDim.x) {
-            int r = idx/WMMA_N;
-            int c = idx%WMMA_N;
-            out_tile[r*N+c] = l_shared[r][c];
+        #pragma unroll
+        for (int i=0; i<TOP_K; ++i) {
+            top_vals[i] = -INFINITY;
+            top_idx[i] = -1;
         }
 
-        __syncthreads();
+        #pragma unroll
+        for (int e=0; e<N_EXPS; ++e) {
+            float v = __half2float(l_shared[r][e]);
+            if (v>top_vals[TOP_K-1]) {
+                top_vals[TOP_K-1] = v;
+                top_idx[TOP_K-1] = e;
+                #pragma unroll
+                for (int i=TOP_K-1; i>0 && top_vals[i]>top_vals[i-1]; --i) {
+                    float tv = top_vals[i]; top_vals[i] = top_vals[i-1]; top_vals[i-1] = tv;
+                    int ti = top_idx[i]; top_idx[i] = top_idx[i-1]; top_idx[i-1] = ti;
+                }
+            }
+        }
+
+        #pragma unroll
+        for (int i=0; i<TOP_K; ++i) {
+            act_exps_row[r*TOP_K+i] = (uint8_t)top_idx[i];
+            act_exps_scores_row[r*TOP_K+i] = __float2half(top_vals[i]);
+        }
     }
+}
 
-    // second pass: apply softmax to each tile w/ global d and m
-    for (int n_tile=0; n_tile<N; n_tile+=WMMA_N) {
-        half* out_tile = out_row + n_tile;
-
-        for (int idx=threadIdx.x; idx<WARPS_PER_BLOCK*WMMA_M*WMMA_N; idx+=BLOCK_SIZE) {
-            int r = idx/TILE_DIM;
-            int c = idx%TILE_DIM;
-            val = expf(__half2float(out_tile[r*N+c])-ms[r])/ds[r];
-            out_tile[r*N+c] = __float2half(val);
-        }
-
+template <int TILE_M, int N_EXPS>
+void dispatch_top_k(
+    int64_t top_k,
+    int64_t M, int64_t K,
+    const half* x_ptr, const half* w_ptr,
+    uint8_t* act_exps_ptr, half* act_exps_scores_ptr, half* scores_ptr,
+    dim3 grid, dim3 block, cudaStream_t stream
+) {
+    switch (top_k) {
+        case 1: moe_scoring_cuda_impl<TILE_M, N_EXPS, 1><<<grid, block, 0, stream>>>(
+            M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr
+        ); break;
+        case 2: moe_scoring_cuda_impl<TILE_M, N_EXPS, 2><<<grid, block, 0, stream>>>(
+            M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr
+        ); break;
+        case 4: moe_scoring_cuda_impl<TILE_M, N_EXPS, 4><<<grid, block, 0, stream>>>(
+            M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr
+        ); break;
+        case 8: moe_scoring_cuda_impl<TILE_M, N_EXPS, 8><<<grid, block, 0, stream>>>(
+            M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr
+        ); break;
+        default: TORCH_CHECK(false, "unsupported top_k");
     }
 }
 
@@ -1505,48 +1475,67 @@ void moe_scoring_cuda(
     int64_t qtype_size,
     const at::Tensor& x, // [B,L,hidden_dim]
     const at::Tensor& w, // [n_experts, hidden_dim]
-    at::Tensor& out // [B,L,n_experts]
+    at::Tensor& act_exps, // [B,L,n_act_exps]
+    at::Tensor& act_exps_scores, // [B,L,n_act_exps]
+    at::Tensor& scores // [B,L,n_experts]
 ) {
-
     TORCH_INTERNAL_ASSERT(x.device().type() == at::DeviceType::CUDA);
-    TORCH_INTERNAL_ASSERT(out.device().type() == at::DeviceType::CUDA);
+    TORCH_INTERNAL_ASSERT(scores.device().type() == at::DeviceType::CUDA);
     TORCH_INTERNAL_ASSERT(w.device().type() == at::DeviceType::CUDA);
+    TORCH_INTERNAL_ASSERT(act_exps.device().type() == at::DeviceType::CUDA);
+    TORCH_INTERNAL_ASSERT(act_exps_scores.device().type() == at::DeviceType::CUDA);
 
     TORCH_CHECK(x.is_contiguous());
-    TORCH_CHECK(out.is_contiguous());
+    TORCH_CHECK(scores.is_contiguous());
     TORCH_CHECK(w.is_contiguous());
+    TORCH_CHECK(act_exps.is_contiguous());
+    TORCH_CHECK(act_exps_scores.is_contiguous());
 
     TORCH_CHECK(x.dtype() == at::kHalf);
-    TORCH_CHECK(out.dtype() == at::kHalf);
+    TORCH_CHECK(scores.dtype() == at::kHalf);
     TORCH_CHECK(w.dtype() == at::kHalf);
-
-    TORCH_CHECK(x.numel() / x.size(-1) == out.numel() / out.size(-1));
-    TORCH_CHECK(w.size(0) == out.size(-1));
-    TORCH_CHECK(w.size(1) == x.size(-1));
+    TORCH_CHECK(act_exps.dtype() == at::kByte);
+    TORCH_CHECK(act_exps_scores.dtype() == at::kHalf);
 
     const half* x_ptr = reinterpret_cast<const half*>(x.data_ptr<at::Half>());
-    half* out_ptr = reinterpret_cast<half*>(out.data_ptr<at::Half>());
     const half* w_ptr = reinterpret_cast<const half*>(w.data_ptr<at::Half>());
+    uint8_t* act_exps_ptr = act_exps.data_ptr<uint8_t>();
+    half* act_exps_scores_ptr = reinterpret_cast<half*>(act_exps_scores.data_ptr<at::Half>());
+    half* scores_ptr = reinterpret_cast<half*>(scores.data_ptr<at::Half>());
 
-    int64_t B = x.size(0);
-    int64_t L = x.size(1);
-    int64_t hidden_dim = x.size(-1);
-    int64_t n_exps = out.size(-1);
-
-    int64_t M = B*L;
-    int64_t K = hidden_dim;
-    int64_t N = n_exps;
+    int64_t M = x.numel() / x.size(-1);
+    int64_t K = x.size(-1);
+    int64_t n_exps = scores.size(-1);
+    int64_t top_k = act_exps.size(-1);
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     
-    constexpr int TILE_DIM = 8;
-    dim3 grid((M+TILE_DIM-1)/TILE_DIM);
-    dim3 block(TILE_DIM, TILE_DIM);
+    constexpr int TILE_M = 64;
 
-    moe_scoring_cuda_impl<WARPS_PER_BLOCK><<<grid, block, 0, stream>>>(
-        M, K, N,
-        x_ptr, w_ptr, out_ptr
-    );
+    dim3 grid((M+TILE_M-1)/TILE_M);
+    dim3 block(TILE_M*n_exps);
+
+    switch (n_exps) {
+        case 8:   dispatch_top_k<TILE_M, 8>(
+            top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, grid, block, stream
+        ); break;
+        case 16:  dispatch_top_k<TILE_M, 16>(
+            top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, grid, block, stream
+        ); break;
+        case 32:  dispatch_top_k<TILE_M, 32>(
+            top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, grid, block, stream
+        ); break;
+        case 64:  dispatch_top_k<TILE_M, 64>(
+            top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, grid, block, stream
+        ); break;
+        case 128: dispatch_top_k<TILE_M, 128>(
+            top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, grid, block, stream
+        ); break;
+        case 256: dispatch_top_k<TILE_M, 256>(
+            top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, grid, block, stream
+        ); break;
+        default: TORCH_CHECK(false, "unsupported n_exps: ", n_exps);
+    }
 }
 
 template <int WARPS_PER_BLOCK>
@@ -1608,6 +1597,8 @@ __global__ void swiglu_quant_cuda_impl(
     half* __restrict__ hb2
 ) {
 
+    __shared__ half w_gate_shared[WMMA_N][256];
+    __shared__ half w_up_shared[WMMA_N][256];
     __shared__ half hb_shared[WARPS_PER_BLOCK*WMMA_M][WMMA_N];
     __shared__ half hb2_shared[WARPS_PER_BLOCK*WMMA_M][WMMA_N];
 
@@ -1625,6 +1616,7 @@ __global__ void swiglu_quant_cuda_impl(
         gate_qtype_int, gate_qblock_size, gate_qtype_size,
         M, K_GU, N_GU,
         K_GU, K_GU, WMMA_N,
+        w_gate_shared,
         in_row, ws_gate_row, (half*)hb_shared
     );
     
@@ -1633,6 +1625,7 @@ __global__ void swiglu_quant_cuda_impl(
         up_qtype_int, up_qblock_size, up_qtype_size,
         M, K_GU, N_GU,
         K_GU, K_GU, WMMA_N,
+        w_up_shared
         in_row, ws_up_row, (half*)hb2_shared
     );
 
