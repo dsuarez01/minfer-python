@@ -37,15 +37,15 @@ def test_dequant(backend, qtype_name, shape):
     quantized_A = torch.zeros((M, bytes_per_row), dtype=torch.uint8)
     expected_A = torch.zeros(shape, dtype=torch.float32)
     
-    kerns._quant(qtype, data_A, quantized_A, qblock_size, qtype_size)
-    kerns._dequant(qtype, quantized_A, expected_A, qblock_size, qtype_size)
+    kerns._quant(qtype, qblock_size, qtype_size, data_A, quantized_A)
+    kerns._dequant(qtype, qblock_size, qtype_size, quantized_A, expected_A)
     
     # test dequant on GPU
     quantized_A = quantized_A.cuda()
     actual_A = torch.zeros(shape, dtype=torch.float32).cuda()
     
     grid = (M,)
-    kerns._dequant(qtype, quantized_A, actual_A, qblock_size, qtype_size)
+    kerns._dequant(qtype, qblock_size, qtype_size, quantized_A, actual_A)
     
     assert torch.allclose(actual_A.cpu(), expected_A)
 
@@ -67,7 +67,7 @@ def test_rmsnorm(backend):
     actual_A = torch.zeros_like(input_A)
     weight_A = (1/hidden_dim**0.5) * torch.randn((hidden_dim), dtype=torch.float16).cuda()
     expected_A = F.rms_norm(input=input_A, weight=weight_A, normalized_shape=(hidden_dim,),  eps=eps)
-    kerns.rmsnorm(eps, input_A, actual_A, weight_A)
+    kerns.rmsnorm(eps, input_A, weight_A, actual_A)
     assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-3), "rmsnorm: over entire vec"
 
     # test for rmsnorm applied across heads (act. shape [B // dp_size, n_heads, L, head_dim], weight shape [head_dim,])
@@ -75,7 +75,7 @@ def test_rmsnorm(backend):
     actual_B = torch.zeros_like(input_B)
     weight_B = (1/head_dim**0.5) * torch.randn((head_dim,), dtype=torch.float16).cuda()
     expected_B = F.rms_norm(input=input_B, weight=weight_B, normalized_shape=(head_dim,),  eps=eps)
-    kerns.rmsnorm(eps, input_B, actual_B, weight_B)
+    kerns.rmsnorm(eps, input_B, weight_B, actual_B)
     assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=1e-3), "rmsnorm: per head"
 
     # output act. identical shape to input in both cases
@@ -169,31 +169,32 @@ def test_rope(backend):
     # output act. identical shape to input
     # TODO: there's some precision issue here (large vals of angle=freq*pos), so had to manually adjust the rtol and atol values
 
-# A: just the usual matmul
+# A: X @ W.T
+# B: X @ W
 @pytest.mark.parametrize("backend", ["torch_ext"])
 def test_matmul(backend):
     kerns = KernelBackend(backend)
-    B, L, in_dim, out_dim_A, out_dim_B = 8, 4096, 6144, 16384, 8
+    B, L, in_dim, out_dim = 8, 4096, 6144, 16384
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
     # act. shape [B // dp_size, L, in_dim], weight shape [out_dim, in_dim]    
     input_A = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()
-    actual_A = torch.zeros((B, L, out_dim_A), dtype=torch.float16).cuda()
-    weight_A = (1/in_dim**0.5) * torch.randn((out_dim_A, in_dim), dtype=torch.float16).cuda()
+    actual_A = torch.zeros((B, L, out_dim), dtype=torch.float16).cuda()
+    weight_A = (1/in_dim**0.5) * torch.randn((out_dim, in_dim), dtype=torch.float16).cuda()
 
     expected_A = input_A @ weight_A.T
-    kerns.matmul(qtype, qblock_size, qtype_size, input_A, actual_A, weight_A)
+    kerns.matmul(qtype, qblock_size, qtype_size, input_A, weight_A, actual_A)
 
     assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-2), "matmul"
 
     # act. shape [B // dp_size, L, in_dim], weight shape [out_dim, in_dim]    
     input_B = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()
-    actual_B = torch.zeros((B, L, out_dim_B), dtype=torch.float16).cuda()
-    weight_B = (1/in_dim**0.5) * torch.randn((out_dim_B, in_dim), dtype=torch.float16).cuda()
+    actual_B = torch.zeros((B, L, out_dim), dtype=torch.float16).cuda()
+    weight_B = (1/in_dim**0.5) * torch.randn((in_dim, out_dim), dtype=torch.float16).cuda()
 
-    expected_B = input_B @ weight_B.T
-    kerns.matmul(qtype, qblock_size, qtype_size, input_B, actual_B, weight_B)
+    expected_B = input_B @ weight_B
+    kerns.matmul(qtype, qblock_size, qtype_size, input_B, weight_B, actual_B)
 
     assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=1e-2), "matmul"
 
@@ -213,7 +214,7 @@ def test_embed(backend):
     weight_A = torch.randn((vocab_size, hidden_dim), dtype=torch.float16).cuda()
 
     expected_A = weight_A[input_A]
-    kerns.embed(qtype, qblock_size, qtype_size, actual_A, input_A, weight_A)
+    kerns.embed(qtype, qblock_size, qtype_size, input_A, weight_A, actual_A)
     assert torch.allclose(expected_A.cpu(), actual_A.cpu()), "embed"
     
     # output act. shape [B // dp_size, L, hidden_dim]
@@ -248,9 +249,11 @@ def test_qkv(backend):
     expected_A_V = (input_A @ weight_A_V.T)
 
     kerns.qkv(
-        q_qtype, k_qtype, v_qtype, q_qblock_size, k_qblock_size, v_qblock_size,
-        q_qtype_size, k_qtype_size, v_qtype_size, input_A, actual_A_Q, actual_A_K, actual_A_V,
-        weight_A_Q, weight_A_K, weight_A_V
+        q_qtype, k_qtype, v_qtype, 
+        q_qblock_size, k_qblock_size, v_qblock_size,
+        q_qtype_size, k_qtype_size, v_qtype_size, 
+        input_A, weight_A_Q, weight_A_K, weight_A_V,
+        actual_A_Q, actual_A_K, actual_A_V,
     )
 
     assert torch.allclose(expected_A_Q.cpu(), actual_A_Q.cpu(), atol=5e-3), "qkv: Q"
@@ -286,7 +289,7 @@ def test_flash_attn(backend):
     actual_A = torch.zeros((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
 
     kerns.flash_attn(
-        qtype, qblock_size, qtype_size, mask_A, actual_A, input_A_Q, input_A_K, input_A_V
+        qtype, qblock_size, qtype_size, input_A_Q, input_A_K, input_A_V, mask_A, actual_A,
     )
     
     # pytorch SDPA doesn't handle GQA on its own
@@ -318,7 +321,7 @@ def test_flash_attn(backend):
     actual_B = torch.zeros((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
 
     kerns.flash_attn(
-        qtype, qblock_size, qtype_size, mask_B, actual_B, input_B_Q, input_B_K, input_B_V
+        qtype, qblock_size, qtype_size, input_B_Q, input_B_K, input_B_V, mask_B, actual_B,
     )
 
     # pytorch SDPA doesn't handle GQA on its own
@@ -337,32 +340,43 @@ def test_flash_attn(backend):
 @pytest.mark.parametrize("backend", ["torch_ext"])
 def test_moe_scoring(backend):
     kerns = KernelBackend(backend)
-    B, L, n_experts_A, n_experts_B, hidden_dim = 8, 4096, 8, 128, 6144
+    B, L, n_experts_A, n_experts_B, n_act_exps_A, n_act_exps_B, hidden_dim = 8, 4096, 8, 128, 2, 8, 6144
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
     # performs matmul and fused (online) softmax
     # input act. shape [B // dp_size, L, hidden_dim]
     input_A = torch.randn((B,L,hidden_dim), dtype=torch.float16).cuda()
-    actual_A = torch.zeros((B,L,n_experts_A), dtype=torch.float16).cuda()
+
+    actual_scores_A = torch.zeros((B,L,n_experts_A), dtype=torch.float16).cuda()
+    actual_topk_scores_A = torch.zeros((B,L,n_act_exps_A), dtype=torch.float16).cuda()
+    actual_topk_indices_A = torch.zeros((B,L,n_act_exps_A), dtype=torch.uint8).cuda()
+
     weight_A = (1/hidden_dim**0.5) * torch.randn((n_experts_A, hidden_dim), dtype=torch.float16).cuda()
-    expected_A = F.softmax(input_A @ weight_A.T, dim=-1)
+    expected_scores_A = F.softmax(input_A @ weight_A.T, dim=-1)
+    expected_topk_scores_A, expected_topk_indices_A = torch.topk(expected_scores_A, k=n_act_exps_A, dim=-1)
 
-    kerns.moe_scoring(qtype, qblock_size, qtype_size, input_A, actual_A, weight_A)
+    kerns.moe_scoring(qtype, qblock_size, qtype_size, input_A, weight_A, actual_topk_indices_A, actual_topk_scores_A, actual_scores_A)
 
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-3), "moe_scoring"
+    assert torch.allclose(expected_scores_A.cpu(), actual_scores_A.cpu(), atol=1e-3), "moe_scoring, scores"
+    assert torch.allclose(expected_topk_scores_A.cpu(), actual_topk_scores_A.cpu(), atol=1e-3), "moe_scoring, topk scores"
+    assert torch.equal(expected_topk_indices_A.cpu().to(torch.uint8), actual_topk_indices_A.cpu()), "moe_scoring, topk indices"
 
     input_B = torch.randn((B,L,hidden_dim), dtype=torch.float16).cuda()
-    actual_B = torch.zeros((B,L,n_experts_B), dtype=torch.float16).cuda()
+
+    actual_scores_B = torch.zeros((B,L,n_experts_B), dtype=torch.float16).cuda()
+    actual_topk_scores_B = torch.zeros((B,L,n_act_exps_B), dtype=torch.float16).cuda()
+    actual_topk_indices_B = torch.zeros((B,L,n_act_exps_B), dtype=torch.uint8).cuda()
+
     weight_B = (1/hidden_dim**0.5) * torch.randn((n_experts_B, hidden_dim), dtype=torch.float16).cuda()
+    expected_scores_B = F.softmax(input_B @ weight_B.T, dim=-1)
+    expected_topk_scores_B, expected_topk_indices_B = torch.topk(expected_scores_B, k=n_act_exps_B, dim=-1)
 
-    expected_B = F.softmax(input_B @ weight_B.T, dim=-1)
+    kerns.moe_scoring(qtype, qblock_size, qtype_size, input_B, weight_B, actual_topk_indices_B, actual_topk_scores_B, actual_scores_B)
 
-    kerns.moe_scoring(qtype, qblock_size, qtype_size, input_B, actual_B, weight_B)
-
-    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=1e-3), "moe_scoring"
-
-    # output act. shape [B // dp_size, L, n_experts]
+    assert torch.allclose(expected_scores_B.cpu(), actual_scores_B.cpu(), atol=1e-3), "moe_scoring, scores"
+    assert torch.allclose(expected_topk_scores_B.cpu(), actual_topk_scores_B.cpu(), atol=1e-3), "moe_scoring, topk scores"
+    assert torch.equal(expected_topk_indices_B.cpu().to(torch.uint8), actual_topk_indices_B.cpu()), "moe_scoring, topk indices"
 
 # A: the usual ffn opn.
 @pytest.mark.parametrize("backend", ["torch_ext"])
@@ -399,8 +413,8 @@ def test_ffn(backend):
         up_qtype, gate_qtype, down_qtype, 
         up_qblock_size, gate_qblock_size, down_qblock_size,
         up_qtype_size, gate_qtype_size, down_qtype_size, 
-        input_A, actual_A, hb, hb2,
-        ws_A_up, ws_A_gate, ws_A_down
+        input_A, ws_A_up, ws_A_gate, ws_A_down,
+        hb, hb2, actual_A,
     )
 
     assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=2e-3), "ffn"

@@ -32,10 +32,10 @@ def _(
 
 def quant(
     qtype: GGMLQuantizationType, 
-    x: torch.Tensor, 
-    y: torch.Tensor, 
     qblock_size: int, 
-    qtype_size: int
+    qtype_size: int,
+    x: torch.Tensor, 
+    y: torch.Tensor,
 ):
     """
     Quantizes the rows of x into y
@@ -47,7 +47,7 @@ def quant(
 
 @torch.library.register_fake("minfer::quant")
 def _(
-    qtype, x, y, qblock_size, qtype_size
+    qtype, qblock_size, qtype_size, x, y,
 ):
     torch._check(x.dtype == torch.float32)
     torch._check(y.dtype == torch.uint8)
