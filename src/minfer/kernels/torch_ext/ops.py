@@ -143,7 +143,7 @@ def _(
     qtype_int: int, qblock_size: int, qtype_size: int, x: torch.Tensor, w: torch.Tensor, out: torch.Tensor
 ):
     torch._check(x.dtype == torch.float16)
-    torch._check(w.dtype == torch.uint8)
+    torch._check(w.dtype == torch.uint8 or w.dtype == torch.float16)
     torch._check(out.dtype == torch.float16)
     torch._check(x.device == w.device == out.device)
     torch._check(x.device.type == "cuda")

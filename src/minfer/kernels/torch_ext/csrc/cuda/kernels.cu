@@ -67,11 +67,15 @@ static __device__ float warp_reduce_max(float v) {
 static __device__ float blockreduce_sum(float* vs, float v, int tid) {
     int warp_id = tid/32;
     int lane_id = tid%32;
+    int n_warps = blockDim.x/32;
 
     v = warp_reduce_sum(v);
     if (lane_id == 0) vs[warp_id] = v;
     __syncthreads();
-    if (warp_id == 0) v = warp_reduce_sum(vs[lane_id]);
+    if (warp_id == 0) {
+        v = (lane_id < n_warps) ? vs[lane_id] : 0.0f;
+        v = warp_reduce_sum(v);
+    }
     if (tid == 0) vs[0] = v;
     __syncthreads();
     return vs[0];
@@ -80,11 +84,15 @@ static __device__ float blockreduce_sum(float* vs, float v, int tid) {
 static __device__ float blockreduce_max(float* vs, float v, int tid) {
     int warp_id = tid/32;
     int lane_id = tid%32;
+    int n_warps = blockDim.x/32;
 
     v = warp_reduce_max(v);
     if (lane_id == 0) vs[warp_id] = v;
     __syncthreads();
-    if (warp_id == 0) v = warp_reduce_max(vs[lane_id]);
+    if (warp_id == 0) {
+        v = (lane_id < n_warps) ? vs[lane_id] : -FLT_MAX;
+        v = warp_reduce_max(v);
+    }
     if (tid == 0) vs[0] = v;
     __syncthreads();
     return vs[0];
@@ -320,19 +328,19 @@ static __device__ void compute_tile_wmma_f16(
     const half* __restrict__ w,
     half* __restrict__ out
 ) {
-    int warpIdInBlock = threadIdx.x / 32;
-    int warpsPerBlock = blockDim.x / 32;
+    int warpIdInBlock = threadIdx.x/32;
+    // int warpsPerBlock = blockDim.x / 32;
 
     int localRow = warpIdInBlock*WMMA_M;
 
-    int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
-    int globalColN = blockIdx.y*WMMA_N;
+    // int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
+    // int globalColN = blockIdx.y*WMMA_N;
 
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> acc_frag;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> acc_frag;
     wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
     wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag;
 
-    wmma::fill_fragment(acc_frag, 0.0f);
+    wmma::fill_fragment(acc_frag, __float2half(0.0f));
 
     for (int k=0; k<K; k+=WMMA_K) {
         wmma::load_matrix_sync(a_frag, x+localRow*x_stride+k, x_stride);
@@ -351,19 +359,19 @@ static __device__ void compute_tile_wmma_f16_T(
     const half* __restrict__ w,
     half* __restrict__ out
 ) {
-    int warpIdInBlock = threadIdx.x / 32;
-    int warpsPerBlock = blockDim.x / 32;
+    int warpIdInBlock = threadIdx.x/32;
+    // int warpsPerBlock = blockDim.x / 32;
 
     int localRow = warpIdInBlock*WMMA_M;
 
-    int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
-    int globalColN = blockIdx.y*WMMA_N;
+    // int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
+    // int globalColN = blockIdx.y*WMMA_N;
 
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> acc_frag;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> acc_frag;
     wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
     wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> b_frag;
 
-    wmma::fill_fragment(acc_frag, 0.0f);
+    wmma::fill_fragment(acc_frag, __float2half(0.0f));
 
     for (int k=0; k<K; k+=WMMA_K) {
         wmma::load_matrix_sync(a_frag, x+localRow*x_stride+k, x_stride);
@@ -384,18 +392,18 @@ static __device__ void compute_tile_quant(
     const uint8_t* __restrict__ w,
     half* __restrict__ out
 ) {
-    int warpIdInBlock = threadIdx.x / 32;
-    int warpsPerBlock = blockDim.x / 32;
+    int warpIdInBlock = threadIdx.x/32;
+    // int warpsPerBlock = blockDim.x / 32;
 
     int localRow = warpIdInBlock*WMMA_M;
-    int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
-    int globalColN = blockIdx.y*WMMA_N;
+    // int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
+    // int globalColN = blockIdx.y*WMMA_N;
 
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> acc_frag;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> acc_frag;
     wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
     wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag;
 
-    wmma::fill_fragment(acc_frag, 0.0f);
+    wmma::fill_fragment(acc_frag, __float2half(0.0f));
 
     for (int k=0; k<K; k+=256) {
 
@@ -520,7 +528,8 @@ void matmul_cuda(
     TORCH_CHECK(w.is_contiguous());
 
     TORCH_CHECK(x.size(0) == out.size(0) && x.size(1) == out.size(1));
-    TORCH_CHECK(w.size(-1) == ((x.size(-1) / qblock_size) * qtype_size) || x.size(-1) == w.size(-1) || x.size(-1) == w.size(0));
+    TORCH_CHECK(w.size(-1) == ((x.size(-1) / qblock_size) * qtype_size) || 
+                x.size(-1) == w.size(-1) || x.size(-1) == w.size(0));
     TORCH_CHECK(w.size(0) == out.size(-1) || w.size(1) == out.size(-1));
 
     const half* x_ptr = reinterpret_cast<const half*>(x.data_ptr<at::Half>());
@@ -685,22 +694,25 @@ static __device__ void compute_qkv_tile_f16(
     half* __restrict__ v_out
 ) {
     int warpIdInBlock = threadIdx.x / 32;
-    int warpsPerBlock = blockDim.x / 32;
+    // int warpsPerBlock = blockDim.x / 32;
 
     int localRow = warpIdInBlock*WMMA_M;
 
-    int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
+    // int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
     int globalColN = blockIdx.y*WMMA_N;
 
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> q_acc_frag;
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> k_acc_frag;
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> v_acc_frag;
-    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
-    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> q_acc_frag;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> k_acc_frag;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> v_acc_frag;
 
-    wmma::fill_fragment(q_acc_frag, 0.0f);
-    wmma::fill_fragment(k_acc_frag, 0.0f);
-    wmma::fill_fragment(v_acc_frag, 0.0f);
+    wmma::fill_fragment(q_acc_frag, __float2half(0.0f));
+    if (globalColN < N_KV) {
+        wmma::fill_fragment(k_acc_frag, __float2half(0.0f));
+        wmma::fill_fragment(v_acc_frag, __float2half(0.0f));
+    }
+    
+    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
+    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag;    
 
     for (int k=0; k<K; k+=WMMA_K) {
 
@@ -758,22 +770,25 @@ static __device__ void compute_qkv_tile_quant(
     half* __restrict__ v_out
 ) {
     int warpIdInBlock = threadIdx.x / 32;
-    int warpsPerBlock = blockDim.x / 32;
+    // int warpsPerBlock = blockDim.x / 32;
 
     int localRow = warpIdInBlock*WMMA_M;
 
-    int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
+    // int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
     int globalColN = blockIdx.y*WMMA_N;
 
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> q_acc_frag;
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> k_acc_frag;
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> v_acc_frag;
-    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
-    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> q_acc_frag;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> k_acc_frag;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> v_acc_frag;
 
-    wmma::fill_fragment(q_acc_frag, 0.0f);
-    wmma::fill_fragment(k_acc_frag, 0.0f);
-    wmma::fill_fragment(v_acc_frag, 0.0f);
+    wmma::fill_fragment(q_acc_frag, __float2half(0.0f));
+    if (globalColN < N_KV) {
+        wmma::fill_fragment(k_acc_frag, __float2half(0.0f));
+        wmma::fill_fragment(v_acc_frag, __float2half(0.0f));
+    }
+    
+    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
+    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag;  
 
     // in this approach we try to hide dequant latency behind compute
     // hopefully this helps
@@ -853,7 +868,7 @@ static __device__ void compute_qkv_tile_quant(
     if (globalColN < N_KV) {
         wmma::store_matrix_sync(k_out + localRow*N_KV, k_acc_frag, N_KV, wmma::mem_row_major);
         wmma::store_matrix_sync(v_out + localRow*N_KV, v_acc_frag, N_KV, wmma::mem_row_major);
-    }   
+    }
 }
 
 template <int WARPS_PER_BLOCK>
@@ -1036,6 +1051,7 @@ void qkv_cuda(
         constexpr int BLOCK_SIZE = WARPS_PER_BLOCK*32;
         constexpr int ROWS_M = WARPS_PER_BLOCK*WMMA_M;
         dim3 grid((M+ROWS_M-1)/ROWS_M, (N+WMMA_N-1)/WMMA_N);
+        dim3 block(BLOCK_SIZE);
 
         qkv_f16_cuda_impl<WARPS_PER_BLOCK><<<grid, block, 0, stream>>>(
             M, K, N_Q, N_KV,
@@ -1059,10 +1075,11 @@ void qkv_cuda(
         constexpr int BLOCK_SIZE = WARPS_PER_BLOCK*32;
         constexpr int ROWS_M = WARPS_PER_BLOCK*WMMA_M;
         dim3 grid((M+ROWS_M-1)/ROWS_M, (N+WMMA_N-1)/WMMA_N);
+        dim3 block(BLOCK_SIZE);
 
         size_t smem_size = (WARPS_PER_BLOCK*WMMA_M*256 + 3*WMMA_N*256)*sizeof(half);
 
-        qkv_quant_cuda_impl<WARPS_PER_BLOCK><<<grid, block, smem, stream>>>(
+        qkv_quant_cuda_impl<WARPS_PER_BLOCK><<<grid, block, smem_size, stream>>>(
             q_qtype_int, k_qtype_int, v_qtype_int,
             q_qblock_size, k_qblock_size, v_qblock_size,
             q_qtype_size, k_qtype_size, v_qtype_size,
@@ -1332,18 +1349,18 @@ void flash_attn_cuda(
 
 template <int THR_PER_ROW>
 static __device__ float row_reduce_max(float* vs, float v, int row_in_tile, int thr_in_row) {
-
-    v = warp_reduce_max<THR_PER_ROW>(v);
-
     constexpr int WARPS_PER_ROW = (THR_PER_ROW+32-1)/32;
+    constexpr int WARP_WIDTH = WARPS_PER_ROW > 1 ? 32 : THR_PER_ROW;
+
+    v = warp_reduce_max<WARP_WIDTH>(v);
 
     int warp_in_row = thr_in_row / 32;
     if (thr_in_row % 32 == 0) vs[row_in_tile*WARPS_PER_ROW+warp_in_row]=v;
     __syncthreads();
     
-    if (THR_PER_ROW/32 > 0 && warp_in_row == 0 && thr_in_row < WARPS_PER_ROW) {
+    if (WARPS_PER_ROW > 1 && warp_in_row == 0 && thr_in_row < WARPS_PER_ROW) {
         v = vs[row_in_tile*WARPS_PER_ROW + thr_in_row];
-        v = warp_reduce_max(v);
+        v = warp_reduce_max<WARPS_PER_ROW>(v);
     }
 
     if (thr_in_row == 0) vs[row_in_tile*WARPS_PER_ROW] = v;
@@ -1353,18 +1370,18 @@ static __device__ float row_reduce_max(float* vs, float v, int row_in_tile, int 
 
 template <int THR_PER_ROW>
 static __device__ float row_reduce_sum(float* vs, float v, int row_in_tile, int thr_in_row) {
-
-    v = warp_reduce_sum<THR_PER_ROW>(v);
-
     constexpr int WARPS_PER_ROW = (THR_PER_ROW+32-1)/32;
+    constexpr int WARP_WIDTH = WARPS_PER_ROW > 1 ? 32 : THR_PER_ROW;
+
+    v = warp_reduce_sum<WARP_WIDTH>(v);
 
     int warp_in_row = thr_in_row / 32;
     if (thr_in_row % 32 == 0) vs[row_in_tile*WARPS_PER_ROW+warp_in_row]=v;
     __syncthreads();
     
-    if (THR_PER_ROW/32 > 0 && warp_in_row == 0 && thr_in_row < WARPS_PER_ROW) {
+    if (WARPS_PER_ROW > 1 && warp_in_row == 0 && thr_in_row < WARPS_PER_ROW) {
         v = vs[row_in_tile*WARPS_PER_ROW + thr_in_row];
-        v = warp_reduce_sum(v);
+        v = warp_reduce_sum<WARPS_PER_ROW>(v);
     }
 
     if (thr_in_row == 0) vs[row_in_tile*WARPS_PER_ROW] = v;
@@ -1765,7 +1782,7 @@ void ffn_cuda(
             half* out_exp = out_ptr + e*M*N_DOWN;
             const uint8_t* ws_down_exp = ws_down_ptr + e*N_DOWN*(K_DOWN/down_qblock_size)*down_qtype_size;
             
-            matmul_wmma_quant_cuda_impl<<<grid_down_exp, block, 0, stream>>>(
+            matmul_quant_cuda_impl<<<grid_down_exp, block, 0, stream>>>(
                 down_qtype_int, down_qblock_size, down_qtype_size,
                 M, K_DOWN, N_DOWN,
                 hb2_exp, ws_down_exp, out_exp
