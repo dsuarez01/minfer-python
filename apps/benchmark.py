@@ -37,7 +37,7 @@ def rmsnorm(backend: str = "torch_ext"):
         out = torch.zeros_like(x).cuda()
         
         def my_rmsnorm():
-            kerns.rmsnorm(eps, x, out, weight)
+            kerns.rmsnorm(eps, x, weight, out)
             torch.cuda.synchronize()
         
         def ref_rmsnorm():
@@ -126,7 +126,7 @@ def rope(backend: str = "torch_ext"):
     compare = Compare(results)
     compare.print()
 
-def matmul(backend: str = "torch_ext"):
+def matmul_wmma(backend: str = "torch_ext"):
     """matmul against PyTorch @ op"""
     
     kerns = KernelBackend(backend)
@@ -136,21 +136,20 @@ def matmul(backend: str = "torch_ext"):
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
     
     test_cases = [
-        ("large_out", 16384),
-        ("small_out", 8),
+        ("matmul_6144_to_16384", 16384),
     ]
     
     results = []
     
     for name, out_dim in test_cases:
-        print(f"\nRunning {name}: out_dim={out_dim}...")
+        print(f"\nRunning {name}...")
         
         x = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()
         out = torch.zeros((B, L, out_dim), dtype=torch.float16).cuda()
         weight = (1/in_dim**0.5) * torch.randn((out_dim, in_dim), dtype=torch.float16).cuda()
         
         def my_matmul():
-            kerns.matmul(qtype, qblock_size, qtype_size, x, out, weight)
+            kerns.matmul(qtype, qblock_size, qtype_size, x, weight, out)
             torch.cuda.synchronize()
         
         def ref_matmul():
@@ -168,7 +167,7 @@ def matmul(backend: str = "torch_ext"):
             )
             results.append(timer.blocked_autorange(min_run_time=1))
         
-        del x, out, weight
+        del x, weight, out
         gc.collect()
         torch.cuda.empty_cache()
     
@@ -211,7 +210,7 @@ def flash_attn(backend: str = "torch_ext"):
         V2 = V1.repeat_interleave(n_rep, dim=1)
         
         def my_flash_attn():
-            kerns.flash_attn(qtype, qblock_size, qtype_size, mask, out, Q, K1, V1)
+            kerns.flash_attn(qtype, qblock_size, qtype_size, Q, K1, V1, mask, out)
             torch.cuda.synchronize()
         
         def ref_flash_attn():
@@ -240,5 +239,5 @@ def flash_attn(backend: str = "torch_ext"):
 if __name__ == "__main__":
     # rmsnorm()
     # rope()
-    matmul()
+    matmul_wmma()
     # flash_attn()

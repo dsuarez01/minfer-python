@@ -436,9 +436,6 @@ def test_ffn(backend):
     up_out = torch.einsum("blh,emh->eblm", input_A, ws_A_up)
     hidden = F.silu(gate_out) * up_out
     
-    # del gate_out, up_out # NOTE: to deal with strange OOM error
-    # torch.cuda.empty_cache()
-    
     expected_A = torch.einsum('eblm,ehm->eblh', hidden, ws_A_down)
 
     kerns.ffn(

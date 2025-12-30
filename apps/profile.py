@@ -22,7 +22,7 @@ def rmsnorm_vec(backend: str = "torch_ext"):
     out = torch.zeros_like(x).cuda()
     weight = (1/hidden_dim**0.5) * torch.randn(hidden_dim, dtype=torch.float16).cuda()
     
-    kerns.rmsnorm(eps, x, out, weight)
+    kerns.rmsnorm(eps, x, weight, out)
     torch.cuda.synchronize()
 
 def rope(backend: str = "torch_ext"):
@@ -37,20 +37,7 @@ def rope(backend: str = "torch_ext"):
     kerns.neox_rope(rotary_dim, 0, base_freq, x)
     torch.cuda.synchronize()
 
-def matmul_small(backend: str = "torch_ext"):
-    kerns = KernelBackend(backend)
-    B, L, in_dim, out_dim = 8, 4096, 6144, 8
-    qtype = GGMLQuantizationType.F16
-    qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
-    
-    x = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()
-    out = torch.zeros((B, L, out_dim), dtype=torch.float16).cuda()
-    weight = (1/in_dim**0.5) * torch.randn((out_dim, in_dim), dtype=torch.float16).cuda()
-    
-    kerns.matmul(qtype, qblock_size, qtype_size, x, out, weight)
-    torch.cuda.synchronize()
-
-def matmul_large(backend: str = "torch_ext"):
+def matmul_wmma(backend: str = "torch_ext"):
     kerns = KernelBackend(backend)
     B, L, in_dim, out_dim = 8, 4096, 6144, 16384
     qtype = GGMLQuantizationType.F16
@@ -60,7 +47,7 @@ def matmul_large(backend: str = "torch_ext"):
     out = torch.zeros((B, L, out_dim), dtype=torch.float16).cuda()
     weight = (1/in_dim**0.5) * torch.randn((out_dim, in_dim), dtype=torch.float16).cuda()
     
-    kerns.matmul(qtype, qblock_size, qtype_size, x, out, weight)
+    kerns.matmul(qtype, qblock_size, qtype_size, x, weight, out)
     torch.cuda.synchronize()
 
 def flash_attn(backend:str = "torch_ext"):
@@ -75,13 +62,12 @@ def flash_attn(backend:str = "torch_ext"):
     mask = (torch.arange(L).unsqueeze(0) <= torch.arange(L).unsqueeze(1)).unsqueeze(0).unsqueeze(0).expand(B, 1, L, L).to(torch.bool).cuda()
     out = torch.zeros((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
 
-    kerns.flash_attn(qtype, qblock_size, qtype_size, mask, out, Q, K, V)
+    kerns.flash_attn(qtype, qblock_size, qtype_size, Q, K, V, mask, out)
     torch.cuda.synchronize()
 
 if __name__ == "__main__":
     # rmsnorm_head()
     # rmsnorm_vec()
     # rope()
-    matmul_small()
-    # matmul_large()
+    matmul_wmma()
     # flash_attn()
