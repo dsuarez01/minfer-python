@@ -1,3 +1,34 @@
+/* Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *  * Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *  * Neither the name of NVIDIA CORPORATION nor the names of its
+ *    contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+ * OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/* Modified by dsuarez01
+ * Reworking performant WMMA GEMM kernels to fit this use case.
+ */
+
 #include <Python.h>
 #include <torch/library.h>
 #include <ATen/core/Tensor.h>
@@ -10,6 +41,7 @@
 #include <cassert>
 #include <algorithm>
 #include <type_traits>
+#include <iostream>
 #include <float.h>
 
 #include "quants_impl.cuh"
@@ -29,6 +61,15 @@ extern "C" {
         return PyModule_Create(&module_def);
     }
 }
+
+static void __checkKernelErrors(cudaError_t result, const char* expr, const char* file, int line) {
+    if (result != cudaSuccess) {
+        std::cerr << file << ":" << line << ": '" << expr << "' failed: " << cudaGetErrorString(result) << "\n";
+        std::abort();
+    }
+}
+
+#define checkKernelErrors(expr) __checkKernelErrors((expr), #expr, __FILE__, __LINE__)
 
 // TODO: complete me!
 namespace minfer {
@@ -317,69 +358,271 @@ void neox_rope_cuda(
     neox_rope_cuda_impl<<<grid, 32, 0, stream>>>(n_heads, rotary_dim, head_dim, start_pos, freq_base, x_ptr);
 }
 
-// helper to compute WMMA_M x WMMA_N portion of result (X@W.T)
-const int WMMA_M = 16;
-const int WMMA_N = 16;
-const int WMMA_K = 16;
+// constants for WMMA GEMM
+constexpr int TILE_SIZE = 128;
+constexpr int WMMA_M = 16;
+constexpr int WMMA_N = 16;
+constexpr int WMMA_K = 16;
+
+constexpr int WARP_SIZE = 32;
+constexpr int WARPS_PER_BLOCK = 8;
+constexpr int THREADS_PER_BLOCK = WARP_SIZE * WARPS_PER_BLOCK; // 256
+
+constexpr int CHUNK_K = 8; // each warp processes 8 k-tiles at once
+constexpr int CHUNK_LINE_BYTES = CHUNK_K * WMMA_K * sizeof(half); // line (row) is 256 bytes
+constexpr int WARP_COPY_BYTES = WARP_SIZE * sizeof(int4); // warp responsible for copying 512 bytes 
+constexpr int CHUNK_COPY_LINES_PER_WARP = WARP_COPY_BYTES / CHUNK_LINE_BYTES; // 2 rows per warp
+constexpr int CHUNK_COPY_LINE_LANES = WARP_SIZE / CHUNK_COPY_LINES_PER_WARP; // 16 lanes per row
+
+constexpr int BLOCK_ROW_WARPS = 4;
+constexpr int BLOCK_COL_WARPS = 2;
+
+constexpr int WARP_ROW_TILES = 2;
+constexpr int WARP_COL_TILES = 4;
+
+constexpr int BLOCK_ROW_TILES = BLOCK_ROW_WARPS * WARP_ROW_TILES; // 8
+constexpr int BLOCK_COL_TILES = BLOCK_COL_WARPS * WARP_COL_TILES; // 8
+
+constexpr int SHMEM_STRIDE = WMMA_N * BLOCK_ROW_TILES; // 128
+constexpr int SHMEM_OFFSET = WMMA_N * WARP_ROW_TILES; // 64
+
+// load matrix sync requires 256-bit (32-byte) alignment
+// hence the minimum possible padding is 16 half elements, i.e. 32 bytes (256+32=288%32=0)
+// relevant when W is interpreted as column major (X@W.T)
+constexpr int SKEW_HALF = 16;
+
+constexpr size_t SHMEM_SZ = std::max(
+    sizeof(half)*(BLOCK_COL_TILES*WMMA_M)*(CHUNK_K*WMMA_K+SKEW_HALF)*2,  // X+W tiles
+    WMMA_M*(BLOCK_ROW_WARPS*WARP_ROW_TILES)*WMMA_N*(BLOCK_COL_WARPS*WARP_COL_TILES)*sizeof(float)  // out tiles
+);
+
+constexpr size_t SHMEM_SZ_T = std::max(
+    sizeof(half)*(BLOCK_COL_TILES*WMMA_M)*(CHUNK_K*WMMA_K)*2,  // X+W tiles (w/ no SKEW)
+    WMMA_M*(BLOCK_ROW_WARPS*WARP_ROW_TILES)*WMMA_N*(BLOCK_COL_WARPS*WARP_COL_TILES)*sizeof(float)  // out tiles
+);
+
+// helper to compute TILE_SIZE x TILE_SIZE portion of result (X@W.T)
 static __device__ void compute_tile_wmma_f16(
     int64_t M, int64_t K, int64_t N,
-    int64_t x_stride, int64_t w_stride, int64_t out_stride,
     const half* __restrict__ x,
     const half* __restrict__ w,
     half* __restrict__ out
 ) {
-    int warpIdInBlock = threadIdx.x/32;
-    // int warpsPerBlock = blockDim.x / 32;
+    extern __shared__ half shmem[][CHUNK_K*WMMA_K+SKEW_HALF];
 
-    int localRow = warpIdInBlock*WMMA_M;
+    const unsigned int warpId = threadIdx.x/32;
+    const unsigned int laneId = threadIdx.x%32;
 
-    // int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
-    // int globalColN = blockIdx.y*WMMA_N;
+    const size_t shmem_idx_b_off = WMMA_M*BLOCK_ROW_TILES;
+    float* shmem_warp_tile_ptr = (float*)&shmem[0][0] + (warpId/BLOCK_COL_WARPS)*WARP_ROW_TILES*WMMA_M*SHMEM_STRIDE + (warpId%BLOCK_COL_WARPS)*SHMEM_OFFSET;
+    float* shmem_warp_stream_ptr = (float*)&shmem[0][0] + warpId*WMMA_M*SHMEM_STRIDE;
 
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> acc_frag;
-    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
-    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag;
+    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> x_frag[WARP_ROW_TILES];
+    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> w_frag[WARP_COL_TILES];
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> acc[WARP_ROW_TILES][WARP_COL_TILES];
 
-    wmma::fill_fragment(acc_frag, __float2half(0.0f));
-
-    for (int k=0; k<K; k+=WMMA_K) {
-        wmma::load_matrix_sync(a_frag, x+localRow*x_stride+k, x_stride);
-        wmma::load_matrix_sync(b_frag, w+k, w_stride);
-        wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
+    #pragma unroll
+    for (int i=0; i<WARP_ROW_TILES; ++i) {
+        for (int j=0; j<WARP_COL_TILES; ++j) {
+            wmma::fill_fragment(acc[i][j], 0.0f);
+        }
     }
 
-    wmma::store_matrix_sync(out + localRow*out_stride, acc_frag, out_stride, wmma::mem_row_major);
+    const half* warp_ptr = (warpId<(WARPS_PER_BLOCK/2)) 
+                            ? (x+WMMA_M*WMMA_K*(warpId%WARP_COL_TILES)*WARP_ROW_TILES) 
+                            : (w+WMMA_N*WMMA_K*(warpId%WARP_COL_TILES)*WARP_ROW_TILES);
+
+    int K_TILES = (K+WMMA_K-1)/WMMA_K;
+
+    // iterating over global K dimension, CHUNK_K 16x16 tiles at a time
+    for (int tile_k=0; tile_k<K_TILES; tile_k+=CHUNK_K) {
+        
+        // load X and W into shared memory
+        // each warp loads 32 rows of X (warps 0-3) or W (warps 4-7)
+        size_t shmem_idx = (warpId<(WARPS_PER_BLOCK/2)) 
+                            ? (WMMA_M * (warpId%WARP_COL_TILES) * WARP_ROW_TILES)
+                            : (WMMA_N * (warpId%WARP_COL_TILES) * WARP_ROW_TILES + shmem_idx_b_off);
+
+        int4* lane_ptr = (int4*)(warp_ptr + (laneId/CHUNK_COPY_LINE_LANES)*K + tile_k*WMMA_K + (laneId%CHUNK_COPY_LINE_LANES));
+
+        shmem_idx += laneId / CHUNK_COPY_LINE_LANES;
+
+        #pragma unroll
+        for (int i=0; i<((WARP_SIZE/2)/CHUNK_COPY_LINES_PER_WARP)*WARP_ROW_TILES; ++i) {
+            *((int4*)&shmem[shmem_idx][0] + (laneId%CHUNK_COPY_LINE_LANES)) = *lane_ptr;
+
+            lane_ptr = (int4*)((half*)lane_ptr + CHUNK_COPY_LINES_PER_WARP*K);
+            shmem_idx += CHUNK_COPY_LINES_PER_WARP;
+        }
+
+        __syncthreads();
+
+        // process CHUNK_K 16x16 tiles, accumulate to acc
+        #pragma unroll
+        for (int k_step=0; k_step<CHUNK_K; ++k_step) {
+
+            // iterate over grid w/in warp, compute tiles for acc
+            #pragma unroll
+            for (int i=0; i<WARP_ROW_TILES; ++i) {
+                size_t  shmem_idx_x = (warpId/WARP_ROW_TILES)*WARP_ROW_TILES*WMMA_M + (i*WMMA_M);
+                const half* tile_ptr = &shmem[shmem_idx_x][k_step*WMMA_K];
+
+                wmma::load_matrix_sync(x_frag[i], tile_ptr, WMMA_K*CHUNK_K+SKEW_HALF);
+
+                #pragma unroll
+                for (int j=0; j<WARP_COL_TILES; ++j) {
+                    if (i==0) {
+                        size_t shmem_idx_w = shmem_idx_b_off + (warpId%2)*(WARP_COL_TILES*WMMA_N) + j*WMMA_N;
+                        const half* tile_ptr = &shmem[shmem_idx_w][k_step*WMMA_K];
+
+                        wmma::load_matrix_sync(w_frag[j], tile_ptr, WMMA_K*CHUNK_K+SKEW_HALF);
+                    }
+
+                    wmma::mma_sync(acc[i][j], x_frag[i], w_frag[j], acc[i][j]);
+                }
+
+            }
+
+            __syncthreads();
+        }
+    }
+
+
+    // acc fragments stored to shmem
+    #pragma unroll
+    for (int i=0; i<WARP_ROW_TILES; ++i) {
+
+        #pragma unroll
+        for (int j=0; j<WARP_COL_TILES; ++j) {
+            float* tile_ptr = shmem_warp_tile_ptr + i*WMMA_K*SHMEM_STRIDE + j*WMMA_N; 
+            wmma::store_matrix_sync(tile_ptr, acc[i][j], SHMEM_STRIDE, wmma::row_major);
+        }
+    }
+
+    __syncthreads();
+
+    // stream tiles of out (in shmem) to gmem
+    const size_t gmem_idx = (blockIdx.x*TILE_SIZE+warpId*WMMA_M)*N + blockIdx.y*TILE_SIZE;
+    half* dst_gmem_warp_stream_ptr = &out[gmem_idx];
+
+    #pragma unroll
+    for (int i=0; i<WMMA_K; ++i) {
+        *((int2*)(dst_gmem_warp_stream_ptr+i*N)+laneId) = *((int2*)(shmem_warp_stream_ptr+i*SHMEM_STRIDE) + laneId);
+    }
+
 }
 
-// helper to compute WMMA_M x WMMA_N portion of result (X@W)
+// helper to compute TILE_SIZE x TILE_SIZE portion of result (X@W)
+// no need for SKEW_HALF here since W is not interpreted as col-major
 static __device__ void compute_tile_wmma_f16_T(
     int64_t M, int64_t K, int64_t N,
-    int64_t x_stride, int64_t w_stride, int64_t out_stride,
     const half* __restrict__ x,
     const half* __restrict__ w,
     half* __restrict__ out
 ) {
-    int warpIdInBlock = threadIdx.x/32;
-    // int warpsPerBlock = blockDim.x / 32;
+    extern __shared__ half shmem[][CHUNK_K*WMMA_K];
 
-    int localRow = warpIdInBlock*WMMA_M;
+    const unsigned int warpId = threadIdx.x/32;
+    const unsigned int laneId = threadIdx.x%32;
 
-    // int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
-    // int globalColN = blockIdx.y*WMMA_N;
+    const size_t shmem_idx_b_off = WMMA_M*BLOCK_ROW_TILES;
+    float* shmem_warp_tile_ptr = (float*)&shmem[0][0] + (warpId/BLOCK_COL_WARPS)*WARP_ROW_TILES*WMMA_M*SHMEM_STRIDE + (warpId%BLOCK_COL_WARPS)*SHMEM_OFFSET;
+    float* shmem_warp_stream_ptr = (float*)&shmem[0][0] + warpId*WMMA_M*SHMEM_STRIDE;
 
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> acc_frag;
-    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
-    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> b_frag;
+    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> x_frag[WARP_ROW_TILES];
+    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> w_frag[WARP_COL_TILES];
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> acc[WARP_ROW_TILES][WARP_COL_TILES];
 
-    wmma::fill_fragment(acc_frag, __float2half(0.0f));
-
-    for (int k=0; k<K; k+=WMMA_K) {
-        wmma::load_matrix_sync(a_frag, x+localRow*x_stride+k, x_stride);
-        wmma::load_matrix_sync(b_frag, w+k*w_stride, w_stride);
-        wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
+    #pragma unroll
+    for (int i=0; i<WARP_ROW_TILES; ++i) {
+        for (int j=0; j<WARP_COL_TILES; ++j) {
+            wmma::fill_fragment(acc[i][j], 0.0f);
+        }
     }
 
-    wmma::store_matrix_sync(out + localRow*out_stride, acc_frag, out_stride, wmma::mem_row_major);
+    const half* warp_ptr = (warpId<(WARPS_PER_BLOCK/2)) 
+                            ? (x+WMMA_M*WMMA_K*(warpId%WARP_COL_TILES)*WARP_ROW_TILES) 
+                            : (w+WMMA_N*WMMA_K*(warpId%WARP_COL_TILES)*WARP_ROW_TILES);
+
+    int K_TILES = (K+WMMA_K-1)/WMMA_K;
+
+    // iterating over global K dimension, CHUNK_K 16x16 tiles at a time
+
+    for (int tile_k=0; tile_k<K_TILES; tile_k+=CHUNK_K) {
+        
+        // loading X and W into shared memory
+        // each warp loads 32 rows of X (warps 0-3) or W (warps 4-7)
+        size_t shmem_idx = (warpId<(WARPS_PER_BLOCK/2)) 
+                            ? (WMMA_M * (warpId%WARP_COL_TILES) * WARP_ROW_TILES)
+                            : (WMMA_N * (warpId%WARP_COL_TILES) * WARP_ROW_TILES + shmem_idx_b_off);
+
+        int4* lane_ptr = (int4*)(warp_ptr + (laneId/CHUNK_COPY_LINE_LANES)*K + tile_k*WMMA_K + (laneId%CHUNK_COPY_LINE_LANES));
+
+        shmem_idx += laneId / CHUNK_COPY_LINE_LANES;
+
+        // 16 iterations, 2 rows over each iteration covers 32 rows
+        #pragma unroll
+        for (int i=0; i<((WARP_SIZE/2)/CHUNK_COPY_LINES_PER_WARP)*WARP_ROW_TILES; ++i) {
+            *((int4*)&shmem[shmem_idx][0] + (laneId%CHUNK_COPY_LINE_LANES)) = *lane_ptr;
+
+            lane_ptr = (int4*)((half*)lane_ptr + CHUNK_COPY_LINES_PER_WARP*K);
+            shmem_idx += CHUNK_COPY_LINES_PER_WARP;
+        }
+
+        __syncthreads();
+
+        // process CHUNK_K 16x16 tiles, accumulate to acc
+        #pragma unroll
+        for (int k_step=0; k_step<CHUNK_K; ++k_step) {
+
+            // iterate over grid w/in warp, compute tiles for acc
+            #pragma unroll
+            for (int i=0; i<WARP_ROW_TILES; ++i) {
+                size_t  shmem_idx_x = (warpId/WARP_ROW_TILES)*WARP_ROW_TILES*WMMA_M + (i*WMMA_M);
+                const half* tile_ptr = &shmem[shmem_idx_x][k_step*WMMA_K];
+
+                wmma::load_matrix_sync(x_frag[i], tile_ptr, WMMA_K*CHUNK_K);
+
+                #pragma unroll
+                for (int j=0; j<WARP_COL_TILES; ++j) {
+                    if (i==0) {
+                        size_t shmem_idx_w = shmem_idx_b_off + (warpId%2)*(WARP_COL_TILES*WMMA_N) + j*WMMA_N;
+                        const half* tile_ptr = &shmem[shmem_idx_w][k_step*WMMA_K];
+
+                        wmma::load_matrix_sync(w_frag[j], tile_ptr, WMMA_K*CHUNK_K);
+                    }
+
+                    wmma::mma_sync(acc[i][j], x_frag[i], w_frag[j], acc[i][j]);
+                }
+
+            }
+
+            __syncthreads();
+        }
+    }
+
+
+    // acc fragments stored to shmem
+    #pragma unroll
+    for (int i=0; i<WARP_ROW_TILES; ++i) {
+
+        #pragma unroll
+        for (int j=0; j<WARP_COL_TILES; ++j) {
+            float* tile_ptr = shmem_warp_tile_ptr + i*WMMA_K*SHMEM_STRIDE + j*WMMA_N; 
+            wmma::store_matrix_sync(tile_ptr, acc[i][j], SHMEM_STRIDE, wmma::row_major);
+        }
+    }
+
+    __syncthreads();
+
+    // stream tiles of out (in shmem) to gmem
+    const size_t gmem_idx = (blockIdx.x*TILE_SIZE+warpId*WMMA_M)*N + blockIdx.y*TILE_SIZE;
+    half* dst_gmem_warp_stream_ptr = &out[gmem_idx];
+
+    #pragma unroll
+    for (int i=0; i<WMMA_K; ++i) {
+        *((int2*)(dst_gmem_warp_stream_ptr+i*N)+laneId) = *((int2*)(shmem_warp_stream_ptr+i*SHMEM_STRIDE) + laneId);
+    }
 }
 
 // helper to compute WMMA_M x WMMA_N portion of result
@@ -436,20 +679,23 @@ __global__ void matmul_wmma_f16_cuda_impl(
     const half* __restrict__ w,
     half* __restrict__ out
 ) {
+    int M_TILES = (M+TILE_SIZE-1)/TILE_SIZE;
+    int N_TILES = (N+TILE_SIZE-1)/TILE_SIZE;
 
-    int warpsPerBlock = blockDim.x / 32;
-    int rowM = blockIdx.x*warpsPerBlock*WMMA_M;
-    int rowN = blockIdx.y*WMMA_N;
+    for (unsigned int block_pos = blockIdx.x; block_pos < M_TILES * N_TILES; block_pos += gridDim.x) {
 
-    const half* x_row = x + rowM*K;
-    const half* w_row = w + rowN*K;
-    half* out_tile = out + rowM*N + rowN;
+        unsigned int tile_i = block_pos/N_TILES;
+        unsigned int tile_j = block_pos%N_TILES;
 
-    compute_tile_wmma_f16(
-        M, K, N,
-        K, K, N,
-        x_row, w_row, out_tile
-    );
+        const half* x_row = x + tile_i*TILE_SIZE*K;
+        const half* w_row = w + tile_j*TILE_SIZE*K;
+        half* out_tile = out + tile_i*TILE_SIZE*N + tile_j*TILE_SIZE;
+        
+        compute_tile_wmma_f16(
+            M, K, N,
+            x_row, w_row, out_tile
+        );
+    }
 }
 
 __global__ void matmul_wmma_f16_T_cuda_impl(
@@ -459,19 +705,23 @@ __global__ void matmul_wmma_f16_T_cuda_impl(
     half* __restrict__ out
 ) {
 
-    int warpsPerBlock = blockDim.x / 32;
-    int rowM = blockIdx.x*warpsPerBlock*WMMA_M;
-    int rowN = blockIdx.y*WMMA_N;
+    int M_TILES = (M+TILE_SIZE-1)/TILE_SIZE;
+    int N_TILES = (N+TILE_SIZE-1)/TILE_SIZE;
 
-    const half* x_row = x + rowM*K;
-    const half* w_col = w + rowN;
-    half* out_tile = out + rowM*N + rowN;
+    for (unsigned int block_pos = blockIdx.x; block_pos < M_TILES * N_TILES; block_pos += gridDim.x) {
 
-    compute_tile_wmma_f16_T(
-        M, K, N,
-        K, N, N,
-        x_row, w_col, out_tile
-    );
+        unsigned int tile_i = block_pos/N_TILES;
+        unsigned int tile_j = block_pos%N_TILES;
+
+        const half* x_row = x + tile_i*TILE_SIZE*K;
+        const half* w_row = w + tile_j*TILE_SIZE*K;
+        half* out_tile = out + tile_i*TILE_SIZE*N + tile_j*TILE_SIZE;
+        
+        compute_tile_wmma_f16_T(
+            M, K, N,
+            x_row, w_row, out_tile
+        );
+    }
 }
 
 __global__ void matmul_quant_cuda_impl(
@@ -515,6 +765,8 @@ void matmul_cuda(
     TORCH_INTERNAL_ASSERT(out.device().type() == at::DeviceType::CUDA);
     TORCH_INTERNAL_ASSERT(w.device().type() == at::DeviceType::CUDA);
 
+    TORCH_CHECK(x.device() == w.device() && x.device() == out.device());
+
     TORCH_CHECK(x.dtype() == at::kHalf);
     TORCH_CHECK(out.dtype() == at::kHalf);
     TORCH_CHECK(w.dtype() == at::kByte || w.dtype() == at::kHalf);
@@ -537,32 +789,43 @@ void matmul_cuda(
 
     int64_t M = x.numel() / x.size(-1);
     int64_t K = x.size(-1);
+    
+    int dev = x.device().index();
+    cudaDeviceProp deviceProp;
+    checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
 
+    if (deviceProp.major < 7) {
+        TORCH_CHECK(false, "SM 7.0 or higher required to use tensor cores");
+    } else if (deviceProp.sharedMemPerMultiprocessor < SHMEM_SZ) {
+        TORCH_CHECK(false, "Not enough shared memory for performant kernel");
+    }
+
+    dim3 grid(deviceProp.multiProcessorCount);
+    dim3 block(THREADS_PER_BLOCK);
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
     if (qtype == GGMLQuantizationType::F16) {
         const half* w_ptr = reinterpret_cast<const half*>(w.data_ptr<at::Half>());
-        constexpr int WARPS_PER_BLOCK = 4;
-        constexpr int BLOCK_SIZE = WARPS_PER_BLOCK*32;
-        constexpr int ROWS_M = WARPS_PER_BLOCK*WMMA_M;
-        dim3 block(BLOCK_SIZE);
-
         if (x.size(-1) == w.size(-1)) {
             int64_t N = w.size(0);
-            dim3 grid((M+ROWS_M-1)/ROWS_M, (N+WMMA_N-1)/WMMA_N);
-            matmul_wmma_f16_cuda_impl<<<grid, block, 0, stream>>>(
+            checkCudaErrors(
+                cudaFuncSetAttribute(matmul_wmma_f16_cuda_impl, cudaFuncAttributeMaxDynamicSharedMemorySize, SHMEM_SZ)
+            );
+            matmul_wmma_f16_cuda_impl<<<grid, THREADS_PER_BLOCK, SHMEM_SZ, stream>>>(
                 M, K, N, 
                 x_ptr, w_ptr, out_ptr
             );
         } else if (x.size(-1) == w.size(0)) {
             int64_t N = w.size(1);
-            dim3 grid((M+ROWS_M-1)/ROWS_M, (N+WMMA_N-1)/WMMA_N);
-            matmul_wmma_f16_T_cuda_impl<<<grid, block, 0, stream>>>(
+            checkCudaErrors(
+                cudaFuncSetAttribute(matmul_wmma_f16_cuda_impl, cudaFuncAttributeMaxDynamicSharedMemorySize, SHMEM_SZ)
+            );
+            matmul_wmma_f16_T_cuda_impl<<<grid, THREADS_PER_BLOCK, SHMEM_SZ, stream>>>(
                 M, K, N,
                 x_ptr, w_ptr, out_ptr
             );
         }
-    } else {
+    } else { // ignore this case for now, still need to fix
         const uint8_t* w_ptr = w.data_ptr<uint8_t>();
         constexpr int WARPS_PER_BLOCK = 4;
         constexpr int BLOCK_SIZE = WARPS_PER_BLOCK*32;
@@ -577,6 +840,8 @@ void matmul_cuda(
             x_ptr, w_ptr, out_ptr
         );
     }
+
+    checkKernelErrors(cudaGetLastError());
 }
 
 __global__ void embed_f16_cuda_impl(
@@ -653,6 +918,9 @@ void embed_cuda(
     const int64_t* token_ids_ptr = token_ids.data_ptr<int64_t>();
     half* x_ptr = reinterpret_cast<half*>(x.data_ptr<at::Half>());
 
+    cudaDeviceProp deviceProp;
+    checkCudaErrors(cudaGetDeviceProperties(&device_pop, dev));
+
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
     int64_t B = x.size(0);
@@ -685,6 +953,9 @@ template <int WARPS_PER_BLOCK>
 static __device__ void compute_qkv_tile_f16(
     int64_t M, int64_t K, int64_t N_Q, int64_t N_KV,
     half (&x_shared) [WARPS_PER_BLOCK*WMMA_M][WMMA_K],
+    half (&wq_shared) [WMMA_N][WMMA_K],
+    half (&wk_shared) [WMMA_N][WMMA_K],
+    half (&wv_shared) [WMMA_N][WMMA_K],
     const half* __restrict__ x,
     const half* __restrict__ wq,
     const half* __restrict__ wk,
@@ -717,24 +988,48 @@ static __device__ void compute_qkv_tile_f16(
     for (int k=0; k<K; k+=WMMA_K) {
 
         for (int l=threadIdx.x; l<WARPS_PER_BLOCK*WMMA_M*WMMA_K; l+=blockDim.x) {
-            int r = l / WMMA_K;
-            int c = l % WMMA_K;            
+            int r = l/WMMA_K;
+            int c = l%WMMA_K;            
             x_shared[r][c] = x[r*K+k+c];
+        }
+
+        for (int l=threadIdx.x; l<WMMA_N*WMMA_K; l+=blockDim.x) {
+            int r = l/WMMA_K;
+            int c = l%WMMA_K;
+            wq_shared[r][c] = wq[r*K+k+c];
         }
 
         __syncthreads();
 
         wmma::load_matrix_sync(a_frag, &x_shared[localRow][0], WMMA_K);
-        wmma::load_matrix_sync(b_frag, wq+k, K);
+        wmma::load_matrix_sync(b_frag, &wq_shared[0][0], WMMA_K);
         wmma::mma_sync(q_acc_frag, a_frag, b_frag, q_acc_frag);
 
         if (globalColN < N_KV) {
-            wmma::load_matrix_sync(a_frag, &x_shared[localRow][0], WMMA_K);
-            wmma::load_matrix_sync(b_frag, wk+k, K);
+            for (int l=threadIdx.x; l<WMMA_N*WMMA_K; l+=blockDim.x) {
+                int r = l/WMMA_K;
+                int c = l%WMMA_K;
+                wk_shared[r][c] = wk[r*K+k+c];
+            }
+        }
+
+        __syncthreads();
+
+        if (globalColN < N_KV) {
+            wmma::load_matrix_sync(b_frag, &wk_shared[0][0], WMMA_K);
             wmma::mma_sync(k_acc_frag, a_frag, b_frag, k_acc_frag);
 
-            wmma::load_matrix_sync(a_frag, &x_shared[localRow][0], WMMA_K);
-            wmma::load_matrix_sync(b_frag, wv+k, K);
+            for (int l=threadIdx.x; l<WMMA_N*WMMA_K; l+=blockDim.x) {
+                int r = l/WMMA_K;
+                int c = l%WMMA_K;
+                wv_shared[r][c] = wv[r*K+k+c];
+            }
+        }
+        
+        __syncthreads();
+
+        if (globalColN < N_KV) {
+            wmma::load_matrix_sync(b_frag, &wv_shared[0][0], WMMA_K);
             wmma::mma_sync(v_acc_frag, a_frag, b_frag, v_acc_frag);
         }
 
@@ -884,6 +1179,9 @@ __global__ void qkv_f16_cuda_impl(
 ) {
 
     __shared__ half x_shared[WARPS_PER_BLOCK*WMMA_M][WMMA_K];
+    __shared__ half wq_shared[WMMA_N][WMMA_K];
+    __shared__ half wk_shared[WMMA_N][WMMA_K];
+    __shared__ half wv_shared[WMMA_N][WMMA_K];
 
     int warpsPerBlock = blockDim.x / 32;
     int rowM = blockIdx.x*warpsPerBlock*WMMA_M;
@@ -901,7 +1199,7 @@ __global__ void qkv_f16_cuda_impl(
     
     compute_qkv_tile_f16<WARPS_PER_BLOCK>(
         M, K, N_Q, N_KV,
-        x_shared,
+        x_shared, wq_shared, wk_shared, wv_shared,
         x_row, wq_row, wk_row, wv_row,
         q_out_tile, k_out_tile, v_out_tile
     );
@@ -1148,6 +1446,7 @@ __global__ void flash_attn_cuda_impl(
 ) {
     
     __shared__ half l_shared[WARPS_PER_BLOCK*WMMA_M][WMMA_N];
+    __shared__ half k_shared[WMMA_N][WMMA_K];
     __shared__ half pv_shared[WARPS_PER_BLOCK*WMMA_M][HEAD_DIM];
     __shared__ half out_shared[WARPS_PER_BLOCK*WMMA_M][HEAD_DIM];
     
@@ -1189,6 +1488,7 @@ __global__ void flash_attn_cuda_impl(
         compute_tile_wmma_f16(
             L, HEAD_DIM, L,
             strides.q2, strides.kv2, WMMA_N,
+            k_shared,
             q_row, k_row, (half*)l_shared
         );
 
@@ -1552,6 +1852,7 @@ __global__ void swiglu_f16_cuda_impl(
     half* __restrict__ hb2
 ) {
 
+    __shared__ half w_gu_shared[WMMA_N][WMMA_K];
     __shared__ half hb_shared[WARPS_PER_BLOCK*WMMA_M][WMMA_N];
     __shared__ half hb2_shared[WARPS_PER_BLOCK*WMMA_M][WMMA_N];
 
@@ -1565,6 +1866,7 @@ __global__ void swiglu_f16_cuda_impl(
     compute_tile_wmma_f16(
         M, K_GU, N_GU,
         K_GU, K_GU, WMMA_N,
+        w_gu_shared,
         in_row, ws_gate_row, (half*)hb_shared
     );
 
@@ -1572,6 +1874,7 @@ __global__ void swiglu_f16_cuda_impl(
     compute_tile_wmma_f16(
         M, K_GU, N_GU,
         K_GU, K_GU, WMMA_N,
+        w_gu_shared,
         in_row, ws_up_row, (half*)hb2_shared
     );
 

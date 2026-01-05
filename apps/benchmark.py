@@ -43,7 +43,6 @@ def rmsnorm(backend: str = "torch_ext"):
         def ref_rmsnorm():
             result = F.rms_norm(input=x, weight=weight, normalized_shape=(shape[-1],), eps=eps)
             torch.cuda.synchronize()
-            return result
         
         for fn_name, fn in [("my_rmsnorm", my_rmsnorm), ("ref_rmsnorm", ref_rmsnorm)]:
             timer = Timer(
@@ -102,7 +101,6 @@ def rope(backend: str = "torch_ext"):
                 out[..., rotary_dim//2:rotary_dim] = sin*x_stacked[..., :rotary_dim//2, 0]+cos*x_stacked[..., :rotary_dim//2, 1]
                 out = out.half()
             torch.cuda.synchronize()
-            return out
         
         def my_rope():
             x_copy = x.clone()
@@ -155,7 +153,6 @@ def matmul_wmma(backend: str = "torch_ext"):
         def ref_matmul():
             result = x @ weight.T
             torch.cuda.synchronize()
-            return result
         
         for fn_name, fn in [("my_matmul", my_matmul), ("ref_matmul", ref_matmul)]:
             timer = Timer(
@@ -217,7 +214,6 @@ def flash_attn(backend: str = "torch_ext"):
             """pytorch SDPA"""
             result = F.scaled_dot_product_attention(Q, K2, V2, attn_mask=mask)
             torch.cuda.synchronize()
-            return result
         
         for name, fn in [("my_flash_attn", my_flash_attn), ("ref_flash_attn", ref_flash_attn)]:
             timer = Timer(

@@ -14,6 +14,7 @@
 #endif
 
 #include <cstdint>
+#include <algorithm>
 
 // move these into the global namespace out of convenience
 using std::int8_t;

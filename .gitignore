@@ -8,7 +8,7 @@ run_setup.sh
 gguf
 
 # misc.
-./logs
+logs/
 
 # python-specific
 .venv
