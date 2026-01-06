@@ -92,12 +92,16 @@ void dequant_cuda(
     switch (y.scalar_type()) {
         case at::kFloat: {
             float* __restrict__ y_ptr = y.data_ptr<float>();
-            dequant_cuda_<float><<<grid, qblock_size, 0, stream>>>(qtype, qblock_size, qtype_size, x_ptr, y_ptr, x.size(-1), y.size(-1));
+            constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(float);
+            int thrs_per_block = qblock_size/ELEMS_PER_THR;
+            dequant_cuda_<float><<<grid, thrs_per_block, 0, stream>>>(qtype, qblock_size, qtype_size, x_ptr, y_ptr, x.size(-1), y.size(-1));
             break;
         }
         case at::kHalf: {
             half* __restrict__ y_ptr = reinterpret_cast<half*>(y.data_ptr<at::Half>());
-            dequant_cuda_<half><<<grid, qblock_size, 0, stream>>>(qtype, qblock_size, qtype_size, x_ptr, y_ptr, x.size(-1), y.size(-1));
+            constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(half);
+            int thrs_per_block = qblock_size/ELEMS_PER_THR;
+            dequant_cuda_<half><<<grid, thrs_per_block, 0, stream>>>(qtype, qblock_size, qtype_size, x_ptr, y_ptr, x.size(-1), y.size(-1));
             break;
         }
         default: TORCH_CHECK(false, "Expected y scalar dtype to be float32 or float16, got ", y.scalar_type()); break;

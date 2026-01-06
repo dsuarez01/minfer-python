@@ -552,27 +552,38 @@ static __device__ void compute_tile_wmma_quant(
     // iterating over global K dimension, CHUNK_K 16x16 tiles at a time
     for (int tile_k=0; tile_k<K_TILES; tile_k+=CHUNK_K) {
         
-        // load X and W into shared memory
-        // each warp loads 32 rows of X (warps 0-3) or W (warps 4-7)
-        size_t shmem_idx = (warpId<(WARPS_PER_BLOCK/2)) 
-                            ? (WMMA_M * (warpId%WARP_COL_TILES) * WARP_ROW_TILES)
-                            : (WMMA_N * (warpId%WARP_COL_TILES) * WARP_ROW_TILES + shmem_idx_b_off);
+        // warps 0-3 load X into shmem
+        if (warpId < 4) {
+            size_t shmem_idx = WMMA_M*(warpId%WARP_COL_TILES)*WARP_ROW_TILES;
+            
+            int4* lane_ptr = (int4*)(x+(warpId%WARP_COL_TILES)*WARP_ROW_TILES*WMMA_M*K
+                + (laneId/CHUNK_COPY_LINE_LANES)*K
+                + tile_k*WMMA_K
+                + (laneId%CHUNK_COPY_LINE_LANES)
+            );
+            
+            shmem_idx += laneId/CHUNK_COPY_LINE_LANES;
+            
+            #pragma unroll
+            for (int i=0; i<((WARP_SIZE/2)/CHUNK_COPY_LINES_PER_WARP)*WARP_ROW_TILES; ++i) {
+                *((int4*)&shmem[shmem_idx][0] + (laneId%CHUNK_COPY_LINE_LANES)) = *lane_ptr;
+                lane_ptr = (int4*)((half*)lane_ptr + CHUNK_COPY_LINES_PER_WARP*K);
+                shmem_idx += CHUNK_COPY_LINES_PER_WARP;
+            }
+        }
 
-        const int64_t xw_stride = (warpId < (WARPS_PER_BLOCK/2)) ? K : w_stride;
-        int4* lane_ptr = (int4*)(warp_ptr 
-            + (laneId/CHUNK_COPY_LINE_LANES)*xw_stride 
-            + tile_k*WMMA_K 
-            + (laneId%CHUNK_COPY_LINE_LANES)
-        );
+        // load W into shmem (all warps participate)
+        int num_qblocks = TILE_SIZE_N/qblock_size;
+        int active_lanes = qblock_size / 8;
 
-        shmem_idx += laneId / CHUNK_COPY_LINE_LANES;
-
-        #pragma unroll
-        for (int i=0; i<((WARP_SIZE/2)/CHUNK_COPY_LINES_PER_WARP)*WARP_ROW_TILES; ++i) {
-            *((int4*)&shmem[shmem_idx][0] + (laneId%CHUNK_COPY_LINE_LANES)) = *lane_ptr;
-
-            lane_ptr = (int4*)((half*)lane_ptr + CHUNK_COPY_LINES_PER_WARP*xw_stride);
-            shmem_idx += CHUNK_COPY_LINES_PER_WARP;
+        for (int qb=0; qb<num_qblocks; ++qb) {
+            if (warpId == (qb%8) && laneId<active_lanes) {
+                const uint8_t* w_qblock = W_COL_MAJOR
+                    ? w + qb*(K/qblock_size)*qtype_size + (tile_k*WMMA_K/qblock_size)*qtype_size
+                    : w + (tile_k*WMMA_K/qblock_size)*(N/qblock_size)*qtype_size + qb*qtype_size;
+                half* shmem_out = &shmem[shmem_idx_b_off + qb*qblock_size][0];
+                dequant_block(qtype_int, laneId, shmem_out, w_qblock);
+            }
         }
 
         __syncthreads();
@@ -685,14 +696,16 @@ __global__ void matmul_wmma_quant_cuda_impl(
         unsigned int tile_i = block_pos/N_TILES;
         unsigned int tile_j = block_pos%N_TILES;
 
-        const half* x_row = x + tile_i*TILE_SIZE_M*K;
-        const uint8_t* w_row = w + tile_j*TILE_SIZE_N*(K/qblock_size)*qtype_size;
+        const half* x_slice = x + tile_i*TILE_SIZE_M*K;
+        const uint8_t* w_slice = W_COL_MAJOR
+            ? w + tile_j*TILE_SIZE_N*(K/qblock_size)*qtype_size         // [N,K_bytes]
+            : w + tile_j*TILE_SIZE_N*qtype_size/qblock_size;      // [K,N_bytes]
         half* out_tile = out + tile_i*TILE_SIZE_M*N + tile_j*TILE_SIZE_N;
         
-        compute_tile_quant<Config>(
+        compute_tile_wmma_quant<Config>(
             qtype_int, qblock_size, qtype_size,
             M, K, N,
-            x_row, w_row, out_tile
+            x_slice, w_slice, out_tile
         );
     }
 }
@@ -925,9 +938,6 @@ void embed_cuda(
     const int64_t* token_ids_ptr = token_ids.data_ptr<int64_t>();
     half* x_ptr = reinterpret_cast<half*>(x.data_ptr<at::Half>());
 
-    cudaDeviceProp deviceProp;
-    checkCudaErrors(cudaGetDeviceProperties(&device_pop, dev));
-
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
     int64_t B = x.size(0);
@@ -948,10 +958,14 @@ void embed_cuda(
         int64_t b = w.size(-1); // bytes per row
         int64_t k = hidden_dim; // dequant elems per row
         dim3 grid(B, L, n_qblocks_per_row);
-        embed_quant_cuda_impl<<<grid, qblock_size, 0, stream>>>(
+        constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(half);
+        int thrs_per_block = qblock_size/ELEMS_PER_THR;
+        embed_quant_cuda_impl<<<grid, thrs_per_block, 0, stream>>>(
             qtype_int, qblock_size, qtype_size, b, k, token_ids_ptr, w_ptr, x_ptr
         );
     }
+
+    checkKernelErrors(cudaGetLastError());
 }
 
 // helper to compute WMMA_M x WMMA_N portion of result for QKV projections
@@ -971,84 +985,7 @@ static __device__ void compute_qkv_tile_f16(
     half* __restrict__ k_out,
     half* __restrict__ v_out
 ) {
-    int warpIdInBlock = threadIdx.x / 32;
-    // int warpsPerBlock = blockDim.x / 32;
-
-    int localRow = warpIdInBlock*WMMA_M;
-
-    // int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
-    int globalColN = blockIdx.y*WMMA_N;
-
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> q_acc_frag;
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> k_acc_frag;
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> v_acc_frag;
-
-    wmma::fill_fragment(q_acc_frag, __float2half(0.0f));
-    if (globalColN < N_KV) {
-        wmma::fill_fragment(k_acc_frag, __float2half(0.0f));
-        wmma::fill_fragment(v_acc_frag, __float2half(0.0f));
-    }
     
-    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
-    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag;    
-
-    for (int k=0; k<K; k+=WMMA_K) {
-
-        for (int l=threadIdx.x; l<WARPS_PER_BLOCK*WMMA_M*WMMA_K; l+=blockDim.x) {
-            int r = l/WMMA_K;
-            int c = l%WMMA_K;            
-            x_shared[r][c] = x[r*K+k+c];
-        }
-
-        for (int l=threadIdx.x; l<WMMA_N*WMMA_K; l+=blockDim.x) {
-            int r = l/WMMA_K;
-            int c = l%WMMA_K;
-            wq_shared[r][c] = wq[r*K+k+c];
-        }
-
-        __syncthreads();
-
-        wmma::load_matrix_sync(a_frag, &x_shared[localRow][0], WMMA_K);
-        wmma::load_matrix_sync(b_frag, &wq_shared[0][0], WMMA_K);
-        wmma::mma_sync(q_acc_frag, a_frag, b_frag, q_acc_frag);
-
-        if (globalColN < N_KV) {
-            for (int l=threadIdx.x; l<WMMA_N*WMMA_K; l+=blockDim.x) {
-                int r = l/WMMA_K;
-                int c = l%WMMA_K;
-                wk_shared[r][c] = wk[r*K+k+c];
-            }
-        }
-
-        __syncthreads();
-
-        if (globalColN < N_KV) {
-            wmma::load_matrix_sync(b_frag, &wk_shared[0][0], WMMA_K);
-            wmma::mma_sync(k_acc_frag, a_frag, b_frag, k_acc_frag);
-
-            for (int l=threadIdx.x; l<WMMA_N*WMMA_K; l+=blockDim.x) {
-                int r = l/WMMA_K;
-                int c = l%WMMA_K;
-                wv_shared[r][c] = wv[r*K+k+c];
-            }
-        }
-        
-        __syncthreads();
-
-        if (globalColN < N_KV) {
-            wmma::load_matrix_sync(b_frag, &wv_shared[0][0], WMMA_K);
-            wmma::mma_sync(v_acc_frag, a_frag, b_frag, v_acc_frag);
-        }
-
-        __syncthreads();
-    }
-
-    wmma::store_matrix_sync(q_out + localRow*N_Q, q_acc_frag, N_Q, wmma::mem_row_major);
-
-    if (globalColN < N_KV) {
-        wmma::store_matrix_sync(k_out + localRow*N_KV, k_acc_frag, N_KV, wmma::mem_row_major);
-        wmma::store_matrix_sync(v_out + localRow*N_KV, v_acc_frag, N_KV, wmma::mem_row_major);
-    }
 }
 
 // helper to compute TILE_M x TILE_N portion of result for QKV projections
@@ -1071,106 +1008,7 @@ static __device__ void compute_qkv_tile_quant(
     half* __restrict__ k_out,
     half* __restrict__ v_out
 ) {
-    int warpIdInBlock = threadIdx.x / 32;
-    // int warpsPerBlock = blockDim.x / 32;
-
-    int localRow = warpIdInBlock*WMMA_M;
-
-    // int globalRowM = blockIdx.x*warpsPerBlock*WMMA_M + localRow;
-    int globalColN = blockIdx.y*WMMA_N;
-
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> q_acc_frag;
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> k_acc_frag;
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> v_acc_frag;
-
-    wmma::fill_fragment(q_acc_frag, __float2half(0.0f));
-    if (globalColN < N_KV) {
-        wmma::fill_fragment(k_acc_frag, __float2half(0.0f));
-        wmma::fill_fragment(v_acc_frag, __float2half(0.0f));
-    }
     
-    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
-    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag;  
-
-    // in this approach we try to hide dequant latency behind compute
-    // hopefully this helps
-    for (int k=0; k<K; k+=256) {
-
-        for (int l=threadIdx.x; l<WARPS_PER_BLOCK*WMMA_M*256; l+=blockDim.x) {
-            int r = l / 256;
-            int c = l % 256;            
-            x_shared[r*256+c] = x[r*K+k+c];
-        }
-
-        // dequantize 16x256 tile of wq into wq_shared
-        for (int l=threadIdx.x; l<WMMA_N*256; l+=blockDim.x) {
-            int r = l / 256;
-            int c = l % 256;
-            const uint8_t* wq_block = wq + r*(K/q_qblock_size)*q_qtype_size + ((k+c)/q_qblock_size)*q_qtype_size;
-            dequant_block(q_qtype_int, (k+c)%q_qblock_size, &wq_shared[r*256+c], wq_block);
-        }
-
-        __syncthreads();
-
-        #pragma unroll
-        for (int kk=0; kk<256; kk+=WMMA_K) {
-            wmma::load_matrix_sync(a_frag, x_shared+localRow*256+kk, 256);
-            wmma::load_matrix_sync(b_frag, wq_shared+kk, 256);
-            wmma::mma_sync(q_acc_frag, a_frag, b_frag, q_acc_frag);
-        }
-        
-        if (globalColN < N_KV) {
-            // dequantize 16x256 tile of wk into wk_shared
-            for (int l=threadIdx.x; l<WMMA_N*256; l+=blockDim.x) {
-                int r = l / 256;
-                int c = l % 256;
-                const uint8_t* wk_block = wk + r*(K/k_qblock_size)*k_qtype_size + ((k+c)/k_qblock_size)*k_qtype_size;
-                dequant_block(k_qtype_int, (k+c)%k_qblock_size, &wk_shared[r*256+c], wk_block);
-            }
-        }
-        
-        __syncthreads();
-
-        if (globalColN < N_KV) {
-            #pragma unroll
-            for (int kk=0; kk<256; kk+=WMMA_K) {
-                wmma::load_matrix_sync(a_frag, x_shared+localRow*256+kk, 256);
-                wmma::load_matrix_sync(b_frag, wk_shared+kk, 256);
-                wmma::mma_sync(k_acc_frag, a_frag, b_frag, k_acc_frag);
-            }
-        }
-        
-        if (globalColN < N_KV) {
-            // dequantize 16x256 tile of wv into wv_shared
-            for (int l=threadIdx.x; l<WMMA_N*256; l+=blockDim.x) {
-                int r = l / 256;
-                int c = l % 256;
-                const uint8_t* wv_block = wv + r*(K/v_qblock_size)*v_qtype_size + ((k+c)/v_qblock_size)*v_qtype_size;
-                dequant_block(v_qtype_int, (k+c)%v_qblock_size, &wv_shared[r*256+c], wv_block);
-            }
-        }
-        
-
-        __syncthreads();
-
-        if (globalColN < N_KV) {
-            #pragma unroll
-            for (int kk=0; kk<256; kk+=WMMA_K) {
-                wmma::load_matrix_sync(a_frag, x_shared+localRow*256+kk, 256);
-                wmma::load_matrix_sync(b_frag, wv_shared+kk, 256);
-                wmma::mma_sync(v_acc_frag, a_frag, b_frag, v_acc_frag);
-            }
-        }
-        
-        __syncthreads();
-    }
-
-    wmma::store_matrix_sync(q_out + localRow*N_Q, q_acc_frag, N_Q, wmma::mem_row_major);
-
-    if (globalColN < N_KV) {
-        wmma::store_matrix_sync(k_out + localRow*N_KV, k_acc_frag, N_KV, wmma::mem_row_major);
-        wmma::store_matrix_sync(v_out + localRow*N_KV, v_acc_frag, N_KV, wmma::mem_row_major);
-    }
 }
 
 template <int WARPS_PER_BLOCK>
