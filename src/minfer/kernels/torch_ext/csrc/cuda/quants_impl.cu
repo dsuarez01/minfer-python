@@ -447,6 +447,7 @@ __device__ void dequant_block_tq1_0(
     uint8_t q_byte;
     int n;
 
+    // TO-DO: potential issue with warp divergence, profile to see how slow?
     #pragma unroll
     for (int i=0; i<ELEMS_PER_THR; ++i) {
         int idx = base_idx+i;
