@@ -58,7 +58,7 @@ struct MatmulConfig {
 using Config_Matmul_F16_T = MatmulConfig<128, 128, 8, 4, 2, true>;   // X @ W.T (more frequently the case)
 using Config_Matmul_F16 = MatmulConfig<128, 128, 8, 4, 2, false>;    // X @ W
 using Config_Matmul_Quant_T = MatmulConfig<64, 64, 16, 4, 2, true>;  // X @ W.T, W quantized (more frequently the case)
-using Config_Matmul_Quant = MatmulConfig<64, 64, 16, 4, 2, false>;   // X @ W, W quantized
+// using Config_Matmul_Quant = MatmulConfig<64, 256, 8, 4, 2, false>;   // X @ W, W quantized (this shouldn't be supported, access pattern for dequantization is slow)
 
 // for QKV
 template<int TILE_M, int TILE_N, int CHUNK_K_VAL, int WARP_GRID_ROWS, int WARP_GRID_COLS>
