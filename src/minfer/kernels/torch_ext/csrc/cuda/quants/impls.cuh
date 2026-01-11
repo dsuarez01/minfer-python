@@ -10,7 +10,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_q4_0(
     const uint8_t* w,
     T* __restrict__ y,
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -33,9 +33,9 @@ __device__ __forceinline__ void dequant_block_q4_0(
 
 template <typename T>
 __device__ __forceinline__ void dequant_block_q4_1(
-    const uint8_t * __restrict__ w, 
+    const uint8_t * __restrict__ w,
     T * __restrict__ y,
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -59,9 +59,9 @@ __device__ __forceinline__ void dequant_block_q4_1(
 
 template <typename T>
 __device__ __forceinline__ void dequant_block_q5_0(
-    const uint8_t * __restrict__ w, 
+    const uint8_t * __restrict__ w,
     T * __restrict__ y, 
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -89,7 +89,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_q5_1(
     const uint8_t * __restrict__ w,
     T * __restrict__ y,
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -119,7 +119,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_q8_0(
     const uint8_t * __restrict__ w,
     T * __restrict__ y,
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -143,7 +143,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_mxfp4(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y,
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -168,7 +168,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_q2_K(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -206,7 +206,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_q3_K(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -257,7 +257,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_q4_K(
     const uint8_t * __restrict__ w,
     T * __restrict__ y,
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -294,7 +294,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_q5_K(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -334,7 +334,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_q6_K(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -368,7 +368,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_tq1_0(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -424,7 +424,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_tq2_0(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -456,7 +456,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_iq2_xxs(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -495,7 +495,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_iq2_xs(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -532,7 +532,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_iq2_s(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y,
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -573,7 +573,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_iq3_xxs(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -614,7 +614,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_iq3_s(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -652,7 +652,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_iq1_s(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -689,7 +689,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_iq1_m(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -742,7 +742,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_iq4_nl(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -767,7 +767,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_iq4_xs(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -802,7 +802,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_q8_K(
     const uint8_t * __restrict__ w, 
     T * __restrict__ y, 
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;
@@ -825,7 +825,7 @@ template <typename T>
 __device__ __forceinline__ void dequant_block_bf16(
     const uint8_t * __restrict__ w,
     T * __restrict__ y,
-    int tid
+    unsigned int tid
 ) {
     constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(T);
     int base_idx = tid*ELEMS_PER_THR;

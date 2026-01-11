@@ -30,8 +30,8 @@ void dequant_cuda(
     
     GGMLQuantizationType qtype = static_cast<GGMLQuantizationType>(qtype_int);
 
-    int n_rows = x.size(0);
-    int n_qblocks_per_row = x.size(-1) / qtype_size;
+    unsigned int n_rows = x.size(0);
+    unsigned int n_qblocks_per_row = x.size(-1) / qtype_size;
     dim3 grid(n_rows, n_qblocks_per_row);
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
@@ -41,14 +41,14 @@ void dequant_cuda(
         case at::kFloat: {
             float* __restrict__ y_ptr = y.data_ptr<float>();
             constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(float);
-            int thrs_per_block = qblock_size/ELEMS_PER_THR;
+            unsigned int thrs_per_block = qblock_size/ELEMS_PER_THR;
             dequant_cuda_<float><<<grid, thrs_per_block, 0, stream>>>(qtype, qblock_size, qtype_size, x_ptr, y_ptr, x.size(-1), y.size(-1));
             break;
         }
         case at::kHalf: {
             half* __restrict__ y_ptr = reinterpret_cast<half*>(y.data_ptr<at::Half>());
             constexpr int ELEMS_PER_THR = sizeof(int4)/sizeof(half);
-            int thrs_per_block = qblock_size/ELEMS_PER_THR;
+            unsigned int thrs_per_block = qblock_size/ELEMS_PER_THR;
             dequant_cuda_<half><<<grid, thrs_per_block, 0, stream>>>(qtype, qblock_size, qtype_size, x_ptr, y_ptr, x.size(-1), y.size(-1));
             break;
         }

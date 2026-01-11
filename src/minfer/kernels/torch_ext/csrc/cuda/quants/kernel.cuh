@@ -6,19 +6,16 @@
 template <typename T>
 __global__ void dequant_cuda_(
     GGMLQuantizationType qtype,
-    int64_t qblock_size,
-    int64_t qtype_size,
+    int qblock_size,
+    int qtype_size,
     const uint8_t* __restrict__ xr,
     T* __restrict__ y,
-    int64_t b,
-    int64_t k
+    size_t b,
+    size_t k
 ) {
 
-    int row = blockIdx.x;
-    int block_in_row = blockIdx.y;
-
-    const uint8_t* w = xr + row*b + block_in_row*qtype_size;
-    T* out = y + row*k + block_in_row*qblock_size;
+    const uint8_t* w = xr + blockIdx.x*b + blockIdx.y*static_cast<size_t>(qtype_size);
+    T* out = y + blockIdx.x*k + blockIdx.y*static_cast<size_t>(qblock_size);
 
     switch (qtype) {
         case GGMLQuantizationType::Q4_0: dequant_block_q4_0<T>(w, out, threadIdx.x); break;

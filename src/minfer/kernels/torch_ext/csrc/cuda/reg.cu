@@ -1,16 +1,16 @@
 #include <Python.h>
 #include <torch/extension.h>
 
-#include "quants/kernel.cuh"
-#include "rmsnorm/kernel.cuh"
-#include "il_rope/kernel.cuh"
-#include "neox_rope/kernel.cuh"
-#include "matmul/kernel.cuh"
-#include "embed/kernel.cuh"
-#include "qkv/kernel.cuh"
-#include "flash_attn/kernel.cuh"
-#include "moe_scoring/kernel.cuh"
-#include "ffn/kernel.cuh"
+#include "quants/op.cuh"
+#include "rmsnorm/op.cuh"
+#include "il_rope/op.cuh"
+#include "neox_rope/op.cuh"
+#include "matmul/op.cuh"
+#include "embed/op.cuh"
+#include "qkv/op.cuh"
+#include "flash_attn/op.cuh"
+#include "moe_scoring/op.cuh"
+#include "ffn/op.cuh"
 
 extern "C" {
     PyObject* PyInit__C(void) {

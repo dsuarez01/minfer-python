@@ -8,7 +8,7 @@
 #include "kernel.cuh"
 
 void rmsnorm_cuda(
-    double eps, 
+    double eps,
     const at::Tensor& in, 
     const at::Tensor& w,
     at::Tensor& out
@@ -36,10 +36,10 @@ void rmsnorm_cuda(
     const half* w_ptr = reinterpret_cast<const half*>(w.data_ptr<at::Half>());
 
     // handles both [B,L,D] and [B,L,n_heads,head_dim]
-    int dim = w.size(0);
-    int n_blocks = in.numel() / dim;
+    size_t dim = w.size(0);
+    unsigned int n_blocks = in.numel() / dim;
 
-    int block_size = min(1024, max(128, (dim+8-1)/8));
+    unsigned int block_size = min(1024, max(128, (dim+8-1)/8));
     block_size = (block_size+32-1)/32 * 32;
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();

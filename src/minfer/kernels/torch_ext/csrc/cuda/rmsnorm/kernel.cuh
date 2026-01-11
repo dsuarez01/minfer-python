@@ -6,7 +6,7 @@
 #include "core/helpers.cuh"
 
 __global__ void rmsnorm_cuda_impl(
-    int64_t dim,
+    size_t dim,
     float eps,
     const half* __restrict__ in,
     const half* __restrict__ w,
@@ -20,7 +20,7 @@ __global__ void rmsnorm_cuda_impl(
     
     // one pass for the squared sum (then parallel reduction over block)
     float sum_sq = 0.0f;
-    for (int i = threadIdx.x; i<dim; i += blockDim.x) {
+    for (int i=threadIdx.x; i<dim; i+=blockDim.x) {
         float val = __half2float(vec_in[i]);
         sum_sq += val*val;
     }
@@ -29,7 +29,7 @@ __global__ void rmsnorm_cuda_impl(
     float sc = rsqrt(sum_sq / float(dim) + eps);
     
     // one pass to apply weight and scale
-    for (int i = threadIdx.x; i<dim; i += blockDim.x) {
+    for (int i=threadIdx.x; i<dim; i += blockDim.x) {
         float in_f = __half2float(vec_in[i]);
         float w_f = __half2float(w[i]);
         vec_out[i] = __float2half(in_f*w_f*sc);

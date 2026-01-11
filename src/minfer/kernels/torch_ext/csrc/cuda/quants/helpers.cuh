@@ -17,9 +17,9 @@ __device__ __forceinline__ T convert_float(float v) {
 }
 
 template <typename T>
-__device__ __forceinline__ T convert_bf16(uint16_t bf16_bits) {
+__device__ __forceinline__ T convert_bf16(uint16_t bf16_bits) { // volta has no native BF16 support
     uint32_t f32_bits = static_cast<uint32_t>(bf16_bits) << 16;
-    float val = *reinterpret_cast<float*>(&f32_bits); // volta has no native BF16 support
+    float val = *reinterpret_cast<float*>(&f32_bits);
     return convert_float<T>(val);
 }
 

@@ -27,10 +27,10 @@ __device__ __forceinline__ float warp_reduce_max(float v) {
     return __shfl_sync(mask, v, 0, WIDTH);
 }
 
-__device__ __forceinline__ float blockreduce_sum(float* vs, float v, int tid) {
-    int warp_id = tid/32;
-    int lane_id = tid%32;
-    int n_warps = blockDim.x/32;
+__device__ __forceinline__ float blockreduce_sum(float* vs, float v, unsigned int tid) {
+    unsigned int warp_id = tid/32;
+    unsigned int lane_id = tid%32;
+    unsigned int n_warps = blockDim.x/32;
 
     v = warp_reduce_sum(v);
     if (lane_id == 0) vs[warp_id] = v;
@@ -44,10 +44,10 @@ __device__ __forceinline__ float blockreduce_sum(float* vs, float v, int tid) {
     return vs[0];
 }
 
-__device__ __forceinline__ float blockreduce_max(float* vs, float v, int tid) {
-    int warp_id = tid/32;
-    int lane_id = tid%32;
-    int n_warps = blockDim.x/32;
+__device__ __forceinline__ float blockreduce_max(float* vs, float v, unsigned int tid) {
+    unsigned int warp_id = tid/32;
+    unsigned int lane_id = tid%32;
+    unsigned int n_warps = blockDim.x/32;
 
     v = warp_reduce_max(v);
     if (lane_id == 0) vs[warp_id] = v;
@@ -65,7 +65,7 @@ __device__ __forceinline__ float blockreduce_max(float* vs, float v, int tid) {
 // might template this later on to additionally support float
 __device__ __forceinline__ void dequant_block(
     int64_t qtype_int,
-    int64_t tid,
+    unsigned int tid,
     half* __restrict__ y,
     const uint8_t* __restrict__ w
 ) {

@@ -7,8 +7,6 @@
 
 #include <omp.h>
 
-namespace minfer {
-
 template <typename T>
 void dequant_row_cpu(
     GGMLQuantizationType qtype,
@@ -170,11 +168,6 @@ void quant_cpu(
     }
 }
 
-TORCH_LIBRARY_IMPL(minfer, CPU, m) {
-    m.impl("dequant", &dequant_cpu);
-    m.impl("quant", &quant_cpu);
-}
-
 static struct Initializer {
     
     Initializer() {
@@ -198,5 +191,12 @@ static struct Initializer {
     }
 
 } init;
+
+namespace minfer {
+
+TORCH_LIBRARY_IMPL(minfer, CPU, m) {
+    m.impl("dequant", &dequant_cpu);
+    m.impl("quant", &quant_cpu);
+}
 
 }

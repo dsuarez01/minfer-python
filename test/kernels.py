@@ -87,6 +87,7 @@ def test_rmsnorm(backend):
 
 # A: interleaved rope
 # B: neox rope
+# TODO: change this test to operate on [B,L,n_heads,head_dim]
 @pytest.mark.parametrize("backend", ["torch_ext"])
 def test_rope(backend):
     kerns = KernelBackend(backend)
