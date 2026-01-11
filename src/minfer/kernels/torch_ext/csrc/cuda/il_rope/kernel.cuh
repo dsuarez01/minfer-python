@@ -27,7 +27,7 @@ __global__ void il_rope_cuda_impl(
     float freq = 1.0f / pow(freq_base, (2.0f * pair_idx) / rotary_dim);
     float angle = pos * freq;
 
-    int idx = 2*pair_idx;
+    unsigned int idx = 2*pair_idx;
 
     float x_0 = __half2float(x_head[idx]);
     float x_1 = __half2float(x_head[idx+1]);
