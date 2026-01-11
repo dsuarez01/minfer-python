@@ -1,13 +1,11 @@
-#include <torch/library.h>
-#include <ATen/core/Tensor.h>
-#include <c10/util/Exception.h>
+#include <torch/extension.h>
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+
+#include "common/types.hpp"
+#include "impl.hpp"
 
 #include <omp.h>
-#include <cassert>
-#include <iostream>
-
-#include "impl_common.hpp"
-#include "quants_impl.hpp"
 
 namespace minfer {
 
@@ -44,7 +42,6 @@ void dequant_row_cpu(
         case GGMLQuantizationType::Q8_K: dequant_row_q8_K<T>(xr, y, k); break;
         case GGMLQuantizationType::BF16: dequant_row_bf16<T>(xr, y, k); break;
         case GGMLQuantizationType::F16: dequant_row_f16<T>(xr, y, k); break;
-        default: assert(false && "Unsupported dtype");
     }
 }
 
@@ -130,7 +127,6 @@ void quant_row_cpu(
         case GGMLQuantizationType::Q8_K: quant_row_q8_K(x, yr, n); break;
         case GGMLQuantizationType::BF16: quant_row_bf16(x, yr, n); break;
         case GGMLQuantizationType::F16: quant_row_f16(x, yr, n); break;
-        default: assert(false && "Unsupported dtype");
     }
 }
 
