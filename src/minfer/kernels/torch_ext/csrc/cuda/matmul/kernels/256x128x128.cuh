@@ -14,7 +14,7 @@ template <
     unsigned int WARPS_K,
     unsigned int NUM_THRS
 >
-__device__ __forceinline__ void xw_128x128x64(
+__global__ void xw_256x128x128(
     size_t M,
     size_t K,
     size_t N,
@@ -59,8 +59,8 @@ __device__ __forceinline__ void xw_128x128x64(
         }
     }
 
-    uint32_t x_reg[MMAS_M][MMAS_K][2];
-    uint32_t w_reg[MMAS_K][MMAS_N];
+    uint32_t x_reg[MMAS_M][MMAS_K][4];
+    uint32_t w_reg[MMAS_K][MMAS_N][2];
 
 
     // for each K block tile
@@ -80,20 +80,44 @@ __device__ __forceinline__ void xw_128x128x64(
             half* warp_x = block_x + warp_m * DIM_WM * DIM_BK + warp_k * DIM_WK;
             half* warp_w = block_w + warp_k * DIM_WK * DIM_BN + warp_n * DIM_WN;
 
+            uint32_t byte_ofst_warp_x = cvta_to_shared_u32(warp_x);
+            uint32_t byte_ofst_warp_w = cvta_to_shared_u32(warp_w);
+
             // load from shmem into registers
-            for (int mma_m = 0; mma_m < MMA_M; ++mma_m) { // x_shmem
-                for (int mma_k = 0; mma_k < MMA_K; ++mma_k) {
-                    half* mma_x = block_x + mma_m * DIM_MM * DIM_WK + mma_k * DIM_MK;
+            for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) { // x_shmem
+                for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
+                    size_t byte_ofst_mma_x = (mma_m * DIM_MM * DIM_BK + mma_k * DIM_MK) * sizeof(half);
+
+                    size_t byte_ofst_thr_x = (threadIdx.x % DIM_MM) * DIM_BK * sizeof(half);
+
+                    size_t tot_byte_ofst_x = byte_ofst_warp_x + byte_ofst_mma_x + byte_ofst_thr_x;
 
                     // ld matrix
+                    asm volatile (
+                        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
+                        "{%0, %1, %2, %3}, [%4];"
+                        : "=r"(x_reg[mma_m][mma_k][0]), "=r"(x_reg[mma_m][mma_k][1]), 
+                          "=r"(x_reg[mma_m][mma_k][2]), "=r"(x_reg[mma_m][mma_k][3])
+                        : "r"(tot_byte_ofst_x)
+                    );
                 }
             }
 
-            for (int mma_k = 0; mma_k < MMA_K; ++mma_k) { // w_shmem
-                for (int mma_n = 0; mma_n < MMA_M; ++mma_n) {
-                    half* mma_w = block_w + mma_k * DIM_MK * DIM_WN + mma_n * DIM_MN;
+            for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) { // w_shmem
+                for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
+                    size_t byte_ofst_mma_w = (mma_k * DIM_MK * DIM_BN + mma_n * DIM_MN) * sizeof(half);
+
+                    size_t byte_ofst_thr_w = (threadIdx.x % DIM_MK) * DIM_BN * sizeof(half);
+
+                    size_t tot_byte_ofst_w = byte_ofst_warp_w + byte_ofst_mma_w + byte_ofst_thr_w;
 
                     // ld matrix
+                    asm volatile (
+                        "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 "
+                        "{%0, %1}, [%2];"
+                        : "=r"(w_reg[mma_k][mma_n][0]), "=r"(w_reg[mma_k][mma_n][1])
+                        : "r"(tot_byte_ofst_w)
+                    );
                 }
             }
 
@@ -103,11 +127,32 @@ __device__ __forceinline__ void xw_128x128x64(
 
                     for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
                         // mma sync on x fragment and w fragment
+                        asm volatile (
+                            "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
+                            "{%0, %1}, "
+                            "{%2, %3, %4, %5}, "
+                            "{%6, %7}, "
+                            "{%8, %9};"
+                            : "=r"(acc_reg[mma_m][mma_n][0]), "=r"(acc_reg[mma_m][mma_n][1])
+                            : "r"(x_reg[mma_m][mma_k][0]), "r"(x_reg[mma_m][mma_k][1]), "r"(x_reg[mma_m][mma_k][2]), "r"(x_reg[mma_m][mma_k][3])
+                              "r"(w_reg[mma_k][mma_n][0]), "r"(w_reg[mma_k][mma_n][1])
+                              "r"(acc_reg[mma_m][mma_n][0]), "r"(acc_reg[mma_m][mma_n][1])
+                        );
                     }
                 }
             }
         }
+
+        __syncthreads();
     }
 
-    
+    half* block_out = out + block_m * DIM_BM * out_stride + block_n * DIM_BN;
+    half* warp_out = block_out + warp_m * DIM_WM * out_stride + warp_n * DIM_WN;
+
+    for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
+        for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
+            half* mma_out = warp_out + mma_m * DIM_MM * out_stride + mma_n * DIM_MN;
+            toGmem_m16n8(out_stride * sizeof(half), mma_out, acc_reg_[mma_m][mma_n]);
+        }
+    }
 }

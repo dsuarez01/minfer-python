@@ -53,16 +53,12 @@ inline void dispatch_f16_xw(
     const half* __restrict__ w_ptr,
     half* __restrict__ out_ptr
 ) {
+    int device;
     cudaDeviceProp deviceProp;
-    AT_CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, x.device().index()));
+    AT_CUDA_CHECK(cudaGetDevice(&device));
+    AT_CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, device));
 
-    if (deviceProp.major < 7) {
-        TORCH_CHECK(false, "SM 7.0 or higher required to use tensor cores");
-    }
-
-    if (deviceProp.sharedMemPerMultiprocessor < SHMEM_SZ) {
-        TORCH_CHECK(false, "Not enough shared memory for performant kernel");
-    }
+    TORCH_CHECK(deviceProp.major >= 7, "SM 7.0 or higher required to use tensor cores");
 
     // eventually: dispatch various configurations of 
     // these vals based on problem size
@@ -86,9 +82,9 @@ inline void dispatch_f16_xw(
     constexpr unsigned int THREADS_N = SIZE_WARP * WARPS_N;
     constexpr unsigned int THREADS_M = WARPS_M;
     constexpr unsigned int NUM_THRS = THREADS_M * THREADS_N;
-    constexpr unsigned int SHMEM_SZ = (DIM_BM*DIM_BK + DIM_BK*DIM_BN) * sizeof(half)
+    constexpr unsigned int SHMEM_SZ = (DIM_BM*DIM_BK + DIM_BK*DIM_BN) * sizeof(half);
 
-    TORCH_CHECK(SHMEM_SZ <= prop.sharedMemPerBlock);
+    TORCH_CHECK(SHMEM_SZ <= deviceProp.sharedMemPerBlock, "Too much shmem (per block) requested");
 
     dim3 grid(blocks_n, blocks_m);
     dim3 block(THREADS_N, THREADS_M);
