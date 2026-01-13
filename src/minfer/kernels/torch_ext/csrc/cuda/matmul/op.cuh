@@ -5,73 +5,156 @@
 #include <cuda_fp16.h>
 
 #include "common/types.hpp"
-#include "kernel.cuh"
+#include "kernels/128x128x64.cuh"
 
-template<typename Config>
-inline void launch_wmma_f16_kernel(
-    cudaDeviceProp& deviceProp,
-    cudaStream_t stream,
-    int64_t M, int64_t K, int64_t N,
-    const half* x_ptr,
-    const half* w_ptr,
-    half* out_ptr
+// basic compatibility checks here
+// note that this is optimized for V100
+
+inline void dispatch_f16_xwt(
+    size_t M, size_t K, size_t N,
+    const half* __restrict__ x_ptr,
+    const half* __restrict__ w_ptr,
+    half* __restrict__ out_ptr
 ) {
-    static constexpr auto THREADS_PER_BLOCK = Config::THREADS_PER_BLOCK;
-    static constexpr auto SHMEM_SZ = Config::SHMEM_SZ;
 
-    dim3 grid(deviceProp.multiProcessorCount);
-    dim3 block(THREADS_PER_BLOCK);
+    // cudaDeviceProp deviceProp;
+    // AT_CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, x.device().index()));
+
+    // if (deviceProp.major < 7) {
+    //     TORCH_CHECK(false, "SM 7.0 or higher required to use tensor cores");
+    // }
+
+    // if (deviceProp.sharedMemPerMultiprocessor < SHMEM_SZ) {
+    //     TORCH_CHECK(false, "Not enough shared memory for performant kernel");
+    // }
+
+    // dim3 grid(deviceProp.multiProcessorCount);
+    // dim3 block(THREADS_PER_BLOCK);
+
+    // AT_CUDA_CHECK(
+    //     cudaFuncSetAttribute(
+    //         matmul_wmma_f16_cuda_impl<Config>,
+    //         cudaFuncAttributeMaxDynamicSharedMemorySize,
+    //         SHMEM_SZ
+    //     )
+    // );
+
+    // cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     
+    // matmul_wmma_f16_cuda_impl<Config><<<grid, block, SHMEM_SZ, stream>>>(
+    //     M, K, N, x_ptr, w_ptr, out_ptr
+    // );
+}
+
+// TODO: incomplete, finish
+inline void dispatch_f16_xw(
+    size_t M, size_t K, size_t N,
+    const half* __restrict__ x_ptr,
+    const half* __restrict__ w_ptr,
+    half* __restrict__ out_ptr
+) {
+    cudaDeviceProp deviceProp;
+    AT_CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, x.device().index()));
+
+    if (deviceProp.major < 7) {
+        TORCH_CHECK(false, "SM 7.0 or higher required to use tensor cores");
+    }
+
     if (deviceProp.sharedMemPerMultiprocessor < SHMEM_SZ) {
         TORCH_CHECK(false, "Not enough shared memory for performant kernel");
     }
 
+    // eventually: dispatch various configurations of 
+    // these vals based on problem size
+    constexpr unsigned int DIM_BM = 256;
+    constexpr unsigned int DIM_BK = 128;
+    constexpr unsigned int DIM_BN = 128;
+
+    // Volta supports ldmatrix m16n8k16 instruction
+    constexpr unsigned int WARPS_M = 4;
+    constexpr unsigned int WARPS_K = 4; // this one is more like "k tiles per block" rather than warps per block in the K dimension, i think?
+    constexpr unsigned int WARPS_N = 2;
+
+    constexpr unsigned int DIM_WM = (DIM_BM+WARPS_M-1) / WARPS_M;
+    constexpr unsigned int DIM_WK = (DIM_BK+WARPS_K-1) / WARPS_K;
+    constexpr unsigned int DIM_WN = (DIM_BN+WARPS_N-1) / WARPS_N;
+
+    const unsigned int blocks_m = (M+DIM_BM-1)/DIM_BM;
+    const unsigned int blocks_n = (N+DIM_BN-1)/DIM_BN;
+
+    constexpr unsigned int SIZE_WARP = 32;
+    constexpr unsigned int THREADS_N = SIZE_WARP * WARPS_N;
+    constexpr unsigned int THREADS_M = WARPS_M;
+    constexpr unsigned int NUM_THRS = THREADS_M * THREADS_N;
+    constexpr unsigned int SHMEM_SZ = (DIM_BM*DIM_BK + DIM_BK*DIM_BN) * sizeof(half)
+
+    TORCH_CHECK(SHMEM_SZ <= prop.sharedMemPerBlock);
+
+    dim3 grid(blocks_n, blocks_m);
+    dim3 block(THREADS_N, THREADS_M);
+
     AT_CUDA_CHECK(
         cudaFuncSetAttribute(
-            matmul_wmma_f16_cuda_impl<Config>,
+            xw_256x128x128<
+                DIM_BM,
+                DIM_BK,
+                DIM_BN,
+                DIM_WM,
+                DIM_WK,
+                DIM_WN,
+                WARPS_K,
+                NUM_THRS
+            >,
             cudaFuncAttributeMaxDynamicSharedMemorySize,
             SHMEM_SZ
         )
     );
-    
-    matmul_wmma_f16_cuda_impl<Config><<<grid, block, SHMEM_SZ, stream>>>(
+
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    xw_256x128x128<<<grid, block, SHMEM_SZ, stream>>>(
         M, K, N, x_ptr, w_ptr, out_ptr
     );
 }
 
-template<typename Config>
-inline void launch_wmma_quant_kernel(
-    cudaDeviceProp& deviceProp,
-    cudaStream_t stream,
-    int64_t qtype_int, int64_t qblock_size, int64_t qtype_size,
-    int64_t M, int64_t K, int64_t N,
-    const half* x_ptr,
-    const uint8_t* w_ptr,
-    half* out_ptr
+// TODO: incomplete, finish
+inline void dispatch_quant_xwt(
+    int qtype_int, int qblock_size, int qtype_size,
+    size_t M, size_t K, size_t N,
+    const half* __restrict__ x_ptr,
+    const uint8_t* __restrict__ w_ptr,
+    half* __restrict__ out_ptr
 ) {
-    static constexpr auto THREADS_PER_BLOCK = Config::THREADS_PER_BLOCK;
-    static constexpr auto SHMEM_SZ = Config::SHMEM_SZ;
 
-    dim3 grid(deviceProp.multiProcessorCount);
-    dim3 block(THREADS_PER_BLOCK);
-    
-    if (deviceProp.sharedMemPerMultiprocessor < SHMEM_SZ) {
-        TORCH_CHECK(false, "Not enough shared memory for performant kernel");
-    }
+    // cudaDeviceProp deviceProp;
+    // AT_CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, x.device().index()));
 
-    AT_CUDA_CHECK(
-        cudaFuncSetAttribute(
-            matmul_wmma_quant_cuda_impl<Config>,
-            cudaFuncAttributeMaxDynamicSharedMemorySize,
-            SHMEM_SZ
-        )
-    );
+    // if (deviceProp.major < 7) {
+    //     TORCH_CHECK(false, "SM 7.0 or higher required to use tensor cores");
+    // }
     
-    matmul_wmma_quant_cuda_impl<Config><<<grid, block, SHMEM_SZ, stream>>>(
-        qtype_int, qblock_size, qtype_size,
-        M, K, N, 
-        x_ptr, w_ptr, out_ptr
-    );
+    // if (deviceProp.sharedMemPerMultiprocessor < SHMEM_SZ) {
+    //     TORCH_CHECK(false, "Not enough shared memory for performant kernel");
+    // }
+
+    // dim3 grid(deviceProp.multiProcessorCount);
+    // dim3 block(THREADS_PER_BLOCK);
+
+    // AT_CUDA_CHECK(
+    //     cudaFuncSetAttribute(
+    //         matmul_wmma_quant_cuda_impl<Config>,
+    //         cudaFuncAttributeMaxDynamicSharedMemorySize,
+    //         SHMEM_SZ
+    //     )
+    // );
+    
+    // cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // matmul_wmma_quant_cuda_impl<Config><<<grid, block, SHMEM_SZ, stream>>>(
+    //     qtype_int, qblock_size, qtype_size,
+    //     M, K, N, 
+    //     x_ptr, w_ptr, out_ptr
+    // );
 }
 
 void matmul_cuda(
@@ -111,48 +194,40 @@ void matmul_cuda(
     const half* x_ptr = reinterpret_cast<const half*>(x.data_ptr<at::Half>());
     half* out_ptr = reinterpret_cast<half*>(out.data_ptr<at::Half>());
 
-    int64_t M = x.numel() / x.size(-1);
-    int64_t K = x.size(-1);
-    
-    cudaDeviceProp deviceProp;
-    AT_CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, x.device().index()));
-
-    if (deviceProp.major < 7) {
-        TORCH_CHECK(false, "SM 7.0 or higher required to use tensor cores");
-    }
-    
-    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    size_t M = x.numel() / x.size(-1);
+    size_t K = x.size(-1);
 
     if (qtype == GGMLQuantizationType::F16) {
         const half* w_ptr = reinterpret_cast<const half*>(w.data_ptr<at::Half>());
 
         if (w.size(-1) == x.size(-1)) {
             // X @ W.T
-            int64_t N = w.size(0);
-            launch_wmma_f16_kernel<Config_Matmul_F16_T>(
-                deviceProp, stream, M, K, N, x_ptr, w_ptr, out_ptr
+            size_t N = w.size(0);
+            dispatch_f16_xwt(
+                M, K, N, x_ptr, w_ptr, out_ptr
             );
         } else if (w.size(0) == x.size(-1)) {
             // X @ W
-            int64_t N = w.size(1);
-            launch_wmma_f16_kernel<Config_Matmul_F16>(
-                deviceProp, stream, M, K, N, x_ptr, w_ptr, out_ptr
+            size_t N = w.size(1);
+            dispatch_f16_xw(
+                M, K, N, x_ptr, w_ptr, out_ptr
             );
         }
     } else {
         const uint8_t* w_ptr = w.data_ptr<uint8_t>();
+        
         TORCH_CHECK(K%qblock_size==0);
 
         if (w.size(-1) == (x.size(-1)/qblock_size)*qtype_size) {
-            // X @ W.T, W quantized
-            int64_t N = w.size(0);
-            launch_wmma_quant_kernel<Config_Matmul_Quant_T>(
-                deviceProp, stream, qtype_int, qblock_size, qtype_size, M, K, N, x_ptr, w_ptr, out_ptr
+            // X @ W.T, W quantized and of shape [N, K_bytes]
+            size_t N = w.size(0);
+            dispatch_quant_xwt(
+                qtype_int, qblock_size, qtype_size, M, K, N, x_ptr, w_ptr, out_ptr
             );
         } else {
             TORCH_CHECK(false, "Unsupported dims for quant matmul");
         }
     }
 
-    AT_CUDA_CHECK(cudaGetLastError());
+    AT_CUDA_CHECK(cudaPeekAtLastError());
 }
