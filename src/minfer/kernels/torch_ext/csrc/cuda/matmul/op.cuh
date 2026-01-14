@@ -1,11 +1,12 @@
 #pragma once
 
-#include <torch/extension.h>
+#include <torch/library.h>
+#include <ATen/cuda/CUDAContext.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 
 #include "common/types.hpp"
-#include "kernels/128x128x64.cuh"
+#include "kernels/256x128x128.cuh"
 
 // basic compatibility checks here
 // note that this is optimized for V100
@@ -108,7 +109,11 @@ inline void dispatch_f16_xw(
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-    xw_256x128x128<<<grid, block, SHMEM_SZ, stream>>>(
+    xw_256x128x128<
+        DIM_BM, DIM_BK, DIM_BN, 
+        DIM_WM, DIM_WK, DIM_WN, 
+        WARPS_K, NUM_THRS
+    ><<<grid, block, SHMEM_SZ, stream>>>(
         M, K, N, x_ptr, w_ptr, out_ptr
     );
 }

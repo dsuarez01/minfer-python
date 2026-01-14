@@ -1,5 +1,5 @@
 #include <Python.h>
-#include <torch/extension.h>
+#include <torch/library.h>
 
 #include "quants/op.cuh"
 #include "rmsnorm/op.cuh"

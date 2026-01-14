@@ -34,7 +34,7 @@ __device__ __forceinline__ void toGmem_m16n8(
     unsigned int laneIdx = threadIdx.x % 32;
     uint32_t (&reg_)[2] = reinterpret_cast<uint32_t(&)[2]>(reg);
     uint32_t* dst_ptr = reinterpret_cast<uint32_t*>(dst);
-    dst_stride_bytes /= sizeof(uint32_t);
+    bytes_stride_dst /= sizeof(uint32_t);
     unsigned int frag_row = laneIdx/4;
     unsigned int frag_col = laneIdx%4;
 

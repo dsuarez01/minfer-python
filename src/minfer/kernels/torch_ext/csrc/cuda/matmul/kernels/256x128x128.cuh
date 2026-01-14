@@ -3,6 +3,7 @@
 #include <cuda_fp16.h>
 
 #include "common/types.hpp"
+#include "../helpers.cuh"
 
 template <
     unsigned int DIM_BM,
@@ -23,7 +24,7 @@ __global__ void xw_256x128x128(
     half* __restrict__ out
 ) {
 
-    constexpr unsigned int BLOCKS_K = (K+DIM_BK-1)/DIM_BK;
+    const unsigned int BLOCKS_K = (K+DIM_BK-1)/DIM_BK;
 
     constexpr unsigned int DIM_MM = 16;
     constexpr unsigned int DIM_MK = 16;
@@ -50,24 +51,16 @@ __global__ void xw_256x128x128(
     uint32_t acc_reg[MMAS_M][MMAS_N][2];
     half (&acc_reg_)[MMAS_M][MMAS_N][4] = reinterpret_cast<half(&)[MMAS_M][MMAS_N][4]>(acc_reg);
 
-    for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
-        for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
-            acc_reg_[mma_m][mma_n][0] = 0;
-            acc_reg_[mma_m][mma_n][1] = 0;
-            acc_reg_[mma_m][mma_n][2] = 0;
-            acc_reg_[mma_m][mma_n][3] = 0;
-        }
-    }
+    memset(acc_reg, 0, sizeof(acc_reg));
 
     uint32_t x_reg[MMAS_M][MMAS_K][4];
     uint32_t w_reg[MMAS_K][MMAS_N][2];
 
-
     // for each K block tile
     for (int block_k = 0; block_k < BLOCKS_K; ++block_k) {
         
-        half* block_x = x + block_m * DIM_BM * stride_x + block_k * DIM_BK;
-        half* block_w = w + block_k * DIM_BK * stride_w + block_n * DIM_BN;
+        const half* block_x = x + block_m * DIM_BM * stride_x + block_k * DIM_BK;
+        const half* block_w = w + block_k * DIM_BK * stride_w + block_n * DIM_BN;
 
         // load from gmem to x_shmem and w_shmem
         toShmem<DIM_BM, DIM_BK, NUM_THRS>(K, block_x, shmem_x);
@@ -77,8 +70,8 @@ __global__ void xw_256x128x128(
     
         for (int warp_k = 0; warp_k < WARPS_K; ++warp_k) {
 
-            half* warp_x = block_x + warp_m * DIM_WM * DIM_BK + warp_k * DIM_WK;
-            half* warp_w = block_w + warp_k * DIM_WK * DIM_BN + warp_n * DIM_WN;
+            const half* warp_x = block_x + warp_m * DIM_WM * DIM_BK + warp_k * DIM_WK;
+            const half* warp_w = block_w + warp_k * DIM_WK * DIM_BN + warp_n * DIM_WN;
 
             uint32_t byte_ofst_warp_x = cvta_to_shared_u32(warp_x);
             uint32_t byte_ofst_warp_w = cvta_to_shared_u32(warp_w);
@@ -86,11 +79,11 @@ __global__ void xw_256x128x128(
             // load from shmem into registers
             for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) { // x_shmem
                 for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
-                    size_t byte_ofst_mma_x = (mma_m * DIM_MM * DIM_BK + mma_k * DIM_MK) * sizeof(half);
+                    uint32_t byte_ofst_mma_x = (mma_m * DIM_MM * DIM_BK + mma_k * DIM_MK) * sizeof(half);
 
-                    size_t byte_ofst_thr_x = (threadIdx.x % DIM_MM) * DIM_BK * sizeof(half);
+                    uint32_t byte_ofst_thr_x = (threadIdx.x % DIM_MM) * DIM_BK * sizeof(half);
 
-                    size_t tot_byte_ofst_x = byte_ofst_warp_x + byte_ofst_mma_x + byte_ofst_thr_x;
+                    uint32_t tot_byte_ofst_x = byte_ofst_warp_x + byte_ofst_mma_x + byte_ofst_thr_x;
 
                     // ld matrix
                     asm volatile (
@@ -105,11 +98,11 @@ __global__ void xw_256x128x128(
 
             for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) { // w_shmem
                 for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
-                    size_t byte_ofst_mma_w = (mma_k * DIM_MK * DIM_BN + mma_n * DIM_MN) * sizeof(half);
+                    uint32_t byte_ofst_mma_w = (mma_k * DIM_MK * DIM_BN + mma_n * DIM_MN) * sizeof(half);
 
-                    size_t byte_ofst_thr_w = (threadIdx.x % DIM_MK) * DIM_BN * sizeof(half);
+                    uint32_t byte_ofst_thr_w = (threadIdx.x % DIM_MK) * DIM_BN * sizeof(half);
 
-                    size_t tot_byte_ofst_w = byte_ofst_warp_w + byte_ofst_mma_w + byte_ofst_thr_w;
+                    uint32_t tot_byte_ofst_w = byte_ofst_warp_w + byte_ofst_mma_w + byte_ofst_thr_w;
 
                     // ld matrix
                     asm volatile (
@@ -146,13 +139,13 @@ __global__ void xw_256x128x128(
         __syncthreads();
     }
 
-    half* block_out = out + block_m * DIM_BM * out_stride + block_n * DIM_BN;
-    half* warp_out = block_out + warp_m * DIM_WM * out_stride + warp_n * DIM_WN;
+    half* block_out = out + block_m * DIM_BM * stride_out + block_n * DIM_BN;
+    half* warp_out = block_out + warp_m * DIM_WM * stride_out + warp_n * DIM_WN;
 
     for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
         for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
-            half* mma_out = warp_out + mma_m * DIM_MM * out_stride + mma_n * DIM_MN;
-            toGmem_m16n8(out_stride * sizeof(half), mma_out, acc_reg_[mma_m][mma_n]);
+            half* mma_out = warp_out + mma_m * DIM_MM * stride_out + mma_n * DIM_MN;
+            toGmem_m16n8(stride_out * sizeof(half), mma_out, acc_reg_[mma_m][mma_n]);
         }
     }
 }

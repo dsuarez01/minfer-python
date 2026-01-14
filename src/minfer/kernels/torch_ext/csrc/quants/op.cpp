@@ -1,11 +1,9 @@
-#include <torch/extension.h>
-#include <cuda_runtime.h>
-#include <cuda_fp16.h>
+#include <Python.h>
+#include <torch/library.h>
+#include <omp.h>
 
 #include "common/types.hpp"
 #include "impl.hpp"
-
-#include <omp.h>
 
 template <typename T>
 void dequant_row_cpu(

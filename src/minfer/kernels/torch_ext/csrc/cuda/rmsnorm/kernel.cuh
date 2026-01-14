@@ -3,7 +3,7 @@
 #include <cuda_fp16.h>
 
 #include "common/types.hpp"
-#include "core/helpers.cuh"
+#include "cuda/core/helpers.cuh"
 
 __global__ void rmsnorm_cuda_impl(
     size_t dim,

@@ -3,7 +3,7 @@
 #include <cuda_fp16.h>
 
 #include "common/types.hpp"
-#include "quants/impls.cuh"
+#include "cuda/quants/impls.cuh"
 
 // helpers for warp-level and block-level reductions
 // refer to: https://developer.nvidia.com/blog/using-cuda-warp-level-primitives/

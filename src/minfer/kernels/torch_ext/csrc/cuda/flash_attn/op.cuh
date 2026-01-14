@@ -1,6 +1,7 @@
 #pragma once
 
-#include <torch/extension.h>
+#include <torch/library.h>
+#include <ATen/cuda/CUDAContext.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 
@@ -86,18 +87,18 @@ void flash_attn_cuda(
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-    constexpr int WARPS_PER_BLOCK = 4; // TODO: tune this or adjust as needed
-    constexpr int BLOCK_SIZE = WARPS_PER_BLOCK*32;
-    constexpr int ROWS_M = WARPS_PER_BLOCK*WMMA_M;
-    constexpr int HEAD_DIM = 128;
-    dim3 grid(B, n_heads, (L+ROWS_M-1)/ROWS_M);
-    dim3 block(BLOCK_SIZE);
+    // constexpr int WARPS_PER_BLOCK = 4; // TODO: tune this or adjust as needed
+    // constexpr int BLOCK_SIZE = WARPS_PER_BLOCK*32;
+    // constexpr int ROWS_M = WARPS_PER_BLOCK*WMMA_M;
+    // constexpr int HEAD_DIM = 128;
+    // dim3 grid(B, n_heads, (L+ROWS_M-1)/ROWS_M);
+    // dim3 block(BLOCK_SIZE);
 
-    flash_attn_cuda_impl<WARPS_PER_BLOCK, HEAD_DIM><<<grid, block, 0, stream>>>(
-        strides,
-        L, n_kv_heads,
-        q_ptr, k_ptr, v_ptr,
-        mask_ptr,
-        out_ptr
-    );
+    // flash_attn_cuda_impl<WARPS_PER_BLOCK, HEAD_DIM><<<grid, block, 0, stream>>>(
+    //     strides,
+    //     L, n_kv_heads,
+    //     q_ptr, k_ptr, v_ptr,
+    //     mask_ptr,
+    //     out_ptr
+    // );
 }

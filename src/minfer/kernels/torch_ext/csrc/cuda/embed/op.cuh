@@ -1,6 +1,7 @@
 #pragma once
 
-#include <torch/extension.h>
+#include <torch/library.h>
+#include <ATen/cuda/CUDAContext.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 

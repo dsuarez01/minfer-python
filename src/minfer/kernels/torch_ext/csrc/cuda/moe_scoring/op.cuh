@@ -1,6 +1,7 @@
 #pragma once
 
-#include <torch/extension.h>
+#include <torch/library.h>
+#include <ATen/cuda/CUDAContext.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 
@@ -14,16 +15,16 @@ inline void dispatch_top_k(
     uint8_t* act_exps_ptr, half* act_exps_scores_ptr, half* scores_ptr,
     cudaStream_t stream
 ) {
-    dim3 grid((M+TILE_M-1)/TILE_M);
-    dim3 block(TILE_M*N_EXPS);
+    // dim3 grid((M+TILE_M-1)/TILE_M);
+    // dim3 block(TILE_M*N_EXPS);
     
-    switch (top_k) {
-        case 1: moe_scoring_cuda_impl<TILE_M, N_EXPS, 1><<<grid, block, 0, stream>>>(M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr); break;
-        case 2: moe_scoring_cuda_impl<TILE_M, N_EXPS, 2><<<grid, block, 0, stream>>>(M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr); break;
-        case 4: moe_scoring_cuda_impl<TILE_M, N_EXPS, 4><<<grid, block, 0, stream>>>(M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr); break;
-        case 8: moe_scoring_cuda_impl<TILE_M, N_EXPS, 8><<<grid, block, 0, stream>>>(M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr); break;
-        default: TORCH_CHECK(false, "unsupported top_k: ", top_k);
-    }
+    // switch (top_k) {
+    //     case 1: moe_scoring_cuda_impl<TILE_M, N_EXPS, 1><<<grid, block, 0, stream>>>(M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr); break;
+    //     case 2: moe_scoring_cuda_impl<TILE_M, N_EXPS, 2><<<grid, block, 0, stream>>>(M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr); break;
+    //     case 4: moe_scoring_cuda_impl<TILE_M, N_EXPS, 4><<<grid, block, 0, stream>>>(M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr); break;
+    //     case 8: moe_scoring_cuda_impl<TILE_M, N_EXPS, 8><<<grid, block, 0, stream>>>(M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr); break;
+    //     default: TORCH_CHECK(false, "unsupported top_k: ", top_k);
+    // }
 }
 
 // NOTE: ffn_gate_inp seems to be kept in half precision.

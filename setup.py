@@ -41,12 +41,8 @@ def get_extensions():
         ],
         "nvcc": [
             "-O3" if not debug_mode else "-O0",
-            "-rdc=true",
-            "-gencode=arch=compute_70,code=" + ("lto_70" if not debug_mode else "sm_70"),
+            "-gencode=arch=compute_70,code=sm_70",
             include_path,
-        ],
-        "nvcc_dlink": [
-            "-dlink"
         ],
     }
     
@@ -57,11 +53,8 @@ def get_extensions():
     else:
         extra_compile_args["nvcc"].extend(["-lineinfo", "-use_fast_math"])
 
-    sources = list(glob.glob(os.path.join(extensions_dir, "*.cpp")))
-    
-    extensions_cuda_dir = os.path.join(extensions_dir, "cuda")
-    cuda_sources = list(glob.glob(os.path.join(extensions_cuda_dir, "*.cu")))
-    sources += cuda_sources
+    sources = glob.glob(os.path.join(extensions_dir, "*.cpp")) + \
+              glob.glob(os.path.join(extensions_dir, "cuda", "*.cu"))
     
     return [
         CUDAExtension(
@@ -70,7 +63,6 @@ def get_extensions():
             extra_compile_args=extra_compile_args,
             extra_link_args=extra_link_args,
             py_limited_api=py_limited_api,
-            dlink=not debug_mode,
         )
     ]
 

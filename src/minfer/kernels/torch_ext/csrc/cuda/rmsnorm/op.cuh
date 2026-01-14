@@ -1,6 +1,7 @@
 #pragma once
 
-#include <torch/extension.h>
+#include <torch/library.h>
+#include <ATen/cuda/CUDAContext.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 
@@ -39,7 +40,7 @@ void rmsnorm_cuda(
     size_t dim = w.size(0);
     unsigned int n_blocks = in.numel() / dim;
 
-    unsigned int block_size = min(1024, max(128, (dim+8-1)/8));
+    unsigned int block_size = min(1024u, max(128u, (unsigned int)((dim+8-1)/8)));
     block_size = (block_size+32-1)/32 * 32;
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();

@@ -3,6 +3,7 @@
 #include <cuda_fp16.h>
 
 #include "common/types.hpp"
+#include "helpers.cuh"
 
 // actual impls
 
