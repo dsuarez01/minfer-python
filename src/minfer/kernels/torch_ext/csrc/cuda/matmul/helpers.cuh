@@ -22,7 +22,7 @@ __device__ __forceinline__ void toShmem(
     unsigned int thr_col = thr_idx % COLS_BLOCK;
     
     for (int r=thr_row; r<ROWS_BLOCK; r+=row_incr) {
-        dst[r*COLS_BLOCK+thr_col] = src[r*src_stride+thr_col];
+        dst[r*COLS_BLOCK+thr_col] = src[r*src_stride+thr_col]; // this breaks down into 2 instrs, store to register then shmem
     }
 }
 
