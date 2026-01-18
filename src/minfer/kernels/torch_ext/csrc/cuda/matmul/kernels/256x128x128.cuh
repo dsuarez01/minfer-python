@@ -70,8 +70,8 @@ __global__ void xw_256x128x128(
     
         for (int warp_k = 0; warp_k < WARPS_K; ++warp_k) {
 
-            const half* warp_x = block_x + warp_m * DIM_WM * DIM_BK + warp_k * DIM_WK;
-            const half* warp_w = block_w + warp_k * DIM_WK * DIM_BN + warp_n * DIM_WN;
+            const half* warp_x = shmem_x + warp_m * DIM_WM * DIM_BK + warp_k * DIM_WK;
+            const half* warp_w = shmem_w + warp_k * DIM_WK * DIM_BN + warp_n * DIM_WN;
 
             uint32_t byte_ofst_warp_x = cvta_to_shared_u32(warp_x);
             uint32_t byte_ofst_warp_w = cvta_to_shared_u32(warp_w);
@@ -127,8 +127,8 @@ __global__ void xw_256x128x128(
                             "{%6, %7}, "
                             "{%8, %9};"
                             : "=r"(acc_reg[mma_m][mma_n][0]), "=r"(acc_reg[mma_m][mma_n][1])
-                            : "r"(x_reg[mma_m][mma_k][0]), "r"(x_reg[mma_m][mma_k][1]), "r"(x_reg[mma_m][mma_k][2]), "r"(x_reg[mma_m][mma_k][3])
-                              "r"(w_reg[mma_k][mma_n][0]), "r"(w_reg[mma_k][mma_n][1])
+                            : "r"(x_reg[mma_m][mma_k][0]), "r"(x_reg[mma_m][mma_k][1]), "r"(x_reg[mma_m][mma_k][2]), "r"(x_reg[mma_m][mma_k][3]),
+                              "r"(w_reg[mma_k][mma_n][0]), "r"(w_reg[mma_k][mma_n][1]),
                               "r"(acc_reg[mma_m][mma_n][0]), "r"(acc_reg[mma_m][mma_n][1])
                         );
                     }

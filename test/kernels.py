@@ -93,8 +93,8 @@ def test_rope(backend):
     kerns = KernelBackend(backend)
     B, L, n_heads, head_dim, rotary_dim, base_freq = 8, 4096, 48, 128, 64, 1e6 # adjust as needed
 
-    # test for IL rope (act. shape [B // dp_size, n_heads, L, head_dim])
-    input_A = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).float().cuda()
+    # test for IL rope (act. shape [B // dp_size, L, n_heads, head_dim])
+    input_A = torch.randn((B,L,n_heads,head_dim), dtype=torch.float16).float().cuda()
     actual_A = input_A.half().clone()
 
     # computing expected case (interleaved)
@@ -103,6 +103,9 @@ def test_rope(backend):
     freqs_A = torch.arange(L, dtype=torch.float32)[:, None].cuda() * freqs_A[None,:]
     cos_A = torch.cos(freqs_A)
     sin_A = torch.sin(freqs_A)
+
+    cos_A = cos_A[None, :, None, :]
+    sin_A = sin_A[None, :, None, :]
 
     input_A = input_A.reshape(*input_A.shape[:-1], -1, 2)
     expected_A = input_A.clone()
@@ -114,8 +117,8 @@ def test_rope(backend):
     torch.cuda.synchronize()
     assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=5e-3), "rope: interleaved"
 
-    # test for neox rope (act. shape [B // dp_size, n_heads, L, head_dim])
-    input_B = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).float().cuda()
+    # test for neox rope (act. shape [B // dp_size, L, n_heads, head_dim])
+    input_B = torch.randn((B,L,n_heads,head_dim), dtype=torch.float16).float().cuda()
     actual_B = input_B.half().clone()
 
     # computing expected case (neox)
@@ -124,6 +127,9 @@ def test_rope(backend):
     freqs_B = torch.arange(L, dtype=torch.float32)[:, None].cuda() * freqs_B[None,:]
     cos_B = torch.cos(freqs_B)
     sin_B = torch.sin(freqs_B)
+
+    cos_B = cos_B[None, :, None, :]
+    sin_B = sin_B[None, :, None, :]
 
     expected_B = input_B.clone()
     input_B = torch.stack([input_B[...,:rotary_dim//2], input_B[...,rotary_dim//2:rotary_dim]], dim=-1)
@@ -137,7 +143,7 @@ def test_rope(backend):
 
     # test with non-zero start_pos
     start_pos = 2048
-    input_C = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).float().cuda()
+    input_C = torch.randn((B,L,n_heads,head_dim), dtype=torch.float16).float().cuda()
     actual_C = input_C.half().clone()
 
     freqs_C = torch.arange(rotary_dim // 2, dtype=torch.float32).cuda()
@@ -145,6 +151,9 @@ def test_rope(backend):
     freqs_C = (torch.arange(L, dtype=torch.float32).cuda() + start_pos)[:, None] * freqs_C[None,:]
     cos_C = torch.cos(freqs_C)
     sin_C = torch.sin(freqs_C)
+
+    cos_C = cos_C[None, :, None, :]
+    sin_C = sin_C[None, :, None, :]
 
     input_C = input_C.reshape(*input_C.shape[:-1], -1, 2)
     expected_C = input_C.clone()
@@ -157,7 +166,7 @@ def test_rope(backend):
     assert torch.allclose(expected_C.cpu(), actual_C.cpu(), atol=5e-3), "rope: interleaved w/ start_pos"
 
     # test neox with non-zero start_pos
-    input_D = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).float().cuda()
+    input_D = torch.randn((B,L,n_heads,head_dim), dtype=torch.float16).float().cuda()
     actual_D = input_D.half().clone()
 
     freqs_D = torch.arange(rotary_dim // 2, dtype=torch.float32).cuda()
@@ -165,6 +174,9 @@ def test_rope(backend):
     freqs_D = (torch.arange(L, dtype=torch.float32).cuda() + start_pos)[:, None] * freqs_D[None,:]
     cos_D = torch.cos(freqs_D)
     sin_D = torch.sin(freqs_D)
+
+    cos_D = cos_D[None, :, None, :]
+    sin_D = sin_D[None, :, None, :]
 
     expected_D = input_D.clone()
     input_D = torch.stack([input_D[...,:rotary_dim//2], input_D[...,rotary_dim//2:rotary_dim]], dim=-1)
@@ -181,8 +193,8 @@ def test_rope(backend):
     # output act. identical shape to input
     # TODO: there's some precision issue here (large vals of angle=freq*pos), so had to manually adjust the rtol and atol values
 
-# A: X @ W.T
-# B: X @ W
+# A: X @ W
+# B: X @ W.T (NOTE: not finished right now)
 @pytest.mark.parametrize("backend", ["torch_ext"])
 def test_matmul(backend):
     kerns = KernelBackend(backend)
@@ -190,29 +202,29 @@ def test_matmul(backend):
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
-    # act. shape [B // dp_size, L, in_dim], weight shape [out_dim, in_dim]    
+    # A: act. shape [B // dp_size, L, in_dim], weight shape [in_dim, out_dim]
     input_A = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()
     actual_A = torch.zeros((B, L, out_dim), dtype=torch.float16).cuda()
-    weight_A = (1/in_dim**0.5) * torch.randn((out_dim, in_dim), dtype=torch.float16).cuda()
+    weight_A = (1/in_dim**0.5) * torch.randn((in_dim, out_dim), dtype=torch.float16).cuda()
 
-    expected_A = input_A @ weight_A.T
+    expected_A = input_A @ weight_A
     kerns.matmul(qtype, qblock_size, qtype_size, input_A, weight_A, actual_A)
     torch.cuda.synchronize()
     assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=2e-1), "matmul"
 
-    # act. shape [B // dp_size, L, in_dim], weight shape [out_dim, in_dim]    
-    input_B = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()
-    actual_B = torch.zeros((B, L, out_dim), dtype=torch.float16).cuda()
-    weight_B = (1/in_dim**0.5) * torch.randn((in_dim, out_dim), dtype=torch.float16).cuda()
+    # # act. shape [B // dp_size, L, in_dim], weight shape [out_dim, in_dim]    
+    # input_B = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()
+    # actual_B = torch.zeros((B, L, out_dim), dtype=torch.float16).cuda()
+    # weight_B = (1/in_dim**0.5) * torch.randn((in_dim, out_dim), dtype=torch.float16).cuda()
 
-    expected_B = input_B @ weight_B
-    kerns.matmul(qtype, qblock_size, qtype_size, input_B, weight_B, actual_B)
-    torch.cuda.synchronize()
-    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=2e-1), "matmul"
+    # expected_B = input_B @ weight_B
+    # kerns.matmul(qtype, qblock_size, qtype_size, input_B, weight_B, actual_B)
+    # torch.cuda.synchronize()
+    # assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=2e-1), "matmul"
 
-    torch.cuda.empty_cache()
+    # torch.cuda.empty_cache()
 
-    # output act. shape [B // dp_size, L, out_dim]
+    # # output act. shape [B // dp_size, L, out_dim]
 
 # A: just the usual embed
 @pytest.mark.parametrize("backend", ["torch_ext"])

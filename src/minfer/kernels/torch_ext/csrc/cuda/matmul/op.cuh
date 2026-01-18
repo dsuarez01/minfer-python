@@ -85,7 +85,7 @@ inline void dispatch_f16_xw(
     constexpr unsigned int NUM_THRS = THREADS_M * THREADS_N;
     constexpr unsigned int SHMEM_SZ = (DIM_BM*DIM_BK + DIM_BK*DIM_BN) * sizeof(half);
 
-    TORCH_CHECK(SHMEM_SZ <= deviceProp.sharedMemPerBlock, "Too much shmem (per block) requested");
+    TORCH_CHECK(SHMEM_SZ <= deviceProp.sharedMemPerBlockOptin, "Too much shmem (per block) requested");
 
     dim3 grid(blocks_n, blocks_m);
     dim3 block(THREADS_N, THREADS_M);
