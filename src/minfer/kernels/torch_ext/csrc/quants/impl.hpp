@@ -1,16 +1,6 @@
 #pragma once
 
-#include <cstdint>
-
-// move these into the global namespace out of convenience
-using std::int8_t;
-using std::int16_t;
-using std::int32_t;
-using std::int64_t;
-using std::uint8_t;
-using std::uint16_t;
-using std::uint32_t;
-using std::uint64_t;
+#include "common/types.hpp"
 
 ////////////////////////////////////////////////////////////////////////////////
 // (De)quant Impls.
@@ -40,7 +30,6 @@ template <typename T> void dequant_row_iq4_nl(const uint8_t* __restrict__ xr, T*
 template <typename T> void dequant_row_iq4_xs(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
 template <typename T> void dequant_row_q8_K(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
 template <typename T> void dequant_row_bf16(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
-template <typename T> void dequant_row_f16(const uint8_t* __restrict__ xr, T* __restrict__ y, int64_t k);
 
 void quant_row_q4_0(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
 void quant_row_q4_1(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
@@ -66,7 +55,6 @@ void quant_row_iq4_nl(const float* __restrict__ x, uint8_t* __restrict__ yr, int
 void quant_row_iq4_xs(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n, const float* quant_weights = nullptr);
 void quant_row_q8_K(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
 void quant_row_bf16(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
-void quant_row_f16(const float* __restrict__ x, uint8_t* __restrict__ yr, int64_t n);
 
 // fcns for init. and clean-up (called in quants.cpp)
 void iq2xs_init_impl(int qtype_int);

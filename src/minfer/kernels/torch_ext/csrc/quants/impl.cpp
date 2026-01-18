@@ -3935,15 +3935,6 @@ void quant_row_bf16(const float * __restrict__ x, uint8_t * __restrict__ yr, int
 
 }
 
-template <typename T>
-void dequant_row_f16(const uint8_t * __restrict__ xr, T * __restrict__ y, int64_t k) {
-
-}
-
-void quant_row_f16(const float * __restrict__ x, uint8_t * __restrict__ yr, int64_t k) {
-
-}
-
 // explicit instantiations for dequant row template
 
 // float
@@ -3971,7 +3962,6 @@ template void dequant_row_iq4_nl<float>(const uint8_t* __restrict__ xr, float* _
 template void dequant_row_iq4_xs<float>(const uint8_t* __restrict__ xr, float* __restrict__ y, int64_t k);
 template void dequant_row_q8_K<float>(const uint8_t* __restrict__ xr, float* __restrict__ y, int64_t k);
 template void dequant_row_bf16<float>(const uint8_t* __restrict__ xr, float* __restrict__ y, int64_t k);
-template void dequant_row_f16<float>(const uint8_t* __restrict__ xr, float* __restrict__ y, int64_t k);
 
 // half 
 template void dequant_row_q4_0<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
@@ -3998,4 +3988,3 @@ template void dequant_row_iq4_nl<at::Half>(const uint8_t* __restrict__ xr, at::H
 template void dequant_row_iq4_xs<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
 template void dequant_row_q8_K<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
 template void dequant_row_bf16<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);
-template void dequant_row_f16<at::Half>(const uint8_t* __restrict__ xr, at::Half* __restrict__ y, int64_t k);

@@ -7,15 +7,19 @@
 ## ensure ~/.local/bin is in PATH env (check ~/.bashrc), 
 ## otherwise uv isn't found
 
-export CC=/usr/bin/gcc
-export CXX=/usr/bin/g++
+export CC=$(which gcc)
+export CXX=$(which g++)
 
-module load cuda/12.9
+# in case system-wide python deafult version too old
+# (remove as needed)
+source .venv/bin/activate
+
+module load cuda/12.4.0
 export CUDA_HOME=$(dirname $(dirname $(which nvcc)))
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export OMP_NUM_THREADS=$(($(nproc)/2))
 
 # local disk for compile cache
-LOCAL_DISK=/state/partition1/user/$USER
+LOCAL_DISK=/tmp/$USER
 mkdir -p $LOCAL_DISK/torch_extensions
 
 export TORCH_EXTENSIONS_DIR=$LOCAL_DISK/torch_extensions

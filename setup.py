@@ -2,9 +2,8 @@ import os
 import torch
 import glob
 
-from setuptools import find_packages, setup
+from setuptools import setup
 from torch.utils.cpp_extension import (
-    CppExtension,
     CUDAExtension,
     BuildExtension,
     CUDA_HOME,
@@ -36,12 +35,12 @@ def get_extensions():
             "-O3" if not debug_mode else "-O0",
             "-fopenmp",
             "-fdiagnostics-color=always",
-            "-DPy_LIMITED_API=0x030d0000",  # min CPython v3.13,
+            "-DPy_LIMITED_API=0x030c0000",  # min CPython v3.12,
             include_path,
         ],
         "nvcc": [
             "-O3" if not debug_mode else "-O0",
-            "-gencode=arch=compute_86,code=sm_86",
+            "-gencode=arch=compute_89,code=sm_89",
             include_path,
         ],
     }
@@ -53,8 +52,7 @@ def get_extensions():
     else:
         extra_compile_args["nvcc"].extend(["-lineinfo", "-use_fast_math"])
 
-    sources = glob.glob(os.path.join(extensions_dir, "*.cpp")) + \
-              glob.glob(os.path.join(extensions_dir, "cuda", "*.cu"))
+    sources = glob.glob(os.path.join(extensions_dir, "**", "*.cpp"), recursive=True) + [os.path.join(extensions_dir, "cuda", "reg.cu")]
     
     return [
         CUDAExtension(
@@ -69,5 +67,5 @@ def get_extensions():
 setup(
     ext_modules=get_extensions(),
     cmdclass={"build_ext": BuildExtension},
-    options={"bdist_wheel": {"py_limited_api": "cp313"}} if py_limited_api else {},
+    options={"bdist_wheel": {"py_limited_api": "cp312"}} if py_limited_api else {},
 )
