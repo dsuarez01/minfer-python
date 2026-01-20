@@ -38,10 +38,11 @@ __global__ void xw_256x128x128(
     const unsigned int block_n = blockIdx.x;
     const unsigned int warp_m = threadIdx.y;
     const unsigned int warp_n = threadIdx.x/32;
+    const unsigned int lane_idx = threadIdx.x%32;
 
-    const unsigned int stride_x = K;
-    const unsigned int stride_w = N;
-    const unsigned int stride_out = N;
+    const size_t stride_x = K;
+    const size_t stride_w = N;
+    const size_t stride_out = N;
 
     extern __shared__ half shmem[];
     half* shmem_x = shmem;
@@ -51,7 +52,14 @@ __global__ void xw_256x128x128(
     uint32_t acc_reg[MMAS_M][MMAS_N][2];
     half (&acc_reg_)[MMAS_M][MMAS_N][4] = reinterpret_cast<half(&)[MMAS_M][MMAS_N][4]>(acc_reg);
 
-    memset(acc_reg, 0, sizeof(acc_reg));
+    for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
+        for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
+            acc_reg_[mma_m][mma_n][0] = __float2half(0.0f);
+            acc_reg_[mma_m][mma_n][1] = __float2half(0.0f);
+            acc_reg_[mma_m][mma_n][2] = __float2half(0.0f);
+            acc_reg_[mma_m][mma_n][3] = __float2half(0.0f);
+        }
+    }
 
     uint32_t x_reg[MMAS_M][MMAS_K][4];
     uint32_t w_reg[MMAS_K][MMAS_N][2];
@@ -63,8 +71,8 @@ __global__ void xw_256x128x128(
         const half* block_w = w + block_k * DIM_BK * stride_w + block_n * DIM_BN;
 
         // load from gmem to x_shmem and w_shmem
-        toShmem<DIM_BM, DIM_BK, NUM_THRS>(K, block_x, shmem_x);
-        toShmem<DIM_BK, DIM_BN, NUM_THRS>(N, block_w, shmem_w);
+        toShmem<DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_x);
+        toShmem<DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w);
 
         __syncthreads();
     
@@ -73,24 +81,32 @@ __global__ void xw_256x128x128(
             const half* warp_x = shmem_x + warp_m * DIM_WM * DIM_BK + warp_k * DIM_WK;
             const half* warp_w = shmem_w + warp_k * DIM_WK * DIM_BN + warp_n * DIM_WN;
 
-            uint32_t byte_ofst_warp_x = cvta_to_shared_u32(warp_x);
-            uint32_t byte_ofst_warp_w = cvta_to_shared_u32(warp_w);
+            uint32_t byte_ofst_warp_x = __cvta_generic_to_shared(warp_x);
+            uint32_t byte_ofst_warp_w = __cvta_generic_to_shared(warp_w);
 
             // load from shmem into registers
             for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) { // x_shmem
                 for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
                     uint32_t byte_ofst_mma_x = (mma_m * DIM_MM * DIM_BK + mma_k * DIM_MK) * sizeof(half);
 
-                    uint32_t byte_ofst_thr_x = (threadIdx.x % DIM_MM) * DIM_BK * sizeof(half);
+                    uint32_t byte_ofst_thr_x = (((lane_idx/8)%2)*8 + (lane_idx%8)) * DIM_BK * sizeof(half);
 
                     uint32_t tot_byte_ofst_x = byte_ofst_warp_x + byte_ofst_mma_x + byte_ofst_thr_x;
 
                     // ld matrix
                     asm volatile (
-                        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];"
-                        : "=r"(x_reg[mma_m][mma_k][0]), "=r"(x_reg[mma_m][mma_k][1]), 
-                          "=r"(x_reg[mma_m][mma_k][2]), "=r"(x_reg[mma_m][mma_k][3])
+                        "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
+                        "{%0, %1}, [%2];"
+                        : "=r"(x_reg[mma_m][mma_k][0]), "=r"(x_reg[mma_m][mma_k][1])
+                        : "r"(tot_byte_ofst_x)
+                    );
+
+                    tot_byte_ofst_x += 8*sizeof(half);
+
+                    asm volatile (
+                        "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
+                        "{%0, %1}, [%2];"
+                        : "=r"(x_reg[mma_m][mma_k][2]), "=r"(x_reg[mma_m][mma_k][3])
                         : "r"(tot_byte_ofst_x)
                     );
                 }
@@ -100,7 +116,7 @@ __global__ void xw_256x128x128(
                 for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
                     uint32_t byte_ofst_mma_w = (mma_k * DIM_MK * DIM_BN + mma_n * DIM_MN) * sizeof(half);
 
-                    uint32_t byte_ofst_thr_w = (threadIdx.x % DIM_MK) * DIM_BN * sizeof(half);
+                    uint32_t byte_ofst_thr_w = (((lane_idx/8)%2)*8 + (lane_idx%8)) * DIM_BN * sizeof(half);
 
                     uint32_t tot_byte_ofst_w = byte_ofst_warp_w + byte_ofst_mma_w + byte_ofst_thr_w;
 

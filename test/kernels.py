@@ -210,7 +210,8 @@ def test_matmul(backend):
     expected_A = input_A @ weight_A
     kerns.matmul(qtype, qblock_size, qtype_size, input_A, weight_A, actual_A)
     torch.cuda.synchronize()
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=2e-1), "matmul"
+
+    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-1), "matmul"
 
     # # act. shape [B // dp_size, L, in_dim], weight shape [out_dim, in_dim]    
     # input_B = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()

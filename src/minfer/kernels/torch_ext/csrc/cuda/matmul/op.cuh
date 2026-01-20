@@ -67,7 +67,7 @@ inline void dispatch_f16_xw(
     constexpr unsigned int DIM_BK = 128;
     constexpr unsigned int DIM_BN = 128;
 
-    // Volta supports ldmatrix m16n8k16 instruction
+    // Turing (and beyond) supports ldmatrix m16n8k16 instruction
     constexpr unsigned int WARPS_M = 4;
     constexpr unsigned int WARPS_K = 4; // this one is more like "k tiles per block" rather than warps per block in the K dimension, i think?
     constexpr unsigned int WARPS_N = 2;
@@ -80,15 +80,15 @@ inline void dispatch_f16_xw(
     const unsigned int blocks_n = (N+DIM_BN-1)/DIM_BN;
 
     constexpr unsigned int SIZE_WARP = 32;
-    constexpr unsigned int THREADS_N = SIZE_WARP * WARPS_N;
-    constexpr unsigned int THREADS_M = WARPS_M;
-    constexpr unsigned int NUM_THRS = THREADS_M * THREADS_N;
+    constexpr unsigned int THRS_N = SIZE_WARP * WARPS_N;
+    constexpr unsigned int THRS_M = WARPS_M;
+    constexpr unsigned int NUM_THRS = THRS_M * THRS_N;
     constexpr unsigned int SHMEM_SZ = (DIM_BM*DIM_BK + DIM_BK*DIM_BN) * sizeof(half);
 
     TORCH_CHECK(SHMEM_SZ <= deviceProp.sharedMemPerBlockOptin, "Too much shmem (per block) requested");
 
     dim3 grid(blocks_n, blocks_m);
-    dim3 block(THREADS_N, THREADS_M);
+    dim3 block(THRS_N, THRS_M);
 
     AT_CUDA_CHECK(
         cudaFuncSetAttribute(
@@ -201,16 +201,16 @@ void matmul_cuda(
     if (qtype == GGMLQuantizationType::F16) {
         const half* w_ptr = reinterpret_cast<const half*>(w.data_ptr<at::Half>());
 
-        if (w.size(-1) == x.size(-1)) {
-            // X @ W.T
-            size_t N = w.size(0);
-            dispatch_f16_xwt(
-                M, K, N, x_ptr, w_ptr, out_ptr
-            );
-        } else if (w.size(0) == x.size(-1)) {
+        if (w.size(0) == x.size(-1)) {
             // X @ W
             size_t N = w.size(1);
             dispatch_f16_xw(
+                M, K, N, x_ptr, w_ptr, out_ptr
+            );
+        } else if (w.size(-1) == x.size(-1)) {
+            // X @ W.T
+            size_t N = w.size(0);
+            dispatch_f16_xwt(
                 M, K, N, x_ptr, w_ptr, out_ptr
             );
         }

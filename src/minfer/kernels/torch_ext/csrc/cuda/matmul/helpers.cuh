@@ -15,7 +15,7 @@ __device__ __forceinline__ void toShmem(
 
     unsigned int thr_idx = threadIdx.y * blockDim.x + threadIdx.x;
 
-    assert(NUM_THRS % COLS_BLOCK == 0);
+    static_assert(NUM_THRS % COLS_BLOCK == 0);
 
     constexpr unsigned int row_incr = NUM_THRS / COLS_BLOCK;
     unsigned int thr_row = thr_idx / COLS_BLOCK;
@@ -27,7 +27,7 @@ __device__ __forceinline__ void toShmem(
 }
 
 __device__ __forceinline__ void toGmem_m16n8(
-    unsigned int bytes_stride_dst,
+    size_t bytes_stride_dst,
     half* dst, 
     half (&reg)[4]
 ) {
@@ -43,17 +43,4 @@ __device__ __forceinline__ void toGmem_m16n8(
     frag_row += 8;
     dst_ptr[frag_row*bytes_stride_dst+frag_col] = reg_[1]; // 4 bytes written per thr
 }
-
-// ptx instructions req 32-bit offsets from base addr of shmem
-__device__ __forceinline__ uint32_t cvta_to_shared_u32(const void *ptr) {
-    uint32_t addr;
-    asm volatile("{\n\t"
-        "  .reg .u64 u64addr;\n\t"
-        "  cvta.to.shared.u64 u64addr, %1;\n\t"
-        "  cvt.u32.u64 %0, u64addr;\n\t"
-        "}"
-        : "=r"(addr)
-        : "l"(ptr));
-    return addr;
-  }
 
