@@ -5,6 +5,8 @@
 #include "common/types.hpp"
 #include "cuda/core/helpers.cuh"
 
+namespace minfer::impl {
+
 __global__ void embed_f16_cuda_impl(
     size_t L,
     size_t hidden_dim,
@@ -28,7 +30,7 @@ __global__ void embed_f16_cuda_impl(
 __global__ void embed_quant_cuda_impl(
     int qtype_int,
     int qblock_size,
-    int qtype_size,
+    size_t qtype_size,
     size_t L,
     size_t b, // bytes per row
     size_t k, // dequant elems per row
@@ -43,7 +45,9 @@ __global__ void embed_quant_cuda_impl(
     
     int64_t token_id = token_ids[iB*L+iL];
     
-    const uint8_t* w_block = w + token_id*b + block_in_row*static_cast<size_t>(qtype_size);
+    const uint8_t* w_block = w + token_id*b + block_in_row*qtype_size;
     half* x_block = x + iB*L*k + iL*k + block_in_row*static_cast<size_t>(qblock_size);
     dequant_block(qtype_int, threadIdx.x, x_block, w_block);
+}
+
 }

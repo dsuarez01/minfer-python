@@ -1,6 +1,6 @@
 #pragma once
 
-#include <torch/csrc/stable/tensor_struct.h>
+#include <torch/csrc/stable/tensor.h>
 
 namespace minfer {
     void dequant_cpu(

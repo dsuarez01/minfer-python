@@ -12,6 +12,9 @@ export CXX=$(which g++)
 
 # in case system-wide python deafult version too old
 # (remove as needed)
+if [ ! -d ".venv" ]; then
+    uv venv --python 3.12
+fi
 source .venv/bin/activate
 
 module load cuda/12.4.0

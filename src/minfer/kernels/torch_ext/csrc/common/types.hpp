@@ -77,6 +77,22 @@ inline bool is_valid_qtype(int qtype_int) {
     }
 }
 
+inline bool is_dequant_qtype(int qtype_int) {
+    switch (qtype_int) {
+        case 2: case 3: case 6: case 7:
+        case 8: case 10: case 11: case 12:
+        case 13: case 14: case 15: case 16:
+        case 17: case 18: case 19: case 20:
+        case 21: case 22: case 23: case 29: 
+        case 34: case 35: case 39:
+            return true;
+        default:
+            return false;
+    }
+}
+
+
+
 // QK = number of values after dequantization
 // QK_K = super-block size
 

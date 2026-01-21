@@ -4,6 +4,8 @@
 
 #include "common/types.hpp"
 
+namespace minfer::impl {
+
 __global__ void il_rope_cuda_impl(
     size_t L,
     size_t rotary_dim,
@@ -34,4 +36,6 @@ __global__ void il_rope_cuda_impl(
 
     x_head[idx] = __float2half(cos(angle)*x_0 - sin(angle)*x_1);
     x_head[idx+1] = __float2half(sin(angle)*x_0 + cos(angle)*x_1);
+}
+
 }

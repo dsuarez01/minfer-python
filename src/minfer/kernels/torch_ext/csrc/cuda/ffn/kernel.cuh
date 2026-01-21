@@ -4,9 +4,11 @@
 
 #include "common/types.hpp"
 
+namespace minfer::impl {
+
 template <int WARPS_PER_BLOCK>
 __global__ void swiglu_f16_cuda_impl(
-    int64_t M, int64_t K_GU, int64_t N_GU,
+    size_t M, size_t K_GU, size_t N_GU,
     const half* __restrict__ in,
     const half* __restrict__ ws_up,
     const half* __restrict__ ws_gate,
@@ -57,8 +59,8 @@ template <int WARPS_PER_BLOCK>
 __global__ void swiglu_quant_cuda_impl(
     int up_qtype_int, int gate_qtype_int,
     int up_qblock_size, int gate_qblock_size,
-    int up_qtype_size, int gate_qtype_size,
-    int64_t M, int64_t K_GU, int64_t N_GU,
+    size_t up_qtype_size, size_t gate_qtype_size,
+    size_t M, size_t K_GU, size_t N_GU,
     const half* __restrict__ in,
     const uint8_t* __restrict__ ws_up,
     const uint8_t* __restrict__ ws_gate,
@@ -109,4 +111,6 @@ __global__ void swiglu_quant_cuda_impl(
     //     float hb2v = __half2float(hb2_shared[r][c]);
     //     hb2_tile[r*N_GU+c] = __float2half(hbv/(1.0f+expf(-hbv))*hb2v);
     // }
+}
+
 }

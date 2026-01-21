@@ -28,7 +28,9 @@ def get_extensions():
     extensions_dir = os.path.join("src", library_name, "kernels", "torch_ext", "csrc")
     include_path = "-I"+os.path.join(this_dir, extensions_dir)
 
-    extra_link_args = ["-fopenmp"]
+    extra_link_args = [
+        "-fopenmp",
+    ]
     extra_compile_args = {
         "cxx": [
             "-std=c++17",

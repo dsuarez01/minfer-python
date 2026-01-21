@@ -5,6 +5,8 @@
 #include "common/types.hpp"
 #include "../helpers.cuh"
 
+namespace minfer::impl {
+
 template <
     unsigned int DIM_BM,
     unsigned int DIM_BK,
@@ -164,4 +166,6 @@ __global__ void xw_256x128x128(
             toGmem_m16n8(stride_out * sizeof(half), mma_out, acc_reg_[mma_m][mma_n]);
         }
     }
+}
+
 }

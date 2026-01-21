@@ -2,6 +2,10 @@
 
 #include <cuda_fp16.h>
 
+namespace minfer::impl {
+
+}
+
 // helper (TODO: complete me once you know exactly where this will be used)
 // template <int WARPS_PER_BLOCK>
 // __device__ __forceinline__ void update_dm(

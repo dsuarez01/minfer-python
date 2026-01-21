@@ -8,13 +8,12 @@ requires-python = ">=3.12"
 dependencies = [
     "torch >= 2.10.0",
     "gguf",
-    "setuptools",
-    "ninja",
 ]
 
 [build-system]
 requires = [
     "setuptools",
+    "ninja",
     "torch >= 2.10.0",
 ]
 build-backend = "setuptools.build_meta"

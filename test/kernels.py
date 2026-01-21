@@ -13,8 +13,7 @@ SUPPORTED_QTYPES = [
     "Q4_0", "Q4_1", "Q5_0", "Q5_1", "Q8_0",
     "Q2_K", "Q3_K", "Q4_K", "Q5_K", "Q6_K", "Q8_K",
     "IQ2_XXS", "IQ2_XS", "IQ3_XXS", "IQ1_S", "IQ4_NL",
-    "IQ3_S", "IQ2_S", "IQ4_XS", "IQ1_M", "BF16",
-    "TQ1_0", "TQ2_0", 
+    "IQ3_S", "IQ2_S", "IQ4_XS", "IQ1_M", "TQ1_0", "TQ2_0", 
     "MXFP4"
 ]
 
@@ -193,6 +192,27 @@ def test_rope(backend):
     # output act. identical shape to input
     # TODO: there's some precision issue here (large vals of angle=freq*pos), so had to manually adjust the rtol and atol values
 
+# A: just the usual embed
+@pytest.mark.parametrize("backend", ["torch_ext"])
+def test_embed(backend):
+    kerns = KernelBackend(backend)
+    B, L, vocab_size, hidden_dim = 8, 4096, 128_000, 6144
+    qtype = GGMLQuantizationType.F16
+    qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
+
+    # act. shape [B // dp_size, L], weight shape [vocab_size, hidden_dim]
+    input_A = torch.randint(0, vocab_size, (B,L)).cuda()
+    actual_A = torch.zeros((B, L, hidden_dim), dtype=torch.float16).cuda()
+    weight_A = torch.randn((vocab_size, hidden_dim), dtype=torch.float16).cuda()
+
+    expected_A = weight_A[input_A]
+    kerns.embed(qtype, qblock_size, qtype_size, input_A, weight_A, actual_A)
+    torch.cuda.synchronize()
+    assert torch.allclose(expected_A.cpu(), actual_A.cpu()), "embed"
+    
+    torch.cuda.empty_cache()
+    # output act. shape [B // dp_size, L, hidden_dim]
+
 # A: X @ W
 # B: X @ W.T (NOTE: not finished right now)
 @pytest.mark.parametrize("backend", ["torch_ext"])
@@ -226,27 +246,6 @@ def test_matmul(backend):
     # torch.cuda.empty_cache()
 
     # # output act. shape [B // dp_size, L, out_dim]
-
-# A: just the usual embed
-@pytest.mark.parametrize("backend", ["torch_ext"])
-def test_embed(backend):
-    kerns = KernelBackend(backend)
-    B, L, vocab_size, hidden_dim = 8, 4096, 128_000, 6144
-    qtype = GGMLQuantizationType.F16
-    qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
-
-    # act. shape [B // dp_size, L], weight shape [vocab_size, hidden_dim]
-    input_A = torch.randint(0, vocab_size, (B,L)).cuda()
-    actual_A = torch.zeros((B, L, hidden_dim), dtype=torch.float16).cuda()
-    weight_A = torch.randn((vocab_size, hidden_dim), dtype=torch.float16).cuda()
-
-    expected_A = weight_A[input_A]
-    kerns.embed(qtype, qblock_size, qtype_size, input_A, weight_A, actual_A)
-    torch.cuda.synchronize()
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu()), "embed"
-    
-    torch.cuda.empty_cache()
-    # output act. shape [B // dp_size, L, hidden_dim]
 
 # A: just the usual QKV projections
 @pytest.mark.parametrize("backend", ["torch_ext"])

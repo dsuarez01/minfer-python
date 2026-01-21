@@ -4,6 +4,8 @@
 
 #include "common/types.hpp"
 
+namespace minfer::impl {
+
 // FlashAttention-2 forward pass impl.
 // Refer to: https://arxiv.org/abs/2307.08691
 constexpr float HALF_MIN = -65504.0f;
@@ -127,4 +129,6 @@ __global__ void flash_attn_cuda_impl(
     //     int c = idx%HEAD_DIM;
     //     out_row[r*HEAD_DIM+c] = (ds[r] > 0.0f) ? __float2half(__half2float(out_shared[r][c]) / ds[r]) : __float2half(0.0f);
     // }
+}
+
 }

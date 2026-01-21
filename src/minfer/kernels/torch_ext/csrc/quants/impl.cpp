@@ -3928,15 +3928,6 @@ namespace minfer::impl {
         }
     }
 
-    template <typename T>
-    void dequant_row_bf16(const uint8_t * __restrict__ xr, T * __restrict__ y, int64_t k) {
-
-    }
-
-    void quant_row_bf16(const float * __restrict__ x, uint8_t * __restrict__ yr, int64_t k) {
-
-    }
-
     // explicit instantiations for dequant row template
 
     // float
@@ -3963,7 +3954,6 @@ namespace minfer::impl {
     template void dequant_row_iq4_nl<float>(const uint8_t* __restrict__ xr, float* __restrict__ y, int64_t k);
     template void dequant_row_iq4_xs<float>(const uint8_t* __restrict__ xr, float* __restrict__ y, int64_t k);
     template void dequant_row_q8_K<float>(const uint8_t* __restrict__ xr, float* __restrict__ y, int64_t k);
-    template void dequant_row_bf16<float>(const uint8_t* __restrict__ xr, float* __restrict__ y, int64_t k);
 
     // half 
     template void dequant_row_q4_0<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
@@ -3989,6 +3979,5 @@ namespace minfer::impl {
     template void dequant_row_iq4_nl<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
     template void dequant_row_iq4_xs<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
     template void dequant_row_q8_K<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
-    template void dequant_row_bf16<half_t>(const uint8_t* __restrict__ xr, half_t* __restrict__ y, int64_t k);
 
 }

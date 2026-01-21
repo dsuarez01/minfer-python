@@ -2,6 +2,8 @@
 
 #include "common/types.hpp"
 
+namespace minfer::impl {
+
 template <
     unsigned int ROWS_BLOCK,
     unsigned int COLS_BLOCK,
@@ -44,3 +46,4 @@ __device__ __forceinline__ void toGmem_m16n8(
     dst_ptr[frag_row*bytes_stride_dst+frag_col] = reg_[1]; // 4 bytes written per thr
 }
 
+}

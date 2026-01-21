@@ -1,4 +1,4 @@
-#include <torch/csrc/stable/tensor_struct.h>
+#include <torch/csrc/stable/tensor.h>
 #include <torch/headeronly/core/ScalarType.h>
 #include <torch/headeronly/macros/Macros.h>
 
@@ -65,7 +65,6 @@ namespace {
             case GGMLQuantizationType::IQ4_NL: dequant_row_iq4_nl<T>(xr, y, k); break;
             case GGMLQuantizationType::IQ4_XS: dequant_row_iq4_xs<T>(xr, y, k); break;
             case GGMLQuantizationType::Q8_K: dequant_row_q8_K<T>(xr, y, k); break;
-            case GGMLQuantizationType::BF16: dequant_row_bf16<T>(xr, y, k); break;
         }
     }
 
@@ -99,7 +98,6 @@ namespace {
             case GGMLQuantizationType::IQ4_NL: quant_row_iq4_nl(x, yr, n); break;
             case GGMLQuantizationType::IQ4_XS: quant_row_iq4_xs(x, yr, n); break;
             case GGMLQuantizationType::Q8_K: quant_row_q8_K(x, yr, n); break;
-            case GGMLQuantizationType::BF16: quant_row_bf16(x, yr, n); break;
         }
     }
 }
@@ -116,6 +114,7 @@ namespace minfer {
     ) {
 
         STD_TORCH_CHECK(is_valid_qtype(qtype_int), "Invalid qtype: ", qtype_int);
+        STD_TORCH_CHECK(is_dequant_qtype(qtype_int));
         STD_TORCH_CHECK(x.dim() == 2 && y.dim() == 2);
         STD_TORCH_CHECK(x.size(0) == y.size(0), "x and y must have the same number of rows");
         STD_TORCH_CHECK(x.scalar_type() == torch::headeronly::ScalarType::Byte, "x must be uint8 (byte)");
