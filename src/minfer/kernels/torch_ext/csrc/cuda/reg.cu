@@ -1,4 +1,4 @@
-#include <torch/library.h>
+#include <torch/csrc/stable/library.h>
 
 #include "quants/op.cuh"
 #include "rmsnorm/op.cuh"
@@ -13,17 +13,17 @@
 
 namespace minfer {
 
-    TORCH_LIBRARY_IMPL(minfer, CUDA, m) {
-        m.impl("dequant", &dequant_cuda);
-        m.impl("rmsnorm", &rmsnorm_cuda);
-        m.impl("il_rope", &il_rope_cuda);
-        m.impl("neox_rope", &neox_rope_cuda);
-        m.impl("matmul", &matmul_cuda);
-        m.impl("embed", &embed_cuda);
-        m.impl("qkv", &qkv_cuda);
-        m.impl("flash_attn", &flash_attn_cuda);
-        m.impl("moe_scoring", &moe_scoring_cuda);
-        m.impl("ffn", &ffn_cuda);
+    STABLE_TORCH_LIBRARY_IMPL(minfer, CUDA, m) {
+        m.impl("dequant", TORCH_BOX(&dequant_cuda));
+        m.impl("rmsnorm", TORCH_BOX(&rmsnorm_cuda));
+        m.impl("il_rope", TORCH_BOX(&il_rope_cuda));
+        m.impl("neox_rope", TORCH_BOX(&neox_rope_cuda));
+        m.impl("matmul", TORCH_BOX(&matmul_cuda));
+        m.impl("embed", TORCH_BOX(&embed_cuda));
+        m.impl("qkv", TORCH_BOX(&qkv_cuda));
+        m.impl("flash_attn", TORCH_BOX(&flash_attn_cuda));
+        m.impl("moe_scoring", TORCH_BOX(&moe_scoring_cuda));
+        m.impl("ffn", TORCH_BOX(&ffn_cuda));
     }
 
 }

@@ -3,18 +3,16 @@
 // Adapted from: https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-common.h (MIT License)
 
 #ifdef __CUDA_ARCH__
-    #include <cuda_fp16.h>
-    using half_t = half;
-    #define CONSTANT static constexpr __device__
-
+    #define CONSTANT constexpr __device__
 #else
-    #include <ATen/ATen.h>
-    using half_t = at::Half;
-    #define CONSTANT static constexpr
+    #define CONSTANT inline constexpr
 #endif
 
+#include <torch/headeronly/util/Half.h>
 #include <cstdint>
 #include <algorithm>
+
+using half_t = torch::headeronly::Half;
 
 // move these into the global namespace out of convenience
 using std::int8_t;

@@ -36,11 +36,14 @@ def get_extensions():
             "-fopenmp",
             "-fdiagnostics-color=always",
             "-DPy_LIMITED_API=0x030c0000",  # min CPython v3.12,
+            "-DTORCH_TARGET_VERSION=0x020a000000000000",
             include_path,
         ],
         "nvcc": [
             "-O3" if not debug_mode else "-O0",
             "-gencode=arch=compute_89,code=sm_89",
+            "-DTORCH_TARGET_VERSION=0x020a000000000000", # min pytorch 2.10 for stable ABI
+            "-DUSE_CUDA",
             include_path,
         ],
     }

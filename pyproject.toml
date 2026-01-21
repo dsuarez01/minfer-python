@@ -4,9 +4,9 @@ version = "0.1.0"
 description = "Minimal Python (decoder-only) LLM inference engine w/ optimized CUDA kernels"
 readme = "README.md"
 requires-python = ">=3.12"
-# might have to pull gguf from github main
+
 dependencies = [
-    "torch >= 2.6.0",
+    "torch >= 2.10.0",
     "gguf",
     "setuptools",
     "ninja",
@@ -15,7 +15,7 @@ dependencies = [
 [build-system]
 requires = [
     "setuptools",
-    "torch >= 2.6.0",
+    "torch >= 2.10.0",
 ]
 build-backend = "setuptools.build_meta"
 

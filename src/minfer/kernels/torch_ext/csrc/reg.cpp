@@ -1,5 +1,6 @@
 #include <Python.h>
-#include <torch/library.h>
+
+#include <torch/csrc/stable/library.h>
 
 #include "quants/op.hpp"
 
@@ -17,7 +18,7 @@ extern "C" {
 }
 
 namespace minfer {
-    TORCH_LIBRARY(minfer, m) {
+    STABLE_TORCH_LIBRARY(minfer, m) {
         m.def("dequant(int qtype, int qblock_size, int qtype_size, Tensor x, Tensor(a!) y) -> ()");
         m.def("quant(int qtype, int qblock_size, int qtype_size, Tensor x, Tensor(a!) y) -> ()");
         m.def("rmsnorm(float eps, Tensor input, Tensor w, Tensor(a!) out) -> ()");
@@ -31,8 +32,8 @@ namespace minfer {
         m.def("ffn(int up_qtype_int, int gate_qtype_int, int down_qtype_int, int up_qblock_size, int gate_qblock_size, int down_qblock_size, int up_qtype_size, int gate_qtype_size, int down_qtype_size, Tensor input, Tensor ws_up, Tensor ws_gate, Tensor ws_down, Tensor(a!) hb, Tensor(a!) hb2, Tensor(a!) out) -> ()");
     }
 
-    TORCH_LIBRARY_IMPL(minfer, CPU, m) {
-        m.impl("dequant", &dequant_cpu);
-        m.impl("quant", &quant_cpu);
+    STABLE_TORCH_LIBRARY_IMPL(minfer, CPU, m) {
+        m.impl("dequant", TORCH_BOX(&dequant_cpu));
+        m.impl("quant", TORCH_BOX(&quant_cpu));
     }
 }

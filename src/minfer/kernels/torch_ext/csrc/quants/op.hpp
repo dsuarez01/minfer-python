@@ -1,19 +1,21 @@
 #pragma once
 
-#include <torch/types.h>
+#include <torch/csrc/stable/tensor_struct.h>
 
-void dequant_cpu(
-    int64_t qtype_int,
-    int64_t qblock_size,
-    int64_t qtype_size,
-    const at::Tensor& x,
-    at::Tensor& y
-);
+namespace minfer {
+    void dequant_cpu(
+        int64_t qtype_int,
+        int64_t qblock_size,
+        int64_t qtype_size,
+        const torch::stable::Tensor& x,
+        torch::stable::Tensor& y
+    );
 
-void quant_cpu(
-    int64_t qtype_int,
-    int64_t qblock_size,
-    int64_t qtype_size,
-    const at::Tensor& x,
-    at::Tensor& y
-);
+    void quant_cpu(
+        int64_t qtype_int,
+        int64_t qblock_size,
+        int64_t qtype_size,
+        const torch::stable::Tensor& x,
+        torch::stable::Tensor& y
+    );
+}

@@ -2,6 +2,10 @@
 
 #include "cuda/core/helpers.cuh"
 
+namespace minfer::impl {
+    
+}
+
 // template <int THR_PER_ROW>
 // __device__ __forceinline__ float row_reduce_max(float* vs, float v, int row_in_tile, int thr_in_row) {
 //     constexpr int WARPS_PER_ROW = (THR_PER_ROW+32-1)/32;
