@@ -25,7 +25,7 @@ NVIDIA GPUs differ in supported instructions and hardware capabilities, which ma
 Note especially if you are testing this out / forking this project for local development on a cluster setup:
 
 - The environment variable `TORCH_EXTENSIONS_DIR` determines where the compiled kernels are stored. You will want to set this directory to a local disk.
-- In general, it is better not to build the project on compute nodes isolated from internet access, e.g. on a SLURM cluster setup. You would have to build the project without build isolation, meaning many slow transactions over the network filesystem if the cluster is configured to use Lustre (large fileblock sizes). In addition, since the project would be too slow to copy over to a local disk, dependencies have to be fetched at runtime from the login node as well, so not just at compile-time. If your cluster uses this setup, consider moving over to an NFS/NFS4 cluster with fast scratch storage and smaller fileblock sizes, and additionally ensure that the compute nodes are connected to the internet. The project will then be fast to compile, and fast at runtime.
+- In general, it is better not to build the project on compute nodes isolated from internet access, e.g. on a SLURM cluster setup. You would have to build the project without build isolation, meaning many slow transactions over the network filesystem if the cluster is configured to use Lustre (large fileblock sizes). In addition, since the project would be too slow to copy over to a local disk (env managers make many small file transactions), dependencies have to be fetched at runtime from the login node as well, so not just at compile-time. If your cluster uses this setup, consider moving over to an NFS/NFS4 cluster with fast scratch storage and smaller fileblock sizes, and additionally ensure that the compute nodes are connected to the internet. The project will then be fast to compile, and fast at runtime.
 
 For more information regarding the installation, refer to `setup.py` and `setup.sh`. The setup script will have to be adjusted depending on your system configuration.
 
@@ -49,7 +49,7 @@ To verify that the setup works on your system, run the unit tests located at `te
 pytest test/kernels.py
 ```
 
-To benchmark against the corresponding Pytorch implementation:
+To benchmark the kernels against the corresponding Pytorch implementations:
 
 ```bash
 python apps/benchmark.py
