@@ -124,7 +124,7 @@ def rope(backend: str = "torch_ext"):
     compare = Compare(results)
     compare.print()
 
-def matmul_wmma(backend: str = "torch_ext"):
+def matmul(backend: str = "torch_ext"):
     """matmul against PyTorch @ op"""
     
     kerns = KernelBackend(backend)
@@ -144,14 +144,14 @@ def matmul_wmma(backend: str = "torch_ext"):
         
         x = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()
         out = torch.zeros((B, L, out_dim), dtype=torch.float16).cuda()
-        weight = (1/in_dim**0.5) * torch.randn((out_dim, in_dim), dtype=torch.float16).cuda()
+        weight = (1/in_dim**0.5) * torch.randn((in_dim, out_dim), dtype=torch.float16).cuda()
         
         def my_matmul():
             kerns.matmul(qtype, qblock_size, qtype_size, x, weight, out)
             torch.cuda.synchronize()
         
         def ref_matmul():
-            result = x @ weight.T
+            result = x @ weight
             torch.cuda.synchronize()
         
         for fn_name, fn in [("my_matmul", my_matmul), ("ref_matmul", ref_matmul)]:
@@ -235,5 +235,5 @@ def flash_attn(backend: str = "torch_ext"):
 if __name__ == "__main__":
     # rmsnorm()
     # rope()
-    matmul_wmma()
+    matmul()
     # flash_attn()

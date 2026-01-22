@@ -37,7 +37,7 @@ def rope(backend: str = "torch_ext"):
     kerns.neox_rope(rotary_dim, 0, base_freq, x)
     torch.cuda.synchronize()
 
-def matmul_wmma(backend: str = "torch_ext"):
+def matmul(backend: str = "torch_ext"):
     kerns = KernelBackend(backend)
     B, L, in_dim, out_dim = 8, 4096, 6144, 16384
     qtype = GGMLQuantizationType.F16
@@ -45,7 +45,7 @@ def matmul_wmma(backend: str = "torch_ext"):
 
     x = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()
     out = torch.zeros((B, L, out_dim), dtype=torch.float16).cuda()
-    weight = (1/in_dim**0.5) * torch.randn((out_dim, in_dim), dtype=torch.float16).cuda()
+    weight = (1/in_dim**0.5) * torch.randn((in_dim, out_dim), dtype=torch.float16).cuda()
     
     kerns.matmul(qtype, qblock_size, qtype_size, x, weight, out)
     torch.cuda.synchronize()
@@ -69,5 +69,5 @@ if __name__ == "__main__":
     # rmsnorm_head()
     # rmsnorm_vec()
     # rope()
-    matmul_wmma()
+    matmul()
     # flash_attn()
