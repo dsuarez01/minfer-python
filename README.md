@@ -68,10 +68,10 @@ The timing benchmarks measure performance relative to the Pytorch implementation
 
 ### Matrix Multiplication (HGEMM)
 
-| Kernel       | Throughput (GFLOPS) | % PyTorch HGEMM Throughput |  Speedup vs. Baseline        |
-|--------------|---------------------|----------------------------|------------------------------|
-| Basic Tiling |                     |                            |                              |
-| **PyTorch**  |                     | **100%**                   |                              |
+| Kernel                  | Throughput (TFLOPS) | % PyTorch HGEMM Throughput |  Speedup vs. Baseline        |
+|-------------------------|---------------------|----------------------------|------------------------------|
+| Baseline (Basic Tiling) | 81.48               | **48.7%**                  | 1x                           |
+| **PyTorch**             | 167.15              | **100%**                   | N/A                          |
 
 
 ## Remarks

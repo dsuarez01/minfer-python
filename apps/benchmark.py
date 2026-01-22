@@ -134,7 +134,7 @@ def matmul(backend: str = "torch_ext"):
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
     
     test_cases = [
-        ("matmul_6144_to_16384", 16384),
+        ("6144_to_16384", 16384),
     ]
     
     results = []
@@ -170,6 +170,13 @@ def matmul(backend: str = "torch_ext"):
     
     compare = Compare(results)
     compare.print()
+
+    print("\nThroughput (TFLOPS):")
+    for name, out_dim in test_cases:
+        flops = 2*(B*L)*in_dim*out_dim
+        for result in [r for r in results if name in r.task_spec.label]:
+            tflops = (flops/result.median)/1e12
+            print(f"{result.task_spec.sub_label:12s}: {tflops:6.2f} TFLOPS")
 
 def flash_attn(backend: str = "torch_ext"):
     """flash_attn against pytorch SDPA"""
