@@ -1,33 +1,60 @@
 #pragma once
 
+#include <cassert>
 #include "common/types.hpp"
 
 namespace minfer::impl {
 
-template <
-    unsigned int ROWS_BLOCK,
-    unsigned int COLS_BLOCK,
-    unsigned int NUM_THRS
->
+
+// baseline
 __device__ __forceinline__ void toShmem(
-    size_t src_stride,
+    unsigned int rows_block,
+    unsigned int cols_block,
+    size_t stride_src,
     const half* __restrict__ src,
     half* __restrict__ dst
 ) {
 
-    unsigned int thr_idx = threadIdx.y * blockDim.x + threadIdx.x;
+    unsigned int idx_thr = threadIdx.y * blockDim.x + threadIdx.x;
 
-    static_assert(NUM_THRS % COLS_BLOCK == 0);
+    unsigned int num_thrs = blockDim.x * blockDim.y;
 
-    constexpr unsigned int row_incr = NUM_THRS / COLS_BLOCK;
-    unsigned int thr_row = thr_idx / COLS_BLOCK;
-    unsigned int thr_col = thr_idx % COLS_BLOCK;
+    assert(num_thrs % cols_block == 0);
+
+    unsigned int incr_row = num_thrs / cols_block;
+    unsigned int row_thr = idx_thr / cols_block;
+    unsigned int col_thr = idx_thr % cols_block;
     
-    for (int r=thr_row; r<ROWS_BLOCK; r+=row_incr) {
-        dst[r*COLS_BLOCK+thr_col] = src[r*src_stride+thr_col]; // this breaks down into 2 instrs, store to register then shmem
+    for (int r=row_thr; r<rows_block; r+=incr_row) {
+        dst[r*cols_block+col_thr] = src[r*stride_src+col_thr]; // this breaks down into 2 instrs, store to register then shmem
     }
 }
 
+// template <
+//     unsigned int ROWS_BLOCK,
+//     unsigned int COLS_BLOCK,
+//     unsigned int NUM_THRS
+// >
+// __device__ __forceinline__ void toShmem(
+//     size_t stride_src,
+//     const half* __restrict__ src,
+//     half* __restrict__ dst
+// ) {
+
+//     unsigned int idx_thr = threadIdx.y * blockDim.x + threadIdx.x;
+
+//     static_assert(NUM_THRS % COLS_BLOCK == 0);
+
+//     constexpr unsigned int incr_row = NUM_THRS / COLS_BLOCK;
+//     unsigned int row_thr = idx_thr / COLS_BLOCK;
+//     unsigned int col_thr = idx_thr % COLS_BLOCK;
+    
+//     for (int r=row_thr; r<ROWS_BLOCK; r+=incr_row) {
+//         dst[r*COLS_BLOCK+col_thr] = src[r*stride_src+col_thr]; // this breaks down into 2 instrs, store to register then shmem
+//     }
+// }
+
+// baseline
 __device__ __forceinline__ void toGmem_m16n8(
     size_t bytes_stride_dst,
     half* dst, 
