@@ -68,10 +68,13 @@ The timing benchmarks measure performance relative to the Pytorch implementation
 
 ### Matrix Multiplication (HGEMM)
 
-| Kernel                  | Throughput (TFLOPS) | % PyTorch HGEMM Throughput |  Speedup vs. Baseline        |
-|-------------------------|---------------------|----------------------------|------------------------------|
-| Baseline (Basic Tiling) | 19.97               | **12.1%**                  | 1x                           |
-| **PyTorch**             | 167.05              | **100%**                   | N/A                          |
+All of the measurements reported are the median of trials via repeated testing.
+
+| Kernel                      | Throughput (TFLOPS) | Pytorch HGEMM Throughput   | % PyTorch HGEMM Throughput   |  Speedup vs. Baseline        |
+|-----------------------------|---------------------|----------------------------|------------------------------|------------------------------|
+| Baseline (Basic Tiling)     | 19.97               | 165.05                     | **12.1%**                    |  1x                          |
+| Unroll/vectorize shmem load | 120.77              | 162.97                     | **74.1%**                    |  6x                          |
+
 
 
 ## Remarks
@@ -79,6 +82,8 @@ The timing benchmarks measure performance relative to the Pytorch implementation
 The most substantial progress resulted from referencing NVIDIA's cuda-samples repo[^3] for their WMMA HGEMM implementation. Due to eventually wanting to understand the underlying functionality of the WMMA API, I eventually searched for an HGEMM optimization blogpost that made use of the lower-level MMA API[^1], and a related blog diving into SGEMM optimization[^2].
 
 We start with the baseline implementation from the former blogpost[^1]. Some of the subsequent improvements will differ due to e.g. the introduction of an explicitly supported asynchronous memcpy from global to shared memory (starting with the Ampere architecture), differences in opt-in shared memory and supported matrix fragment sizes, register capacity on each streaming multiprocessor, etc. Of course, optimizations related to e.g. avoiding shared memory bank conflicts[^4] such as swizzling[^1], or vectorized memory transactions, etc. will look quite similar in terms of approach.
+
+
 
 
 ## Acknowledgments
