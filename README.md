@@ -70,8 +70,8 @@ The timing benchmarks measure performance relative to the Pytorch implementation
 
 | Kernel                  | Throughput (TFLOPS) | % PyTorch HGEMM Throughput |  Speedup vs. Baseline        |
 |-------------------------|---------------------|----------------------------|------------------------------|
-| Baseline (Basic Tiling) | 81.48               | **48.7%**                  | 1x                           |
-| **PyTorch**             | 167.15              | **100%**                   | N/A                          |
+| Baseline (Basic Tiling) | 19.97               | **12.1%**                  | 1x                           |
+| **PyTorch**             | 167.05              | **100%**                   | N/A                          |
 
 
 ## Remarks
