@@ -65,8 +65,8 @@ __global__ void xw_256x128x128(
         // load from gmem to x_shmem and w_shmem
         // toShmem<DIM_MM, DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_x);
         // toShmem<DIM_MK, DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w);
-        toShmem(DIM_BM, DIM_BK, stride_x, block_x, shmem_x);
-        toShmem(DIM_BK, DIM_BN, stride_w, block_w, shmem_w);
+        toShmem<DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_x);
+        toShmem<DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w);
 
         __syncthreads();
     
