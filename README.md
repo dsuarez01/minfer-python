@@ -74,7 +74,7 @@ All of the measurements reported are the median of trials via repeated testing.
 |-----------------------------|---------------------|----------------------------|------------------------------|------------------------------|
 | Baseline (Basic Tiling)     | 19.97               | 165.05                     | **12.1%**                    |  1x                          |
 | Unroll/vectorize shmem load | 120.77              | 162.97                     | **74.1%**                    |  6x                          |
-
+| Swizzling                   | 155.74              | 167.13                     | **93.1%**                    |  7.8x                        |
 
 
 ## Remarks
