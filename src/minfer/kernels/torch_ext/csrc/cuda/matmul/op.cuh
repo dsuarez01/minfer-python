@@ -12,7 +12,7 @@
 #include <cuda_fp16.h>
 
 #include "common/types.hpp"
-#include "kernels/256x128x128.cuh"
+#include "kernels/xw.cuh"
 
 // basic compatibility checks here
 // note that this is optimized for V100
@@ -40,21 +40,22 @@ inline void dispatch_f16_xw(
     cudaDeviceProp deviceProp;
     STD_CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, device_index));
 
-    STD_TORCH_CHECK(deviceProp.major >= 7, "SM 7.0 or higher required to use tensor cores");
+    STD_TORCH_CHECK(deviceProp.major >= 8, "SM 8.0 or higher required to use tensor cores + async memcpy");
 
     // eventually: dispatch various configurations of 
     // these vals based on problem size
-    constexpr unsigned int DIM_BM = 256;
-    constexpr unsigned int DIM_BK = 128;
-    constexpr unsigned int DIM_BN = 128;
+    constexpr unsigned int DIM_BM = 512;
+    constexpr unsigned int DIM_BK = 32;
+    constexpr unsigned int DIM_BN = 256;
 
     // Turing (and beyond) supports ldmatrix m16n8k16 instruction
+    constexpr unsigned int K_PIPE_MAX = 2;
     constexpr unsigned int WARPS_M = 4;
-    constexpr unsigned int WARPS_K = 4; // more like "k tiles per warp" rather than warps per block in the K dimension
+    constexpr unsigned int TILES_K = 2;
     constexpr unsigned int WARPS_N = 2;
 
     constexpr unsigned int DIM_WM = (DIM_BM+WARPS_M-1) / WARPS_M;
-    constexpr unsigned int DIM_WK = (DIM_BK+WARPS_K-1) / WARPS_K;
+    constexpr unsigned int DIM_WK = (DIM_BK+TILES_K-1) / TILES_K;
     constexpr unsigned int DIM_WN = (DIM_BN+WARPS_N-1) / WARPS_N;
 
     const unsigned int blocks_m = (M+DIM_BM-1)/DIM_BM;
@@ -64,7 +65,7 @@ inline void dispatch_f16_xw(
     constexpr unsigned int THRS_N = SIZE_WARP * WARPS_N;
     constexpr unsigned int THRS_M = WARPS_M;
     constexpr unsigned int NUM_THRS = THRS_M * THRS_N;
-    constexpr unsigned int SHMEM_SZ = (DIM_BM*DIM_BK + DIM_BK*DIM_BN) * sizeof(half);
+    constexpr unsigned int SHMEM_SZ = K_PIPE_MAX * (DIM_BM*DIM_BK + DIM_BK*DIM_BN) * sizeof(half);
 
     STD_TORCH_CHECK(SHMEM_SZ <= deviceProp.sharedMemPerBlockOptin, "Too much shmem (per block) requested");
 
@@ -73,14 +74,15 @@ inline void dispatch_f16_xw(
 
     STD_CUDA_CHECK(
         cudaFuncSetAttribute(
-            xw_256x128x128<
+            xw_impl<
                 DIM_BM,
                 DIM_BK,
                 DIM_BN,
                 DIM_WM,
                 DIM_WK,
                 DIM_WN,
-                WARPS_K,
+                TILES_K,
+                K_PIPE_MAX,
                 NUM_THRS
             >,
             cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -94,10 +96,10 @@ inline void dispatch_f16_xw(
     );
     cudaStream_t stream = static_cast<cudaStream_t>(stream_ptr);
 
-    xw_256x128x128<
+    xw_impl<
         DIM_BM, DIM_BK, DIM_BN, 
         DIM_WM, DIM_WK, DIM_WN, 
-        WARPS_K, NUM_THRS
+        TILES_K, K_PIPE_MAX, NUM_THRS
     ><<<grid, block, SHMEM_SZ, stream>>>(
         M, K, N, x_ptr, w_ptr, out_ptr
     );
