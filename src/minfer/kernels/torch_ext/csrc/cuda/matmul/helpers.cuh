@@ -289,13 +289,16 @@ __device__ __forceinline__ void mma_sync_m16n8k16(
 // }
 
 // improvement 3: async primitives, async toShmem
-__device__ __forceinline__ void cp_async_16(
+template<unsigned int N>
+__device__ __forceinline__ void cp_async(
     uint32_t dst_shared,
     const void* src_global
 ) {
+    static_assert(N == 4 || N == 8 || N == 16);
+
     asm volatile(
-        "cp.async.cg.shared.global [%0], [%1], 16;\n"
-        :: "r"(dst_shared), "l"(src_global)
+        "cp.async.cg.shared.global [%0], [%1], %2;\n"
+        :: "r"(dst_shared), "l"(src_global), "n"(N)
     );
 }
 
@@ -353,7 +356,7 @@ __device__ __forceinline__ void toShmem(
         
         uint32_t dst_shared = dst_shared_base + idx_dst*sizeof(int4);
         const void* src_global = &reinterpret_cast<const int4*>(src)[row_thr*eff_stride_src+col_thr];
-        cp_async_16(dst_shared, src_global);
+        cp_async<16>(dst_shared, src_global);
         row_thr += INCR_ROW;
     }
 }
@@ -366,6 +369,7 @@ __device__ __forceinline__ void stmatrix_m16n8(
     half* dst,
     uint32_t (&reg)[2]
 ) {
+
     uint32_t* dst_ptr = reinterpret_cast<uint32_t*>(dst);
     bytes_stride_dst /= sizeof(uint32_t);
     

@@ -184,50 +184,100 @@ __global__ void xw_impl(
     half* shmem_base_x = shmem;
     half* shmem_base_w = &shmem[K_PIPE_MAX*DIM_BM*DIM_BK];
 
-    uint32_t x_reg[MMAS_M][MMAS_K][4];
-    uint32_t w_reg[MMAS_K][MMAS_N][2];
+    uint32_t x_reg[TILES_K][MMAS_M][MMAS_K][4];
+    uint32_t w_reg[TILES_K][MMAS_K][MMAS_N][2];
     uint32_t acc_reg[MMAS_M][MMAS_N][2];
 
     memset(acc_reg, 0, sizeof(acc_reg));
 
     // pipeline ctrl (https://research.colfax-intl.com/cutlass-tutorial-design-of-a-gemm-kernel/)
-    int k_tile_count = BLOCKS_K;
-    int k_tile_next = 0;
-    int shmem_pipe_read = 0;
-    int shmem_pipe_write = 0;
+    int k_block_count = BLOCKS_K;
+    int k_block_next = 0;
 
     // prefetch first K_PIPE_MAX-1 tiles
     for (int k_pipe=0; k_pipe < K_PIPE_MAX-1; ++k_pipe) {
-        const half* block_x = x + block_m*DIM_BM*stride_x + k_tile_next*DIM_BK;
-        const half* block_w = w + k_tile_next*DIM_BK*stride_w + block_n*DIM_BN;
+        const half* block_x = x + block_m*DIM_BM*stride_x + k_block_next*DIM_BK;
+        const half* block_w = w + k_block_next*DIM_BK*stride_w + block_n*DIM_BN;
         
-        half* shmem_x_write = shmem_base_x + shmem_pipe_write * DIM_BM * DIM_BK;
-        half* shmem_w_write = shmem_base_w + shmem_pipe_write * DIM_BK * DIM_BN;
+        half* shmem_x = shmem_base_x + k_pipe * DIM_BM * DIM_BK;
+        half* shmem_w = shmem_base_w + k_pipe * DIM_BK * DIM_BN;
 
-        toShmem<DIM_MM, DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_x_write);
-        toShmem<DIM_MK, DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w_write);
+        toShmem<DIM_MM, DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_x);
+        toShmem<DIM_MK, DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w);
         cp_async_fence();
 
-        --k_tile_count;
-        if (k_tile_count > 0) ++k_tile_next;
-        shmem_pipe_write = (shmem_pipe_write+1)%K_PIPE_MAX;
+        --k_block_count;
+        if (k_block_count > 0) ++k_block_next;
     }
 
-    // waiting for first tile to arrive
-    cp_async_wait<K_PIPE_MAX-2>();
-    __syncthreads();
+    int shmem_pipe_read = 0;
+    int shmem_pipe_write = K_PIPE_MAX-1;
+
+    const half* shmem_x_read = shmem_base_x + shmem_pipe_read * DIM_BM * DIM_BK;
+    const half* shmem_w_read = shmem_base_w + shmem_pipe_read * DIM_BK * DIM_BN;
+
+    if (TILES_K > 1) {
+        cp_async_wait<K_PIPE_MAX-2>();
+        __syncthreads();
+
+        // write the first rmem from the first k-tile, both for x and w
+        const half* warp_x = shmem_x_read + warp_m * DIM_WM * DIM_BK + 0 * DIM_WK;
+        const half* warp_w = shmem_w_read + 0 * DIM_WK * DIM_BN + warp_n * DIM_WN;
+
+        uint32_t byte_ofst_warp_x = __cvta_generic_to_shared(warp_x);
+        uint32_t byte_ofst_warp_w = __cvta_generic_to_shared(warp_w);
+
+        for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
+            for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
+                ldmatrix_m16n16<DIM_MM, DIM_MK, DIM_BK>(mma_m, mma_k, lane_idx, byte_ofst_warp_x, x_reg[0][mma_m][mma_k]);
+            }
+        }
+
+        for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
+            for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
+                ldmatrix_m16n8<DIM_MK, DIM_MN, DIM_BN>(mma_k, mma_n, lane_idx, byte_ofst_warp_w, w_reg[0][mma_k][mma_n]);
+            }
+        }
+    }
     
     // for each K block tile (this does iterate BLOCKS_K times)
-    while (k_tile_count > -(K_PIPE_MAX-1)) {
-        
-        half* shmem_x = shmem_base_x + shmem_pipe_read * DIM_BM * DIM_BK;
-        half* shmem_w = shmem_base_w + shmem_pipe_read * DIM_BK * DIM_BN;
+    while (k_block_count > -((int)K_PIPE_MAX-1)) {
 
         for (int tile_k = 0; tile_k < TILES_K; ++tile_k) {
 
+            if (tile_k == TILES_K - 1) {
+
+                shmem_x_read = shmem_base_x + shmem_pipe_read * DIM_BM * DIM_BK;
+                shmem_w_read = shmem_base_w + shmem_pipe_read * DIM_BK * DIM_BN;
+                
+                cp_async_wait<K_PIPE_MAX-2>();
+                __syncthreads();
+            }
+
+            // x,w shmem -> regs for tile_k+1
+            int tile_k_next = (tile_k+1)%TILES_K;
+            
+            const half* warp_x = shmem_x_read + warp_m * DIM_WM * DIM_BK + tile_k_next * DIM_WK;
+            const half* warp_w = shmem_w_read + tile_k_next * DIM_WK * DIM_BN + warp_n * DIM_WN;
+            
+            uint32_t byte_ofst_warp_x = __cvta_generic_to_shared(warp_x);
+            uint32_t byte_ofst_warp_w = __cvta_generic_to_shared(warp_w);
+
+            for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
+                for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
+                    ldmatrix_m16n16<DIM_MM, DIM_MK, DIM_BK>(mma_m, mma_k, lane_idx, byte_ofst_warp_x, x_reg[tile_k_next][mma_m][mma_k]);
+                }
+            }
+
+            for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
+                for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
+                    ldmatrix_m16n8<DIM_MK, DIM_MN, DIM_BN>(mma_k, mma_n, lane_idx, byte_ofst_warp_w, w_reg[tile_k_next][mma_k][mma_n]);
+                }
+            }
+
             if (tile_k == 0) {
-                const half* block_x = x + block_m*DIM_BM*stride_x + k_tile_next*DIM_BK;
-                const half* block_w = w + k_tile_next*DIM_BK*stride_w + block_n*DIM_BN;
+                const half* block_x = x + block_m*DIM_BM*stride_x + k_block_next*DIM_BK;
+                const half* block_w = w + k_block_next*DIM_BK*stride_w + block_n*DIM_BN;
                 
                 half* shmem_x_write = shmem_base_x + shmem_pipe_write * DIM_BM * DIM_BK;
                 half* shmem_w_write = shmem_base_w + shmem_pipe_write * DIM_BK * DIM_BN;
@@ -236,50 +286,14 @@ __global__ void xw_impl(
                 toShmem<DIM_MK, DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w_write);
                 cp_async_fence();
 
-                --k_tile_count;
-                if (k_tile_count > 0) ++k_tile_next;
-                shmem_pipe_write = (shmem_pipe_write+1)%K_PIPE_MAX;
+                --k_block_count;
+                if (k_block_count > 0) ++k_block_next;
+                shmem_pipe_write = shmem_pipe_read;
+                shmem_pipe_read = (shmem_pipe_read+1)%K_PIPE_MAX;
 
             }
 
-            // load from shmem into registers
-            const half* warp_x = shmem_x + warp_m * DIM_WM * DIM_BK + tile_k * DIM_WK;
-            const half* warp_w = shmem_w + tile_k * DIM_WK * DIM_BN + warp_n * DIM_WN;
-
-            uint32_t byte_ofst_warp_x = __cvta_generic_to_shared(warp_x);
-            uint32_t byte_ofst_warp_w = __cvta_generic_to_shared(warp_w);
-
-            for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) { // x_shmem
-                for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
-                    ldmatrix_m16n16<DIM_MM,DIM_MK,DIM_BK>(
-                        mma_m,
-                        mma_k,
-                        lane_idx,
-                        byte_ofst_warp_x,
-                        x_reg[mma_m][mma_k]
-                    );
-                }
-            }
-
-            for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) { // w_shmem
-                for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
-                    ldmatrix_m16n8<DIM_MK,DIM_MN,DIM_BN>(
-                        mma_k,
-                        mma_n,
-                        lane_idx,
-                        byte_ofst_warp_w,
-                        w_reg[mma_k][mma_n]
-                    );
-                }
-            }
-
-            if (tile_k == TILES_K-1) {
-                // wait for the previous copies to complete
-                cp_async_wait<K_PIPE_MAX-2>();
-                __syncthreads();
-            }
-
-            // compute on block
+            // mma on tile_k regs
             for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
 
                 for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
@@ -289,16 +303,14 @@ __global__ void xw_impl(
                             mma_m,
                             mma_k,
                             mma_n,
-                            x_reg[mma_m][mma_k],
-                            w_reg[mma_k][mma_n],
+                            x_reg[tile_k][mma_m][mma_k],
+                            w_reg[tile_k][mma_k][mma_n],
                             acc_reg[mma_m][mma_n]
                         );
                     }
                 }
             }
         }
-
-        shmem_pipe_read = (shmem_pipe_read+1)%K_PIPE_MAX;
     }
 
     __syncthreads();
@@ -308,7 +320,9 @@ __global__ void xw_impl(
 
     for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
         for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
+
             half* mma_out = warp_out + mma_m * DIM_MM * stride_out + mma_n * DIM_MN;
+            
             stmatrix_m16n8(
                 lane_idx,
                 stride_out * sizeof(half), 
