@@ -108,9 +108,6 @@ namespace minfer::impl {
 
 //                     for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
 //                         mma_sync_m16n8k16(
-//                             mma_m,
-//                             mma_k,
-//                             mma_n,
 //                             x_reg[mma_m][mma_k],
 //                             w_reg[mma_k][mma_n],
 //                             acc_reg[mma_m][mma_n]
@@ -183,6 +180,7 @@ __global__ void xw_impl(
     extern __shared__ half shmem[];
     half* shmem_base_x = shmem;
     half* shmem_base_w = &shmem[K_PIPE_MAX*DIM_BM*DIM_BK];
+    half* shmem_base_out = shmem; // DIM_BM*DIM_BN <= K_PIPE_MAX*(DIM_BM*DIM_BK+DIM_BK*DIM_BN)
 
     uint32_t x_reg[2][MMAS_M][MMAS_K][4];
     uint32_t w_reg[2][MMAS_K][MMAS_N][2];
@@ -242,7 +240,7 @@ __global__ void xw_impl(
 
             const int tile_k_next = (tile_k == TILES_K-1) ? 0 : tile_k+1;
 
-            if (tile_k == TILES_K - 1) {
+            if (tile_k == TILES_K-1) {
 
                 shmem_x_read = shmem_base_x + shmem_pipe_read * DIM_BM * DIM_BK;
                 shmem_w_read = shmem_base_w + shmem_pipe_read * DIM_BK * DIM_BN;
@@ -271,7 +269,7 @@ __global__ void xw_impl(
 
                 --k_block_count;
                 if (k_block_count > 0) ++k_block_next;
-                shmem_pipe_write = shmem_pipe_read;
+                shmem_pipe_write = shmem_pipe_read; // (circular buffer)
                 shmem_pipe_read = (shmem_pipe_read == K_PIPE_MAX-1) ? 0 : shmem_pipe_read+1;
             }
 
@@ -283,9 +281,6 @@ __global__ void xw_impl(
                     #pragma unroll
                     for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
                         mma_sync_m16n8k16(
-                            mma_m,
-                            mma_k,
-                            mma_n,
                             x_reg[reg_idx][mma_m][mma_k],
                             w_reg[reg_idx][mma_k][mma_n],
                             acc_reg[mma_m][mma_n]
@@ -298,22 +293,15 @@ __global__ void xw_impl(
 
     __syncthreads();
 
+    // regs -> shmem -> gmem
+    half* shmem_warp_out = shmem_base_out + warp_m * DIM_WM * DIM_BN + warp_n * DIM_WN;
+    stmatrix<DIM_MM, DIM_MN, MMAS_M, MMAS_N, DIM_BN>(lane_idx, shmem_warp_out, acc_reg);
+
+    __syncthreads();
+
+    // shmem -> gmem
     half* block_out = out + block_m * DIM_BM * stride_out + block_n * DIM_BN;
-    half* warp_out = block_out + warp_m * DIM_WM * stride_out + warp_n * DIM_WN;
-
-    for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
-        for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
-
-            half* mma_out = warp_out + mma_m * DIM_MM * stride_out + mma_n * DIM_MN;
-            
-            stmatrix_m16n8(
-                lane_idx,
-                stride_out * sizeof(half), 
-                mma_out, 
-                acc_reg[mma_m][mma_n]
-            );
-        }
-    }
+    toGmem<DIM_MM, DIM_BM, DIM_BN, NUM_THRS>(stride_out, shmem_base_out, block_out);
 }
 
 }

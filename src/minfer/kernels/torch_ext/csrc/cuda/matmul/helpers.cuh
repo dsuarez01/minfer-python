@@ -120,7 +120,7 @@ __device__ __forceinline__ void ldmatrix_a(
     constexpr unsigned int BITS = int_log2(ROWS_MMA);
     constexpr unsigned int BASE = int_log2(sizeof(int4));
     constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
-    constexpr unsigned int BITMASK = ((1u << BITS) - 1) << (BASE + SHIFT);
+    constexpr unsigned int BITMASK = ((1u<<BITS)-1) << (BASE+SHIFT);
 
     constexpr uint32_t STRIDE_COL = COLS_MMA * sizeof(half);
     constexpr uint32_t STRIDE_ROW = ROWS_MMA * COLS_BLOCK * sizeof(half);
@@ -153,7 +153,7 @@ __device__ __forceinline__ void ldmatrix_a(
                 "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
                 "{%0, %1}, [%2];\n"
                 : "=r"(reg[mma_row][mma_col][2]), "=r"(reg[mma_row][mma_col][3])
-                : "r"(src_addr ^ PATTERN_8)
+                : "r"(src_addr^PATTERN_8)
             );
 
             src_addr ^= xor_pattern<STRIDE_COL, BITMASK, SHIFT>(mma_col);
@@ -246,7 +246,7 @@ __device__ __forceinline__ void ldmatrix_b(
     constexpr unsigned int BITS = int_log2(ROWS_MMA);
     constexpr unsigned int BASE = int_log2(sizeof(int4));
     constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
-    constexpr unsigned int BITMASK = ((1u << BITS) - 1) << (BASE + SHIFT);
+    constexpr unsigned int BITMASK = ((1u<<BITS)-1) << (BASE+SHIFT);
 
     constexpr uint32_t STRIDE_COL = COLS_MMA * sizeof(half);
     constexpr uint32_t STRIDE_ROW = ROWS_MMA * COLS_BLOCK * sizeof(half);
@@ -282,9 +282,6 @@ __device__ __forceinline__ void ldmatrix_b(
 
 // baseline
 __device__ __forceinline__ void mma_sync_m16n8k16(
-    int mma_m,
-    int mma_k,
-    int mma_n,
     uint32_t (&x_reg)[4],
     uint32_t (&w_reg)[2],
     uint32_t (&acc_reg)[2]
@@ -453,7 +450,7 @@ __device__ __forceinline__ void toShmem(
     constexpr unsigned int BITS = int_log2(ROWS_MMA);
     constexpr unsigned int BASE = int_log2(sizeof(int4)); // 16-byte alignment
     constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
-    constexpr unsigned int BITMASK  = ((1u << BITS) - 1) << (BASE + SHIFT);
+    constexpr unsigned int BITMASK  = ((1u<<BITS)-1) << (BASE+SHIFT);
 
     unsigned int idx_thr = threadIdx.y * blockDim.x + threadIdx.x;
 
@@ -476,39 +473,145 @@ __device__ __forceinline__ void toShmem(
     // reduce instrs by XOR dst pointer with const
     constexpr uint32_t STRIDE_DST = INCR_ROW * EFF_COLS_BLOCK * sizeof(int4);
 
-    uint32_t dst_shared_base = __cvta_generic_to_shared(dst);
+    uint32_t shared_base = __cvta_generic_to_shared(dst);
     unsigned int idx_dst = row_thr*EFF_COLS_BLOCK+col_thr;
-    uint32_t dst_shared = dst_shared_base + idx_dst*sizeof(int4);
-    dst_shared ^= (dst_shared & BITMASK) >> SHIFT;
+    uint32_t dst_addr = shared_base + idx_dst*sizeof(int4);
+    dst_addr ^= (dst_addr & BITMASK) >> SHIFT;
 
     #pragma unroll
     for (int i=0; i<NUM_ITERS; ++i) {
         const void* src_global = &reinterpret_cast<const int4*>(src)[row_thr*eff_stride_src+col_thr];
-        cp_async<16>(dst_shared, src_global);
-        dst_shared ^= xor_pattern<STRIDE_DST, BITMASK, SHIFT>(i);
+        cp_async<16>(dst_addr, src_global);
+        dst_addr ^= xor_pattern<STRIDE_DST, BITMASK, SHIFT>(i);
         row_thr += INCR_ROW;
     }
 }
 
 // baseline
 // (named after the Hopper instruction)
-__device__ __forceinline__ void stmatrix_m16n8(
-    unsigned int lane_idx,
-    size_t bytes_stride_dst,
-    half* dst,
-    uint32_t (&reg)[2]
-) {
+// __device__ __forceinline__ void stmatrix_m16n8(
+//     unsigned int lane_idx,
+//     size_t bytes_stride_dst,
+//     half* dst,
+//     uint32_t (&reg)[2]
+// ) {
 
-    uint32_t* dst_ptr = reinterpret_cast<uint32_t*>(dst);
-    bytes_stride_dst /= sizeof(uint32_t);
+//     uint32_t* dst_ptr = reinterpret_cast<uint32_t*>(dst);
+//     bytes_stride_dst /= sizeof(uint32_t);
     
-    // (16 byte transactions per row)
+//     // (16 byte transactions per row)
+//     unsigned int frag_col = lane_idx%4;
+//     unsigned int frag_row = lane_idx/4;
+
+//     dst_ptr[frag_row*bytes_stride_dst+frag_col] = reg[0]; // 4 bytes written per thr
+//     frag_row += 8;
+//     dst_ptr[frag_row*bytes_stride_dst+frag_col] = reg[1]; // 4 bytes written per thr
+// }
+
+// improvement 3: (pipelining) mitigating uncoalesced stores to gmem
+template <
+    unsigned int ROWS_MMA,
+    unsigned int COLS_MMA,
+    unsigned int MMAS_ROW,
+    unsigned int MMAS_COL,
+    unsigned int COLS_BLOCK
+>
+__device__ __forceinline__ void stmatrix(
+    unsigned int lane_idx,
+    half* dst,
+    uint32_t (&reg)[MMAS_ROW][MMAS_COL][2]
+) {
+    static_assert(ROWS_MMA == 16);
+    static_assert(COLS_MMA == 8);
+
+    constexpr unsigned int BITS = int_log2(ROWS_MMA);
+    constexpr unsigned int BASE = int_log2(sizeof(int4)); // 16-byte alignment for toGmem
+    constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
+    constexpr unsigned int BITMASK = ((1u<<BITS)-1) << (BASE+SHIFT);
+
+    constexpr uint32_t STRIDE_COL = COLS_MMA * sizeof(half);
+    constexpr uint32_t STRIDE_ROW = ROWS_MMA * COLS_BLOCK * sizeof(half);
+    constexpr uint32_t STRIDE_8 = 8 * COLS_BLOCK * sizeof(half);
+    constexpr uint32_t PATTERN_8 = STRIDE_8 ^ ((STRIDE_8 & BITMASK) >> SHIFT);
+
+    uint32_t shared_base = __cvta_generic_to_shared(dst);
+
     unsigned int frag_col = lane_idx%4;
     unsigned int frag_row = lane_idx/4;
 
-    dst_ptr[frag_row*bytes_stride_dst+frag_col] = reg[0]; // 4 bytes written per thr
-    frag_row += 8;
-    dst_ptr[frag_row*bytes_stride_dst+frag_col] = reg[1]; // 4 bytes written per thr
+    uint32_t base_addr = shared_base + frag_row * COLS_BLOCK * sizeof(half) + frag_col * sizeof(uint32_t);
+    uint32_t dst_addr = base_addr ^ ((base_addr & BITMASK) >> SHIFT);
+
+    #pragma unroll
+    for (int mma_row = 0; mma_row < MMAS_ROW; ++mma_row) {
+
+        const uint32_t row_addr = dst_addr;
+
+        #pragma unroll
+        for (int mma_col = 0; mma_col < MMAS_COL; ++mma_col) {
+
+            asm volatile("st.shared.u32 [%0], %1;\n" :: "r"(dst_addr), "r"(reg[mma_row][mma_col][0]));
+            asm volatile("st.shared.u32 [%0], %1;\n" :: "r"(dst_addr^PATTERN_8), "r"(reg[mma_row][mma_col][1]));
+
+            dst_addr ^= xor_pattern<STRIDE_COL, BITMASK, SHIFT>(mma_col);
+        }
+
+        dst_addr = row_addr ^ xor_pattern<STRIDE_ROW, BITMASK, SHIFT>(mma_row);
+    }
+}
+
+// improvement 3: (pipelining) mitigating uncoalesced stores to gmem
+template <
+    unsigned int ROWS_MMA,
+    unsigned int ROWS_BLOCK,
+    unsigned int COLS_BLOCK,
+    unsigned int NUM_THRS
+>
+__device__ __forceinline__ void toGmem(
+    size_t stride_dst,
+    const half* src,
+    half* dst
+) {
+    constexpr unsigned int BITS = int_log2(ROWS_MMA);
+    constexpr unsigned int BASE = int_log2(sizeof(int4));
+    constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
+    constexpr unsigned int BITMASK = ((1u<<BITS)-1) << (BASE+SHIFT);
+
+    unsigned int idx_thr = threadIdx.y * blockDim.x + threadIdx.x;
+
+    static_assert(COLS_BLOCK % 8 == 0);
+    // assert(stride_dst % 8 == 0);
+
+    size_t eff_stride_dst = stride_dst / 8;
+    constexpr unsigned int EFF_COLS_BLOCK = COLS_BLOCK / 8;
+
+    static_assert(NUM_THRS % EFF_COLS_BLOCK == 0);
+
+    constexpr unsigned int INCR_ROW = NUM_THRS / EFF_COLS_BLOCK;
+    constexpr unsigned int NUM_ITERS = ROWS_BLOCK / INCR_ROW;
+    constexpr uint32_t STRIDE_SRC = INCR_ROW * EFF_COLS_BLOCK * sizeof(int4);
+
+    unsigned int row_thr = idx_thr / EFF_COLS_BLOCK;
+    unsigned int col_thr = idx_thr % EFF_COLS_BLOCK;
+
+    uint32_t shared_base = __cvta_generic_to_shared(src);
+    uint32_t idx_src = row_thr*EFF_COLS_BLOCK+col_thr;
+    uint32_t src_addr = shared_base + idx_src*sizeof(int4);
+    src_addr ^= (src_addr & BITMASK) >> SHIFT;
+
+    int4 src_vals;
+
+    #pragma unroll
+    for (int i = 0; i < NUM_ITERS; ++i) {
+        asm volatile(
+            "ld.shared.v4.u32 {%0, %1, %2, %3}, [%4];\n"
+            : "=r"(src_vals.x), "=r"(src_vals.y), "=r"(src_vals.z), "=r"(src_vals.w)
+            : "r"(src_addr)
+        );
+        reinterpret_cast<int4*>(dst)[row_thr*eff_stride_dst+col_thr] = src_vals;
+        src_addr ^= xor_pattern<STRIDE_SRC, BITMASK, SHIFT>(i);
+        row_thr += INCR_ROW;
+    }
 }
 
 }
