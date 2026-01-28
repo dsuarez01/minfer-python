@@ -43,9 +43,11 @@ def get_extensions():
         ],
         "nvcc": [
             "-O3" if not debug_mode else "-O0",
+            "-gencode=arch=compute_89,code=compute_89",
             "-gencode=arch=compute_89,code=sm_89",
             "-DTORCH_TARGET_VERSION=0x020a000000000000", # min pytorch 2.10 for stable ABI
             "-DUSE_CUDA",
+            "--ptxas-options=-v",
             include_path,
         ],
     }

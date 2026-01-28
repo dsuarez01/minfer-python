@@ -44,14 +44,14 @@ inline void dispatch_f16_xw(
 
     // eventually: dispatch various configurations of 
     // these vals based on problem size
-    constexpr unsigned int DIM_BM = 512;
-    constexpr unsigned int DIM_BK = 32;
-    constexpr unsigned int DIM_BN = 256;
+    constexpr unsigned int DIM_BM = 256;
+    constexpr unsigned int DIM_BK = 64;
+    constexpr unsigned int DIM_BN = 128;
 
-    // Turing (and beyond) supports ldmatrix m16n8k16 instruction
+    // ldmatrix m16n8k16 instruction
     constexpr unsigned int K_PIPE_MAX = 2;
     constexpr unsigned int WARPS_M = 4;
-    constexpr unsigned int TILES_K = 2;
+    constexpr unsigned int TILES_K = 4;
     constexpr unsigned int WARPS_N = 2;
 
     constexpr unsigned int DIM_WM = (DIM_BM+WARPS_M-1) / WARPS_M;

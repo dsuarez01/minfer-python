@@ -294,6 +294,7 @@ __device__ __forceinline__ void cp_async(
     uint32_t dst_shared,
     const void* src_global
 ) {
+    // https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-non-bulk-copy
     static_assert(N == 4 || N == 8 || N == 16);
 
     asm volatile(

@@ -184,8 +184,8 @@ __global__ void xw_impl(
     half* shmem_base_x = shmem;
     half* shmem_base_w = &shmem[K_PIPE_MAX*DIM_BM*DIM_BK];
 
-    uint32_t x_reg[TILES_K][MMAS_M][MMAS_K][4];
-    uint32_t w_reg[TILES_K][MMAS_K][MMAS_N][2];
+    uint32_t x_reg[2][MMAS_M][MMAS_K][4];
+    uint32_t w_reg[2][MMAS_K][MMAS_N][2];
     uint32_t acc_reg[MMAS_M][MMAS_N][2];
 
     memset(acc_reg, 0, sizeof(acc_reg));
@@ -239,11 +239,20 @@ __global__ void xw_impl(
             }
         }
     }
-    
+
+    const half* block_base_x = x + block_m*DIM_BM*stride_x;
+    const half* block_base_w = w + block_n*DIM_BN;
+
     // for each K block tile (this does iterate BLOCKS_K times)
     while (k_block_count > -((int)K_PIPE_MAX-1)) {
-
+        
+        #pragma unroll
         for (int tile_k = 0; tile_k < TILES_K; ++tile_k) {
+
+            const int reg_idx = tile_k & 1;
+            const int reg_next_idx = reg_idx ^ 1;
+
+            const int tile_k_next = (tile_k == TILES_K-1) ? 0 : tile_k+1;
 
             if (tile_k == TILES_K - 1) {
 
@@ -255,29 +264,31 @@ __global__ void xw_impl(
             }
 
             // x,w shmem -> regs for tile_k+1
-            int tile_k_next = (tile_k+1)%TILES_K;
-            
             const half* warp_x = shmem_x_read + warp_m * DIM_WM * DIM_BK + tile_k_next * DIM_WK;
             const half* warp_w = shmem_w_read + tile_k_next * DIM_WK * DIM_BN + warp_n * DIM_WN;
-            
+
             uint32_t byte_ofst_warp_x = __cvta_generic_to_shared(warp_x);
             uint32_t byte_ofst_warp_w = __cvta_generic_to_shared(warp_w);
 
+            #pragma unroll
             for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
+                #pragma unroll
                 for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
-                    ldmatrix_m16n16<DIM_MM, DIM_MK, DIM_BK>(mma_m, mma_k, lane_idx, byte_ofst_warp_x, x_reg[tile_k_next][mma_m][mma_k]);
+                    ldmatrix_m16n16<DIM_MM, DIM_MK, DIM_BK>(mma_m, mma_k, lane_idx, byte_ofst_warp_x, x_reg[reg_next_idx][mma_m][mma_k]);
                 }
             }
 
+            #pragma unroll
             for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
+                #pragma unroll
                 for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
-                    ldmatrix_m16n8<DIM_MK, DIM_MN, DIM_BN>(mma_k, mma_n, lane_idx, byte_ofst_warp_w, w_reg[tile_k_next][mma_k][mma_n]);
+                    ldmatrix_m16n8<DIM_MK, DIM_MN, DIM_BN>(mma_k, mma_n, lane_idx, byte_ofst_warp_w, w_reg[reg_next_idx][mma_k][mma_n]);
                 }
             }
 
             if (tile_k == 0) {
-                const half* block_x = x + block_m*DIM_BM*stride_x + k_block_next*DIM_BK;
-                const half* block_w = w + k_block_next*DIM_BK*stride_w + block_n*DIM_BN;
+                const half* block_x = block_base_x + k_block_next*DIM_BK;
+                const half* block_w = block_base_w + k_block_next*DIM_BK*stride_w;
                 
                 half* shmem_x_write = shmem_base_x + shmem_pipe_write * DIM_BM * DIM_BK;
                 half* shmem_w_write = shmem_base_w + shmem_pipe_write * DIM_BK * DIM_BN;
@@ -289,28 +300,28 @@ __global__ void xw_impl(
                 --k_block_count;
                 if (k_block_count > 0) ++k_block_next;
                 shmem_pipe_write = shmem_pipe_read;
-                shmem_pipe_read = (shmem_pipe_read+1)%K_PIPE_MAX;
-
+                shmem_pipe_read = (shmem_pipe_read == K_PIPE_MAX-1) ? 0 : shmem_pipe_read+1;
             }
 
             // mma on tile_k regs
+            #pragma unroll
             for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
-
+                #pragma unroll
                 for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
-
+                    #pragma unroll
                     for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
                         mma_sync_m16n8k16(
                             mma_m,
                             mma_k,
                             mma_n,
-                            x_reg[tile_k][mma_m][mma_k],
-                            w_reg[tile_k][mma_k][mma_n],
+                            x_reg[reg_idx][mma_m][mma_k],
+                            w_reg[reg_idx][mma_k][mma_n],
                             acc_reg[mma_m][mma_n]
                         );
                     }
                 }
             }
-        }
+        }   
     }
 
     __syncthreads();
