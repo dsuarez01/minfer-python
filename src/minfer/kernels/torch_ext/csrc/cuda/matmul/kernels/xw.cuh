@@ -224,20 +224,8 @@ __global__ void xw_impl(
         const half* warp_x = shmem_x_read + warp_m * DIM_WM * DIM_BK + 0 * DIM_WK;
         const half* warp_w = shmem_w_read + 0 * DIM_WK * DIM_BN + warp_n * DIM_WN;
 
-        uint32_t byte_ofst_warp_x = __cvta_generic_to_shared(warp_x);
-        uint32_t byte_ofst_warp_w = __cvta_generic_to_shared(warp_w);
-
-        for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
-            for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
-                ldmatrix_m16n16<DIM_MM, DIM_MK, DIM_BK>(mma_m, mma_k, lane_idx, byte_ofst_warp_x, x_reg[0][mma_m][mma_k]);
-            }
-        }
-
-        for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
-            for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
-                ldmatrix_m16n8<DIM_MK, DIM_MN, DIM_BN>(mma_k, mma_n, lane_idx, byte_ofst_warp_w, w_reg[0][mma_k][mma_n]);
-            }
-        }
+        ldmatrix_a<DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_x, x_reg[0]);
+        ldmatrix_b<DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_w, w_reg[0]);
     }
 
     const half* block_base_x = x + block_m*DIM_BM*stride_x;
@@ -267,24 +255,8 @@ __global__ void xw_impl(
             const half* warp_x = shmem_x_read + warp_m * DIM_WM * DIM_BK + tile_k_next * DIM_WK;
             const half* warp_w = shmem_w_read + tile_k_next * DIM_WK * DIM_BN + warp_n * DIM_WN;
 
-            uint32_t byte_ofst_warp_x = __cvta_generic_to_shared(warp_x);
-            uint32_t byte_ofst_warp_w = __cvta_generic_to_shared(warp_w);
-
-            #pragma unroll
-            for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
-                #pragma unroll
-                for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
-                    ldmatrix_m16n16<DIM_MM, DIM_MK, DIM_BK>(mma_m, mma_k, lane_idx, byte_ofst_warp_x, x_reg[reg_next_idx][mma_m][mma_k]);
-                }
-            }
-
-            #pragma unroll
-            for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
-                #pragma unroll
-                for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
-                    ldmatrix_m16n8<DIM_MK, DIM_MN, DIM_BN>(mma_k, mma_n, lane_idx, byte_ofst_warp_w, w_reg[reg_next_idx][mma_k][mma_n]);
-                }
-            }
+            ldmatrix_a<DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_x, x_reg[reg_next_idx]);
+            ldmatrix_b<DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_w, w_reg[reg_next_idx]);
 
             if (tile_k == 0) {
                 const half* block_x = block_base_x + k_block_next*DIM_BK;
