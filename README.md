@@ -70,11 +70,12 @@ The timing benchmarks measure performance relative to the Pytorch implementation
 
 All of the measurements reported are the median of trials via repeated testing.
 
-| Kernel                      | Throughput (TFLOPS) | Pytorch HGEMM Throughput   | % PyTorch HGEMM Throughput   |  Speedup vs. Baseline        |
-|-----------------------------|---------------------|----------------------------|------------------------------|------------------------------|
-| Baseline (Basic Tiling)     | 19.97               | 165.05                     | **12.1%**                    |  1x                          |
-| Unroll/vectorize shmem load | 120.77              | 162.97                     | **74.1%**                    |  6x                          |
-| Swizzling                   | 155.74              | 167.13                     | **93.1%**                    |  7.8x                        |
+| Kernel                                        | Throughput (TFLOPS) | Pytorch HGEMM Throughput   | % PyTorch HGEMM Throughput   |  Speedup vs. Baseline        |
+|-----------------------------------------------|---------------------|----------------------------|------------------------------|------------------------------|
+| Baseline (Basic Tiling)                       | 19.97               | 165.05                     | **12.1%**                    |  1x                          |
+| Unroll/vectorize shmem load                   | 120.77              | 162.97                     | **74.1%**                    |  6x                          |
+| Swizzling                                     | 155.74              | 167.13                     | **93.1%**                    |  7.8x                        |
+| Pipelining/reduce instr. cnt                  | 171.37              | 167.13                     | **102.5%**                   |  8.6x                        |
 
 
 ## Remarks
@@ -83,7 +84,7 @@ The most substantial progress resulted from referencing NVIDIA's cuda-samples re
 
 We start with the baseline implementation from the former blogpost[^1]. Some of the subsequent improvements will differ due to e.g. the introduction of an explicitly supported asynchronous memcpy from global to shared memory (starting with the Ampere architecture), differences in opt-in shared memory and supported matrix fragment sizes, register capacity on each streaming multiprocessor, etc. Of course, optimizations related to e.g. avoiding shared memory bank conflicts[^4] such as swizzling[^1], or vectorized memory transactions, etc. will look quite similar in terms of approach.
 
-
+(Notes on my most recent optimizations are in-progress as of 1/28/26.)
 
 
 ## Acknowledgments
