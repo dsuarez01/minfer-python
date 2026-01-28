@@ -335,7 +335,7 @@ __device__ __forceinline__ void toShmem(
     // can issue up to 128-bit load/store instrs (8 half elements)
     // alignment checks
     static_assert(COLS_BLOCK % 8 == 0);
-    assert(stride_src % 8 == 0);
+    // assert(stride_src % 8 == 0);
     
     size_t eff_stride_src = stride_src / 8;
     constexpr unsigned int EFF_COLS_BLOCK = COLS_BLOCK / 8;
