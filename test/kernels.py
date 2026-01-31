@@ -1,4 +1,6 @@
-# TODO: eventually add in Triton?
+from itertools import product
+import gc
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -7,6 +9,7 @@ import pytest
 from minfer.kernels import KernelBackend
 from minfer.const import GGMLQuantizationType, GGML_QUANT_SIZES
 
+torch.backends.cuda.matmul.allow_fp16_accumulation = True
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
 
 SUPPORTED_QTYPES = [
@@ -215,23 +218,29 @@ def test_embed(backend):
 
 # A: X @ W
 # B: X @ W.T (NOTE: not finished right now)
+MATMUL_SIZES = [512,1024,2048]
 @pytest.mark.parametrize("backend", ["torch_ext"])
-def test_matmul(backend):
+@pytest.mark.parametrize("shape", product(MATMUL_SIZES,MATMUL_SIZES,MATMUL_SIZES))
+def test_matmul(backend, shape):
+
     kerns = KernelBackend(backend)
-    B, L, in_dim, out_dim = 8, 4096, 6144, 16384
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
-    # A: act. shape [B // dp_size, L, in_dim], weight shape [in_dim, out_dim]
-    input_A = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()
-    actual_A = torch.zeros((B, L, out_dim), dtype=torch.float16).cuda()
-    weight_A = (1/in_dim**0.5) * torch.randn((in_dim, out_dim), dtype=torch.float16).cuda()
+    M, K, N = shape
 
-    expected_A = input_A @ weight_A
-    kerns.matmul(qtype, qblock_size, qtype_size, input_A, weight_A, actual_A)
+    # A: act. shape [B // dp_size, L, in_dim], weight shape [in_dim, out_dim]
+    input_A = torch.randn((M, K), dtype=torch.float16).cuda()
+    actual_A = torch.zeros((M, N), dtype=torch.float16).cuda()
+    weight_A = (1/K**0.5) * torch.randn((K, N), dtype=torch.float16).cuda()
+
+    expected_A = (input_A @ weight_A)
+    kerns.matmul(qtype, qblock_size, qtype_size, input_A.unsqueeze(0), weight_A, actual_A.unsqueeze(0))
     torch.cuda.synchronize()
 
     assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-1), "matmul"
+
+    torch.cuda.empty_cache()
 
     # # act. shape [B // dp_size, L, in_dim], weight shape [out_dim, in_dim]    
     # input_B = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()

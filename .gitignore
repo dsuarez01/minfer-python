@@ -9,6 +9,8 @@ gguf
 
 # misc.
 logs/
+data/
+plots/
 
 # python-specific
 .venv

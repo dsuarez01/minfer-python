@@ -1,5 +1,6 @@
 # TODO: complete
 import torch
+
 from minfer.kernels import KernelBackend
 from minfer.const import GGMLQuantizationType, GGML_QUANT_SIZES
 
@@ -37,17 +38,18 @@ def rope(backend: str = "torch_ext"):
     kerns.neox_rope(rotary_dim, 0, base_freq, x)
     torch.cuda.synchronize()
 
-def matmul(backend: str = "torch_ext"):
+def matmul(shape: tuple, backend: str = "torch_ext"):
     kerns = KernelBackend(backend)
-    B, L, in_dim, out_dim = 8, 4096, 6144, 16384
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
-    x = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()
-    out = torch.zeros((B, L, out_dim), dtype=torch.float16).cuda()
-    weight = (1/in_dim**0.5) * torch.randn((in_dim, out_dim), dtype=torch.float16).cuda()
+    M, K, N = shape
+
+    x = torch.randn((M,K), dtype=torch.float16).cuda()
+    out = torch.zeros((M,N), dtype=torch.float16).cuda()
+    weight = (1/K**0.5) * torch.randn((K,N), dtype=torch.float16).cuda()
     
-    kerns.matmul(qtype, qblock_size, qtype_size, x, weight, out)
+    kerns.matmul(qtype, qblock_size, qtype_size, x.unsqueeze(0), weight, out.unsqueeze(0))
     torch.cuda.synchronize()
 
 def flash_attn(backend:str = "torch_ext"):
@@ -69,5 +71,5 @@ if __name__ == "__main__":
     # rmsnorm_head()
     # rmsnorm_vec()
     # rope()
-    matmul()
+    matmul(shape=(4096,4096,4096))
     # flash_attn()

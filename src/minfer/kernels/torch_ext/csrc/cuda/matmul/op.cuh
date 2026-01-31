@@ -28,32 +28,23 @@ inline void dispatch_f16_xwt(
 
 }
 
-// TODO: incomplete, finish
-inline void dispatch_f16_xw(
+template <
+    unsigned int DIM_BM,
+    unsigned int DIM_BK,
+    unsigned int DIM_BN,
+    unsigned int WARPS_M,
+    unsigned int WARPS_N,
+    unsigned int TILES_K,
+    unsigned int K_PIPE_MAX
+>
+inline void launch_xw_kernel(
     size_t M, size_t K, size_t N,
     const half* __restrict__ x_ptr,
     const half* __restrict__ w_ptr,
-    half* __restrict__ out_ptr
+    half* __restrict__ out_ptr,
+    const cudaDeviceProp& deviceProp,
+    int device_index
 ) {
-    auto device_index = torch::stable::accelerator::getCurrentDeviceIndex();
-
-    cudaDeviceProp deviceProp;
-    STD_CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, device_index));
-
-    STD_TORCH_CHECK(deviceProp.major >= 8, "SM 8.0 or higher required to use tensor cores + async memcpy");
-
-    // eventually: dispatch various configurations of 
-    // these vals based on problem size
-    constexpr unsigned int DIM_BM = 256;
-    constexpr unsigned int DIM_BK = 64;
-    constexpr unsigned int DIM_BN = 128;
-
-    // ldmatrix m16n8k16 instruction
-    constexpr unsigned int K_PIPE_MAX = 2;
-    constexpr unsigned int WARPS_M = 4;
-    constexpr unsigned int TILES_K = 4;
-    constexpr unsigned int WARPS_N = 2;
-
     constexpr unsigned int DIM_WM = (DIM_BM+WARPS_M-1) / WARPS_M;
     constexpr unsigned int DIM_WK = (DIM_BK+TILES_K-1) / TILES_K;
     constexpr unsigned int DIM_WN = (DIM_BN+WARPS_N-1) / WARPS_N;
@@ -65,7 +56,7 @@ inline void dispatch_f16_xw(
     constexpr unsigned int THRS_N = SIZE_WARP * WARPS_N;
     constexpr unsigned int THRS_M = WARPS_M;
     constexpr unsigned int NUM_THRS = THRS_M * THRS_N;
-    constexpr unsigned int SHMEM_SZ = K_PIPE_MAX * (DIM_BM*DIM_BK + DIM_BK*DIM_BN) * sizeof(half);
+    constexpr unsigned int SHMEM_SZ = K_PIPE_MAX*(DIM_BM*DIM_BK+DIM_BK*DIM_BN) * sizeof(half);
 
     STD_TORCH_CHECK(SHMEM_SZ <= deviceProp.sharedMemPerBlockOptin, "Too much shmem (per block) requested");
 
@@ -102,6 +93,35 @@ inline void dispatch_f16_xw(
         TILES_K, K_PIPE_MAX, NUM_THRS
     ><<<grid, block, SHMEM_SZ, stream>>>(
         M, K, N, x_ptr, w_ptr, out_ptr
+    );
+}
+
+// TODO: incomplete, finish
+inline void dispatch_f16_xw(
+    size_t M, size_t K, size_t N,
+    const half* __restrict__ x_ptr,
+    const half* __restrict__ w_ptr,
+    half* __restrict__ out_ptr
+) {
+    auto device_index = torch::stable::accelerator::getCurrentDeviceIndex();
+
+    cudaDeviceProp deviceProp;
+    STD_CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, device_index));
+
+    STD_TORCH_CHECK(deviceProp.major >= 8, "SM 8.0 or higher required to use tensor cores + async memcpy");
+
+    constexpr unsigned int DIM_BM = 128;
+    constexpr unsigned int DIM_BK = 32;
+    constexpr unsigned int DIM_BN = 128;
+
+    // ldmatrix m16n8k16 instruction
+    constexpr unsigned int K_PIPE_MAX = 2;
+    constexpr unsigned int WARPS_M = 4;
+    constexpr unsigned int TILES_K = 2;
+    constexpr unsigned int WARPS_N = 2;
+    
+    launch_xw_kernel<DIM_BM, DIM_BK, DIM_BN, WARPS_M, WARPS_N, TILES_K, K_PIPE_MAX>(
+        M, K, N, x_ptr, w_ptr, out_ptr, deviceProp, device_index
     );
 }
 

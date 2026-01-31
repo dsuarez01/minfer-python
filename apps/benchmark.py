@@ -1,5 +1,5 @@
-# TODO: complete 
-# NOTE: compare torch default CUDA opns, and custom CUDA opns (eventually Triton)
+# TODO: complete
+from itertools import product
 import argparse
 import gc
 
@@ -10,6 +10,8 @@ from torch.profiler import profile, ProfilerActivity, record_function
 
 from minfer.kernels import KernelBackend
 from minfer.const import GGMLQuantizationType, GGML_QUANT_SIZES
+
+torch.backends.cuda.matmul.allow_fp16_accumulation = True
 
 def rmsnorm(backend: str = "torch_ext"):
     """rmsnorm against pytorch F.rms_norm"""
@@ -124,59 +126,51 @@ def rope(backend: str = "torch_ext"):
     compare = Compare(results)
     compare.print()
 
-def matmul(backend: str = "torch_ext"):
+def matmul(which: str):
     """matmul against PyTorch @ op"""
     
-    kerns = KernelBackend(backend)
-    
-    B, L, in_dim = 8, 4096, 6144
+    kerns = KernelBackend("torch_ext")
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
-    
-    test_cases = [
-        ("6144_to_16384", 16384),
-    ]
-    
+
+    # sizes = [512,1024,2048,4096,8192,16384,32768]
+    sizes = [16384]
     results = []
+
+    for s in sizes:
+
+        M = K = N = s
     
-    for name, out_dim in test_cases:
-        print(f"\nRunning {name}...")
-        
-        x = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()
-        out = torch.zeros((B, L, out_dim), dtype=torch.float16).cuda()
-        weight = (1/in_dim**0.5) * torch.randn((in_dim, out_dim), dtype=torch.float16).cuda()
-        
-        def my_matmul():
-            kerns.matmul(qtype, qblock_size, qtype_size, x, weight, out)
-            torch.cuda.synchronize()
-        
+        x = torch.randn((M,K), dtype=torch.float16).cuda()
+        out = torch.zeros((M,N), dtype=torch.float16).cuda()
+        weight = (1/K**0.5) * torch.randn((K,N), dtype=torch.float16).cuda()
+
         def ref_matmul():
             result = x @ weight
-            torch.cuda.synchronize()
         
-        for fn_name, fn in [("my_matmul", my_matmul), ("ref_matmul", ref_matmul)]:
-            timer = Timer(
-                stmt='fn()',
-                globals={'fn': fn},
-                label=f'matmul_{name}',
-                sub_label=fn_name,
-                description=f'B={B}, L={L}, in_dim={in_dim}, out_dim={out_dim}',
-            )
-            results.append(timer.blocked_autorange(min_run_time=1))
+        def my_matmul():
+            kerns.matmul(qtype, qblock_size, qtype_size, x.unsqueeze(0), weight, out.unsqueeze(0))
+
+        fn = my_matmul if which == "minfer" else ref_matmul
+
+        timer = Timer(
+            stmt='fn()',
+            globals={'fn': fn},
+            label=f'matmul',
+            sub_label=f'M={M}, N={N}, K={K}',
+            description=f'{which}',
+        )
+
+        result = timer.blocked_autorange()
         
+        results.append(result)
+
         del x, weight, out
         gc.collect()
         torch.cuda.empty_cache()
     
     compare = Compare(results)
     compare.print()
-
-    print("\nThroughput (TFLOPS):")
-    for name, out_dim in test_cases:
-        flops = 2*(B*L)*in_dim*out_dim
-        for result in [r for r in results if name in r.task_spec.label]:
-            tflops = (flops/result.median)/1e12
-            print(f"{result.task_spec.sub_label:12s}: {tflops:6.2f} TFLOPS")
 
 def flash_attn(backend: str = "torch_ext"):
     """flash_attn against pytorch SDPA"""
@@ -240,7 +234,10 @@ def flash_attn(backend: str = "torch_ext"):
     compare.print()
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--which", choices=["minfer", "ref"], default="minfer")
+    args = parser.parse_args()
     # rmsnorm()
     # rope()
-    matmul()
+    matmul(which=args.which)
     # flash_attn()
