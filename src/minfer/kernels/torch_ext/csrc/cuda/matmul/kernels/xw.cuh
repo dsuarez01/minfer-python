@@ -180,6 +180,7 @@ __global__ void xw_impl(
     extern __shared__ half shmem[];
     half* shmem_base_x = shmem;
     half* shmem_base_w = &shmem[K_PIPE_MAX*DIM_BM*DIM_BK];
+    half* shmem_base_out = &shmem[K_PIPE_MAX*(DIM_BM*DIM_BK+DIM_BK*DIM_BN)];
 
     uint32_t x_reg[TILES_K][MMAS_M][MMAS_K][4];
     uint32_t w_reg[TILES_K][MMAS_K][MMAS_N][2];
@@ -287,27 +288,27 @@ __global__ void xw_impl(
         }
     }
 
-    half* block_out = out + block_m * DIM_BM * stride_out + block_n * DIM_BN;
-    half* warp_out = block_out + warp_m * DIM_WM * stride_out + warp_n * DIM_WN;
-
-    #pragma unroll
-    for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
-        #pragma unroll
-        for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
-            half* mma_out = warp_out + mma_m * DIM_MM * stride_out + mma_n * DIM_MN;
-            stmatrix_m16n8(lane_idx, stride_out, mma_out, acc_reg[mma_m][mma_n]);
-        }
-    }
-
-    // // regs -> shmem -> gmem
-    // half* shmem_warp_out = shmem_base_out + warp_m * DIM_WM * DIM_BN + warp_n * DIM_WN;
-    // stmatrix<DIM_MM, DIM_MN, MMAS_M, MMAS_N, DIM_BN>(lane_idx, shmem_warp_out, acc_reg);
-
-    // __syncthreads();
-
-    // // shmem -> gmem
     // half* block_out = out + block_m * DIM_BM * stride_out + block_n * DIM_BN;
-    // toGmem<DIM_MM, DIM_BM, DIM_BN, NUM_THRS>(stride_out, shmem_base_out, block_out);
+    // half* warp_out = block_out + warp_m * DIM_WM * stride_out + warp_n * DIM_WN;
+
+    // #pragma unroll
+    // for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
+    //     #pragma unroll
+    //     for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
+    //         half* mma_out = warp_out + mma_m * DIM_MM * stride_out + mma_n * DIM_MN;
+    //         stmatrix_m16n8(lane_idx, stride_out, mma_out, acc_reg[mma_m][mma_n]);
+    //     }
+    // }
+
+    // regs -> shmem -> gmem
+    half* shmem_warp_out = shmem_base_out + warp_m * DIM_WM * DIM_BN + warp_n * DIM_WN;
+    stmatrix<DIM_MM, DIM_MN, MMAS_M, MMAS_N, DIM_BN>(lane_idx, shmem_warp_out, acc_reg);
+
+    __syncthreads();
+
+    // shmem -> gmem
+    half* block_out = out + block_m * DIM_BM * stride_out + block_n * DIM_BN;
+    toGmem<DIM_MM, DIM_BM, DIM_BN, NUM_THRS>(stride_out, shmem_base_out, block_out);
 }
 
 }

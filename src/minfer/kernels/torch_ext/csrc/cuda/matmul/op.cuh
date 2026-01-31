@@ -56,7 +56,7 @@ inline void launch_xw_kernel(
     constexpr unsigned int THRS_N = SIZE_WARP * WARPS_N;
     constexpr unsigned int THRS_M = WARPS_M;
     constexpr unsigned int NUM_THRS = THRS_M * THRS_N;
-    constexpr unsigned int SHMEM_SZ = K_PIPE_MAX*(DIM_BM*DIM_BK+DIM_BK*DIM_BN) * sizeof(half);
+    constexpr unsigned int SHMEM_SZ = (K_PIPE_MAX*(DIM_BM*DIM_BK+DIM_BK*DIM_BN)+DIM_BM*DIM_BN) * sizeof(half);
 
     STD_TORCH_CHECK(SHMEM_SZ <= deviceProp.sharedMemPerBlockOptin, "Too much shmem (per block) requested");
 
