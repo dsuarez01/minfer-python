@@ -111,13 +111,13 @@ inline void dispatch_f16_xw(
     STD_TORCH_CHECK(deviceProp.major >= 8, "SM 8.0 or higher required to use tensor cores + async memcpy");
 
     constexpr unsigned int DIM_BM = 128;
-    constexpr unsigned int DIM_BK = 32;
+    constexpr unsigned int DIM_BK = 64;
     constexpr unsigned int DIM_BN = 128;
 
     // ldmatrix m16n8k16 instruction
     constexpr unsigned int K_PIPE_MAX = 2;
     constexpr unsigned int WARPS_M = 4;
-    constexpr unsigned int TILES_K = 2;
+    constexpr unsigned int TILES_K = 4;
     constexpr unsigned int WARPS_N = 2;
     
     launch_xw_kernel<DIM_BM, DIM_BK, DIM_BN, WARPS_M, WARPS_N, TILES_K, K_PIPE_MAX>(

@@ -142,14 +142,14 @@ __device__ __forceinline__ void ldmatrix_a(
         #pragma unroll
         for (int mma_col = 0; mma_col < MMAS_COL; ++mma_col) {
 
-            asm volatile (
+            asm(
                 "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
                 "{%0, %1}, [%2];\n"
                 : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1])
                 : "r"(src_addr)
             );
 
-            asm volatile (
+            asm(
                 "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
                 "{%0, %1}, [%2];\n"
                 : "=r"(reg[mma_row][mma_col][2]), "=r"(reg[mma_row][mma_col][3])
@@ -266,7 +266,7 @@ __device__ __forceinline__ void ldmatrix_b(
         #pragma unroll
         for (int mma_col = 0; mma_col < MMAS_COL; ++mma_col) {
 
-            asm volatile (
+            asm(
                 "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 "
                 "{%0, %1}, [%2];\n"
                 : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1])
@@ -286,7 +286,7 @@ __device__ __forceinline__ void mma_sync_m16n8k16(
     uint32_t (&w_reg)[2],
     uint32_t (&acc_reg)[2]
 ) {
-    asm volatile (
+    asm(
         "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
         "{%0, %1}, "
         "{%2, %3, %4, %5}, "
@@ -419,9 +419,10 @@ __device__ __forceinline__ void cp_async(
     // https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-non-bulk-copy
     static_assert(N == 4 || N == 8 || N == 16);
 
-    asm volatile(
+    asm(
         "cp.async.cg.shared.global [%0], [%1], %2;\n"
         :: "r"(dst_shared), "l"(src_global), "n"(N)
+        : "memory"
     );
 }
 
@@ -552,8 +553,16 @@ __device__ __forceinline__ void stmatrix(
         #pragma unroll
         for (int mma_col = 0; mma_col < MMAS_COL; ++mma_col) {
 
-            asm volatile("st.shared.u32 [%0], %1;\n" :: "r"(dst_addr), "r"(reg[mma_row][mma_col][0]));
-            asm volatile("st.shared.u32 [%0], %1;\n" :: "r"(dst_addr^PATTERN_8), "r"(reg[mma_row][mma_col][1]));
+            asm(
+                "st.shared.u32 [%0], %1;\n" 
+                :: "r"(dst_addr), "r"(reg[mma_row][mma_col][0]) 
+                : "memory"
+            );
+            asm(
+                "st.shared.u32 [%0], %1;\n" 
+                :: "r"(dst_addr^PATTERN_8), "r"(reg[mma_row][mma_col][1]) 
+                : "memory"
+            );
 
             dst_addr ^= xor_pattern<STRIDE_COL, BITMASK, SHIFT>(mma_col);
         }
@@ -605,7 +614,7 @@ __device__ __forceinline__ void toGmem(
 
     #pragma unroll
     for (int i = 0; i < NUM_ITERS; ++i) {
-        asm volatile(
+        asm(
             "ld.shared.v4.u32 {%0, %1, %2, %3}, [%4];\n"
             : "=r"(src_vals.x), "=r"(src_vals.y), "=r"(src_vals.z), "=r"(src_vals.w)
             : "r"(src_addr)
