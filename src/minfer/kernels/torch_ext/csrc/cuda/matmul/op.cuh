@@ -56,7 +56,7 @@ inline void launch_xw_kernel(
     constexpr unsigned int THRS_N = SIZE_WARP * WARPS_N;
     constexpr unsigned int THRS_M = WARPS_M;
     constexpr unsigned int NUM_THRS = THRS_M * THRS_N;
-    constexpr unsigned int SHMEM_SZ = (K_PIPE_MAX*(DIM_BM*DIM_BK+DIM_BK*DIM_BN)+DIM_BM*DIM_BN) * sizeof(half);
+    constexpr unsigned int SHMEM_SZ = K_PIPE_MAX*(DIM_BM*DIM_BK+DIM_BK*DIM_BN)*sizeof(half);
 
     STD_TORCH_CHECK(SHMEM_SZ <= deviceProp.sharedMemPerBlockOptin, "Too much shmem (per block) requested");
 
@@ -110,7 +110,7 @@ inline void dispatch_f16_xw(
 
     STD_TORCH_CHECK(deviceProp.major >= 8, "SM 8.0 or higher required to use tensor cores + async memcpy");
 
-    constexpr unsigned int DIM_BM = 128;
+    constexpr unsigned int DIM_BM = 256;
     constexpr unsigned int DIM_BK = 64;
     constexpr unsigned int DIM_BN = 128;
 
