@@ -146,7 +146,7 @@ def matmul(which: str):
         weight = (1/K**0.5) * torch.randn((K,N), dtype=torch.float16).cuda()
 
         def ref_matmul():
-            result = x @ weight
+            torch.mm(x, weight, out=out)
         
         def my_matmul():
             kerns.matmul(qtype, qblock_size, qtype_size, x.unsqueeze(0), weight, out.unsqueeze(0))

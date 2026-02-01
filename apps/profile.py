@@ -1,4 +1,6 @@
 # TODO: complete
+import argparse
+
 import torch
 
 from minfer.kernels import KernelBackend
@@ -38,8 +40,8 @@ def rope(backend: str = "torch_ext"):
     kerns.neox_rope(rotary_dim, 0, base_freq, x)
     torch.cuda.synchronize()
 
-def matmul(shape: tuple, backend: str = "torch_ext"):
-    kerns = KernelBackend(backend)
+def matmul(which:str, shape: tuple):
+    kerns = KernelBackend("torch_ext")
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
@@ -48,8 +50,17 @@ def matmul(shape: tuple, backend: str = "torch_ext"):
     x = torch.randn((M,K), dtype=torch.float16).cuda()
     out = torch.zeros((M,N), dtype=torch.float16).cuda()
     weight = (1/K**0.5) * torch.randn((K,N), dtype=torch.float16).cuda()
-    
-    kerns.matmul(qtype, qblock_size, qtype_size, x.unsqueeze(0), weight, out.unsqueeze(0))
+
+    def my_mm():
+        kerns.matmul(qtype, qblock_size, qtype_size, x.unsqueeze(0), weight, out.unsqueeze(0))
+
+    def ref_mm():
+        torch.mm(x, weight, out=out)
+
+    mm = my_mm if which == "minfer" else ref_mm
+
+    mm()
+
     torch.cuda.synchronize()
 
 def flash_attn(backend:str = "torch_ext"):
@@ -68,8 +79,12 @@ def flash_attn(backend:str = "torch_ext"):
     torch.cuda.synchronize()
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--which", choices=["minfer", "ref"], default="minfer")
+    args = parser.parse_args()
+
     # rmsnorm_head()
     # rmsnorm_vec()
     # rope()
-    matmul(shape=(4096,4096,4096))
+    matmul(which=args.which, shape=(4096,4096,4096))
     # flash_attn()
