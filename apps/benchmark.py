@@ -139,7 +139,7 @@ def matmul(which: str):
 
     for s in sizes:
 
-        M = K = N = s
+        M = N = K = s
     
         x = torch.randn((M,K), dtype=torch.float16).cuda()
         out = torch.zeros((M,N), dtype=torch.float16).cuda()

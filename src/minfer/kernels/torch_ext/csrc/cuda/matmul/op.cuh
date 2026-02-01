@@ -113,7 +113,7 @@ inline void dispatch_f16_xw(
     constexpr unsigned int DIM_BM = 256;
     constexpr unsigned int DIM_BK = 64;
     constexpr unsigned int DIM_BN = 128;
-
+    
     // ldmatrix m16n8k16 instruction
     constexpr unsigned int K_PIPE_MAX = 2;
     constexpr unsigned int WARPS_M = 4;
