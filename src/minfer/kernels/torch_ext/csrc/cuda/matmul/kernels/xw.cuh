@@ -180,7 +180,7 @@ __global__ void xw_impl(
     extern __shared__ half shmem[];
     half* shmem_base_x = shmem;
     half* shmem_base_w = &shmem[K_PIPE_MAX*DIM_BM*DIM_BK];
-    half* shmem_base_out = &shmem[K_PIPE_MAX*(DIM_BM*DIM_BK+DIM_BK*DIM_BN)];
+    half* shmem_base_out = shmem;
 
     uint32_t x_reg[TILES_K][MMAS_M][MMAS_K][4];
     uint32_t w_reg[TILES_K][MMAS_K][MMAS_N][2];
@@ -299,6 +299,10 @@ __global__ void xw_impl(
     //         stmatrix_m16n8(lane_idx, stride_out, mma_out, acc_reg[mma_m][mma_n]);
     //     }
     // }
+
+    // worst case is probably: ((K_PIPE_MAX-1)*(DIM_BM*DIM_BK+DIM_BK*DIM_BN)*2 bytes)/(864e9 bytes/s)
+    // negligible compared to kernel runtime?
+    cp_async_wait<0>();
 
     // regs -> shmem -> gmem
     half* shmem_warp_out = shmem_base_out + warp_m * DIM_WM * DIM_BN + warp_n * DIM_WN;
