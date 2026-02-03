@@ -93,76 +93,6 @@ constexpr unsigned int int_log2(unsigned int n) {
 //     );
 // }
 
-// improvement 3: (pipelining) reduce instr cnt
-// NOTE: recall that A^(A^B) = B
-template<unsigned int STRIDE, unsigned int BITMASK, unsigned int SHIFT>
-__device__ __forceinline__ constexpr uint32_t xor_pattern(unsigned int i) {
-    auto swizzle = [](uint32_t x) constexpr { return x ^ ((x & BITMASK) >> SHIFT); };
-    return swizzle((i+1)*STRIDE) ^ swizzle(i*STRIDE);
-}
-
-template <
-    unsigned int ROWS_MMA,
-    unsigned int COLS_MMA,
-    unsigned int MMAS_ROW,
-    unsigned int MMAS_COL,
-    unsigned int COLS_BLOCK
->
-__device__ __forceinline__ void ldmatrix_a(
-    unsigned int lane_idx,
-    const half* src,
-    uint32_t (&reg)[MMAS_ROW][MMAS_COL][4]
-) {
-    // load 16x16 frag into regs
-    static_assert(ROWS_MMA == 16);
-    static_assert(COLS_MMA == 16);
-
-    constexpr unsigned int BITS = int_log2(ROWS_MMA);
-    constexpr unsigned int BASE = int_log2(sizeof(int4));
-    constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
-    constexpr unsigned int BITMASK = ((1u<<BITS)-1) << (BASE+SHIFT);
-
-    constexpr uint32_t STRIDE_COL = COLS_MMA * sizeof(half);
-    constexpr uint32_t STRIDE_ROW = ROWS_MMA * COLS_BLOCK * sizeof(half);
-    constexpr uint32_t STRIDE_8 = 8 * sizeof(half);
-    constexpr uint32_t PATTERN_8 = STRIDE_8 ^ ((STRIDE_8 & BITMASK) >> SHIFT);
-
-    const uint32_t shared_base = __cvta_generic_to_shared(src);
-
-    // see: https://veitner.bearblog.dev/load-and-store-matrices-efficently-with-ptx-instructions/
-    unsigned int idx_thr = (((lane_idx/8)%2)*8 + (lane_idx%8)) * COLS_BLOCK;
-    uint32_t base_addr = shared_base + idx_thr * sizeof(half);
-    uint32_t src_addr = base_addr ^ ((base_addr & BITMASK) >> SHIFT);
-
-    #pragma unroll
-    for (int mma_row = 0; mma_row < MMAS_ROW; ++mma_row) {
-        
-        const uint32_t row_addr = src_addr;
-
-        #pragma unroll
-        for (int mma_col = 0; mma_col < MMAS_COL; ++mma_col) {
-
-            asm(
-                "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
-                "{%0, %1}, [%2];\n"
-                : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1])
-                : "r"(src_addr)
-            );
-
-            asm(
-                "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
-                "{%0, %1}, [%2];\n"
-                : "=r"(reg[mma_row][mma_col][2]), "=r"(reg[mma_row][mma_col][3])
-                : "r"(src_addr^PATTERN_8)
-            );
-
-            src_addr ^= xor_pattern<STRIDE_COL, BITMASK, SHIFT>(mma_col);
-        }
-
-        src_addr = row_addr ^ xor_pattern<STRIDE_ROW, BITMASK, SHIFT>(mma_row);
-    }
-}
-
 // baseline
 // template <
 //     unsigned int ROWS_MMA,
@@ -226,24 +156,36 @@ __device__ __forceinline__ void ldmatrix_a(
 // }
 
 // improvement 3: (pipelining) reduce instr cnt
+// NOTE: recall that A^(A^B) = B
+template<
+    unsigned int STRIDE, 
+    unsigned int BITMASK, 
+    unsigned int SHIFT,
+    unsigned int INCR
+>
+__device__ __forceinline__ constexpr uint32_t xor_pattern(unsigned int i) {
+    auto swizzle = [](uint32_t x) constexpr { return x ^ ((x & BITMASK) >> SHIFT); };
+    return swizzle((i+INCR)*STRIDE) ^ swizzle(i*STRIDE);
+}
+
 template <
+    bool LOAD_TRANS,
     unsigned int ROWS_MMA,
     unsigned int COLS_MMA,
     unsigned int MMAS_ROW,
     unsigned int MMAS_COL,
     unsigned int COLS_BLOCK
 >
-__device__ __forceinline__ void ldmatrix_b(
+__device__ __forceinline__ void ldmatrix(
     unsigned int lane_idx,
     const half* src,
-    uint32_t (&reg)[MMAS_ROW][MMAS_COL][2]
+    uint32_t (&reg)[MMAS_ROW][MMAS_COL][(ROWS_MMA/8)*(COLS_MMA/8)]
 ) {
-    // load 16x8 frag into regs
-    static_assert(ROWS_MMA == 16);
-    static_assert(COLS_MMA == 8);
+
+    // now we always iterate in 16x16 chunks
 
     // swizzling
-    constexpr unsigned int BITS = int_log2(ROWS_MMA);
+    constexpr unsigned int BITS = int_log2(16);
     constexpr unsigned int BASE = int_log2(sizeof(int4));
     constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
     constexpr unsigned int BITMASK = ((1u<<BITS)-1) << (BASE+SHIFT);
@@ -254,49 +196,177 @@ __device__ __forceinline__ void ldmatrix_b(
     const uint32_t shared_base = __cvta_generic_to_shared(src);
 
     // see: https://veitner.bearblog.dev/load-and-store-matrices-efficently-with-ptx-instructions/
-    unsigned int idx_thr = (((lane_idx/8)%2)*8 + (lane_idx%8)) * COLS_BLOCK;
+    unsigned int row = ((lane_idx/8)%2)*8 + (lane_idx%8);
+    unsigned int col = (lane_idx/16)*8;
+    unsigned int idx_thr = row*COLS_BLOCK+col;
+
     uint32_t base_addr = shared_base + idx_thr * sizeof(half);
     uint32_t src_addr = base_addr ^ ((base_addr & BITMASK) >> SHIFT);
 
-    #pragma unroll
-    for (int mma_row = 0; mma_row < MMAS_ROW; ++mma_row) {
+    // use widest ldmatrix
+    constexpr unsigned int ROW_INCR = (16+ROWS_MMA-1)/ROWS_MMA;
+    constexpr unsigned int COL_INCR = (16+COLS_MMA-1)/COLS_MMA;
+
+#pragma unroll
+    for (int mma_row = 0; mma_row < MMAS_ROW; mma_row += ROW_INCR) {
         
         const uint32_t row_addr = src_addr;
 
-        #pragma unroll
-        for (int mma_col = 0; mma_col < MMAS_COL; ++mma_col) {
+#pragma unroll
+        for (int mma_col = 0; mma_col < MMAS_COL; mma_col += COL_INCR) {
 
-            asm(
-                "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 "
-                "{%0, %1}, [%2];\n"
-                : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1])
-                : "r"(src_addr)
-            );
+            if constexpr (LOAD_TRANS) {
+                if constexpr (ROWS_MMA == 8 && COLS_MMA == 8) {
+                    asm(
+                        "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 "
+                        "{%0, %1, %2, %3}, [%4];\n"
+                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0]), 
+                          "=r"(reg[mma_row][mma_col+1][0]), "=r"(reg[mma_row+1][mma_col+1][0])
+                        : "r"(src_addr)
+                    );
+                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 8) {
+                    asm(
+                        "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 "
+                        "{%0, %1, %2, %3}, [%4];\n"
+                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]), 
+                          "=r"(reg[mma_row][mma_col+1][0]), "=r"(reg[mma_row][mma_col+1][1])
+                        : "r"(src_addr)
+                    );
+                } else if constexpr(ROWS_MMA == 8 && COLS_MMA == 16) {
+                    asm(
+                        "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 "
+                        "{%0, %1, %2, %3}, [%4];\n"
+                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0]), 
+                          "=r"(reg[mma_row][mma_col][1]), "=r"(reg[mma_row+1][mma_col][1])
+                        : "r"(src_addr)
+                    );
+                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 16) {
+                    asm(
+                        "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 "
+                        "{%0, %1, %2, %3}, [%4];\n"
+                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][2]), 
+                          "=r"(reg[mma_row][mma_col][1]), "=r"(reg[mma_row][mma_col][3])
+                        : "r"(src_addr)
+                    );
+                }
+            } else {
+                if constexpr (ROWS_MMA == 8 && COLS_MMA == 8) {
+                    asm(
+                        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
+                        "{%0, %1, %2, %3}, [%4];\n"
+                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0]), 
+                          "=r"(reg[mma_row][mma_col+1][0]), "=r"(reg[mma_row+1][mma_col+1][0])
+                        : "r"(src_addr)
+                    );
+                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 8) {
+                    asm(
+                        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
+                        "{%0, %1, %2, %3}, [%4];\n"
+                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]), 
+                          "=r"(reg[mma_row][mma_col+1][0]), "=r"(reg[mma_row][mma_col+1][1])
+                        : "r"(src_addr)
+                    );
+                } else if constexpr(ROWS_MMA == 8 && COLS_MMA == 16) {
+                    asm(
+                        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
+                        "{%0, %1, %2, %3}, [%4];\n"
+                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0]), 
+                          "=r"(reg[mma_row][mma_col][1]), "=r"(reg[mma_row+1][mma_col][1])
+                        : "r"(src_addr)
+                    );
+                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 16) {
+                    asm(
+                        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
+                        "{%0, %1, %2, %3}, [%4];\n"
+                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]), 
+                          "=r"(reg[mma_row][mma_col][2]), "=r"(reg[mma_row][mma_col][3])
+                        : "r"(src_addr)
+                    );
+                }
+            }
 
-            src_addr ^= xor_pattern<STRIDE_COL, BITMASK, SHIFT>(mma_col);
+            src_addr ^= xor_pattern<STRIDE_COL, BITMASK, SHIFT, COL_INCR>(mma_col);
         }
 
-        src_addr = row_addr ^ xor_pattern<STRIDE_ROW, BITMASK, SHIFT>(mma_row);
+        src_addr = row_addr ^ xor_pattern<STRIDE_ROW, BITMASK, SHIFT, ROW_INCR>(mma_row);
     }
 }
 
 // baseline
-__device__ __forceinline__ void mma_sync_m16n8k16(
-    uint32_t (&x_reg)[4],
-    uint32_t (&w_reg)[2],
-    uint32_t (&acc_reg)[2]
+// __device__ __forceinline__ void mma_sync_m16n8k16(
+//     uint32_t (&x_reg)[4],
+//     uint32_t (&w_reg)[2],
+//     uint32_t (&acc_reg)[2]
+// ) {
+//     asm(
+//         "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
+//         "{%0, %1}, "
+//         "{%2, %3, %4, %5}, "
+//         "{%6, %7}, "
+//         "{%8, %9};\n"
+//         : "=r"(acc_reg[0]), "=r"(acc_reg[1])
+//         : "r"(x_reg[0]), "r"(x_reg[1]), "r"(x_reg[2]), "r"(x_reg[3]),
+//           "r"(w_reg[0]), "r"(w_reg[1]),
+//           "r"(acc_reg[0]), "r"(acc_reg[1])
+//     );
+// }
+
+// improvement 3: pipelining (adjustable k width for autotuning)
+template <
+    unsigned int DIM_MM,
+    unsigned int DIM_MK,
+    unsigned int DIM_MN,
+    unsigned int MMAS_M,
+    unsigned int MMAS_K,
+    unsigned int MMAS_N
+>
+__device__ __forceinline__ void mma_sync(
+    uint32_t (&x_reg)[MMAS_M][MMAS_K][(DIM_MM/8)*(DIM_MK/8)],
+    uint32_t (&w_reg)[MMAS_K][MMAS_N][(DIM_MK/8)*(DIM_MN/8)],
+    uint32_t (&acc_reg)[MMAS_M][MMAS_N][(DIM_MM/8)*(DIM_MN/8)]
 ) {
-    asm(
-        "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
-        "{%0, %1}, "
-        "{%2, %3, %4, %5}, "
-        "{%6, %7}, "
-        "{%8, %9};\n"
-        : "=r"(acc_reg[0]), "=r"(acc_reg[1])
-        : "r"(x_reg[0]), "r"(x_reg[1]), "r"(x_reg[2]), "r"(x_reg[3]),
-          "r"(w_reg[0]), "r"(w_reg[1]),
-          "r"(acc_reg[0]), "r"(acc_reg[1])
-    );
+
+    static_assert(DIM_MM == 16 && DIM_MN == 8); // based on the instrs we have available
+
+#pragma unroll
+    for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
+
+#pragma unroll
+        for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
+
+#pragma unroll
+            for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
+
+                if constexpr (DIM_MK == 8) {
+
+                    asm(
+                        "mma.sync.aligned.m16n8k8.row.col.f16.f16.f16.f16 "
+                        "{%0, %1}, "
+                        "{%2, %3}, "
+                        "{%4}, "
+                        "{%5, %6};\n"
+                        : "=r"(acc_reg[mma_m][mma_n][0]), "=r"(acc_reg[mma_m][mma_n][1])
+                        : "r"(x_reg[mma_m][mma_k][0]), "r"(x_reg[mma_m][mma_k][1]),
+                          "r"(w_reg[mma_k][mma_n][0]),
+                          "r"(acc_reg[mma_m][mma_n][0]), "r"(acc_reg[mma_m][mma_n][1])
+                    );
+
+                } else if constexpr (DIM_MK == 16) {
+                    asm(
+                        "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
+                        "{%0, %1}, "
+                        "{%2, %3, %4, %5}, "
+                        "{%6, %7}, "
+                        "{%8, %9};\n"
+                        : "=r"(acc_reg[mma_m][mma_n][0]), "=r"(acc_reg[mma_m][mma_n][1])
+                        : "r"(x_reg[mma_m][mma_k][0]), "r"(x_reg[mma_m][mma_k][1]), "r"(x_reg[mma_m][mma_k][2]), "r"(x_reg[mma_m][mma_k][3]),
+                          "r"(w_reg[mma_k][mma_n][0]), "r"(w_reg[mma_k][mma_n][1]),
+                          "r"(acc_reg[mma_m][mma_n][0]), "r"(acc_reg[mma_m][mma_n][1])
+                    );
+                }
+            }
+        }
+    }
 }
 
 // baseline (basic tiling)
@@ -354,7 +424,7 @@ __device__ __forceinline__ void mma_sync_m16n8k16(
 //     unsigned int row_thr = idx_thr / EFF_COLS_BLOCK;
 //     unsigned int col_thr = idx_thr % EFF_COLS_BLOCK;
     
-//     #pragma unroll
+// #pragma unroll
 //     for (int i=0; i<NUM_ITERS; ++i) {
 //         reinterpret_cast<int4*>(dst)[row_thr*EFF_COLS_BLOCK+col_thr] = 
 //         reinterpret_cast<const int4*>(src)[row_thr*eff_stride_src+col_thr];
@@ -400,7 +470,7 @@ __device__ __forceinline__ void mma_sync_m16n8k16(
 //     unsigned int row_thr = idx_thr / EFF_COLS_BLOCK;
 //     unsigned int col_thr = idx_thr % EFF_COLS_BLOCK;
     
-//     #pragma unroll
+// #pragma unroll
 //     for (int i=0; i<NUM_ITERS; ++i) {
 //         unsigned int idx_dst = row_thr*EFF_COLS_BLOCK+col_thr;
 //         idx_dst ^= (idx_dst & BITMASK) >> SHIFT;
@@ -438,7 +508,6 @@ __device__ __forceinline__ void cp_async_wait() {
 }
 
 template <
-    unsigned int ROWS_MMA,
     unsigned int ROWS_BLOCK,
     unsigned int COLS_BLOCK,
     unsigned int NUM_THRS
@@ -450,7 +519,7 @@ __device__ __forceinline__ void toShmem(
 ) {
 
     // swizzling
-    constexpr unsigned int BITS = int_log2(ROWS_MMA);
+    constexpr unsigned int BITS = int_log2(16);
     constexpr unsigned int BASE = int_log2(sizeof(int4)); // 16-byte alignment
     constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
     constexpr unsigned int BITMASK  = ((1u<<BITS)-1) << (BASE+SHIFT);
@@ -481,11 +550,11 @@ __device__ __forceinline__ void toShmem(
     uint32_t dst_addr = shared_base + idx_dst*sizeof(int4);
     dst_addr ^= (dst_addr & BITMASK) >> SHIFT;
 
-    #pragma unroll
+#pragma unroll
     for (int i=0; i<NUM_ITERS; ++i) {
         const void* src_global = &reinterpret_cast<const int4*>(src)[row_thr*eff_stride_src+col_thr];
         cp_async<16>(dst_addr, src_global);
-        dst_addr ^= xor_pattern<STRIDE_DST, BITMASK, SHIFT>(i);
+        dst_addr ^= xor_pattern<STRIDE_DST, BITMASK, SHIFT, 1u>(i);
         row_thr += INCR_ROW;
     }
 }
@@ -545,12 +614,12 @@ __device__ __forceinline__ void stmatrix(
     uint32_t base_addr = shared_base + frag_row * COLS_BLOCK * sizeof(half) + frag_col * sizeof(uint32_t);
     uint32_t dst_addr = base_addr ^ ((base_addr & BITMASK) >> SHIFT);
 
-    #pragma unroll
+#pragma unroll
     for (int mma_row = 0; mma_row < MMAS_ROW; ++mma_row) {
 
         const uint32_t row_addr = dst_addr;
 
-        #pragma unroll
+#pragma unroll
         for (int mma_col = 0; mma_col < MMAS_COL; ++mma_col) {
 
             asm(
@@ -564,10 +633,10 @@ __device__ __forceinline__ void stmatrix(
                 : "memory"
             );
 
-            dst_addr ^= xor_pattern<STRIDE_COL, BITMASK, SHIFT>(mma_col);
+            dst_addr ^= xor_pattern<STRIDE_COL, BITMASK, SHIFT, 1u>(mma_col);
         }
 
-        dst_addr = row_addr ^ xor_pattern<STRIDE_ROW, BITMASK, SHIFT>(mma_row);
+        dst_addr = row_addr ^ xor_pattern<STRIDE_ROW, BITMASK, SHIFT, 1u>(mma_row);
     }
 }
 
@@ -612,7 +681,7 @@ __device__ __forceinline__ void toGmem(
 
     int4 src_vals;
 
-    #pragma unroll
+#pragma unroll
     for (int i = 0; i < NUM_ITERS; ++i) {
         asm(
             "ld.shared.v4.u32 {%0, %1, %2, %3}, [%4];\n"
@@ -620,7 +689,7 @@ __device__ __forceinline__ void toGmem(
             : "r"(src_addr)
         );
         reinterpret_cast<int4*>(dst)[row_thr*eff_stride_dst+col_thr] = src_vals;
-        src_addr ^= xor_pattern<STRIDE_SRC, BITMASK, SHIFT>(i);
+        src_addr ^= xor_pattern<STRIDE_SRC, BITMASK, SHIFT, 1u>(i);
         row_thr += INCR_ROW;
     }
 }

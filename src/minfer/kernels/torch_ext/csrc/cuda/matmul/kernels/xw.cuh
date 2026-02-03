@@ -69,6 +69,7 @@ namespace minfer::impl {
 
 //         __syncthreads();
     
+// #pragma unroll
 //         for (int tile_k = 0; tile_k < TILES_K; ++tile_k) {
 
 //             const half* warp_x = shmem_x + warp_m * DIM_WM * DIM_BK + tile_k * DIM_WK;
@@ -78,7 +79,10 @@ namespace minfer::impl {
 //             uint32_t byte_ofst_warp_w = __cvta_generic_to_shared(warp_w);
 
 //             // load from shmem into registers
+// #pragma unroll
 //             for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) { // x_shmem
+
+// #pragma unroll
 //                 for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
 //                     ldmatrix_m16n16<DIM_MM,DIM_MK,DIM_BK>(
 //                         mma_m,
@@ -90,7 +94,10 @@ namespace minfer::impl {
 //                 }
 //             }
 
+// #pragma unroll
 //             for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) { // w_shmem
+                
+// #pragma unroll
 //                 for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
 //                     ldmatrix_m16n8<DIM_MK,DIM_MN,DIM_BN>(
 //                         mma_k,
@@ -102,10 +109,13 @@ namespace minfer::impl {
 //                 }
 //             }
 
+// #pragma unroll
 //             for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
 
+// #pragma unroll
 //                 for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
 
+// #pragma unroll
 //                     for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
 //                         mma_sync_m16n8k16(
 //                             x_reg[mma_m][mma_k],
@@ -123,7 +133,10 @@ namespace minfer::impl {
 //     half* block_out = out + block_m * DIM_BM * stride_out + block_n * DIM_BN;
 //     half* warp_out = block_out + warp_m * DIM_WM * stride_out + warp_n * DIM_WN;
 
+// #pragma unroll
 //     for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
+        
+// #pragma unroll
 //         for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
 //             half* mma_out = warp_out + mma_m * DIM_MM * stride_out + mma_n * DIM_MN;
 //             stmatrix_m16n8(
@@ -144,6 +157,9 @@ template <
     unsigned int DIM_WM,
     unsigned int DIM_WK,
     unsigned int DIM_WN,
+    unsigned int DIM_MM,
+    unsigned int DIM_MK,
+    unsigned int DIM_MN,
     unsigned int TILES_K,
     unsigned int K_PIPE_MAX,
     unsigned int NUM_THRS
@@ -158,10 +174,6 @@ __global__ void xw_impl(
 ) {
 
     const unsigned int BLOCKS_K = (K+DIM_BK-1)/DIM_BK;
-
-    constexpr unsigned int DIM_MM = 16;
-    constexpr unsigned int DIM_MK = 16;
-    constexpr unsigned int DIM_MN = 8;
 
     constexpr unsigned int MMAS_M = (DIM_WM+DIM_MM-1)/DIM_MM;
     constexpr unsigned int MMAS_K = (DIM_WK+DIM_MK-1)/DIM_MK;
@@ -182,9 +194,9 @@ __global__ void xw_impl(
     half* shmem_base_w = &shmem[K_PIPE_MAX*DIM_BM*DIM_BK];
     half* shmem_base_out = shmem;
 
-    uint32_t x_reg[TILES_K][MMAS_M][MMAS_K][4];
-    uint32_t w_reg[TILES_K][MMAS_K][MMAS_N][2];
-    uint32_t acc_reg[MMAS_M][MMAS_N][2];
+    uint32_t x_reg[TILES_K][MMAS_M][MMAS_K][(DIM_MM/8)*(DIM_MK/8)];
+    uint32_t w_reg[TILES_K][MMAS_K][MMAS_N][(DIM_MK/8)*(DIM_MN/8)];
+    uint32_t acc_reg[MMAS_M][MMAS_N][(DIM_MM/8)*(DIM_MN/8)];
 
     memset(acc_reg, 0, sizeof(acc_reg));
 
@@ -193,6 +205,7 @@ __global__ void xw_impl(
     int k_block_next = 0;
 
     // prefetch first K_PIPE_MAX-1 tiles
+#pragma unroll
     for (int k_pipe=0; k_pipe < K_PIPE_MAX-1; ++k_pipe) {
         const half* block_x = x + block_m*DIM_BM*stride_x + k_block_next*DIM_BK;
         const half* block_w = w + k_block_next*DIM_BK*stride_w + block_n*DIM_BN;
@@ -200,8 +213,8 @@ __global__ void xw_impl(
         half* shmem_x = shmem_base_x + k_pipe * DIM_BM * DIM_BK;
         half* shmem_w = shmem_base_w + k_pipe * DIM_BK * DIM_BN;
 
-        toShmem<DIM_MM, DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_x);
-        toShmem<DIM_MK, DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w);
+        toShmem<DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_x);
+        toShmem<DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w);
         cp_async_fence();
 
         --k_block_count;
@@ -222,8 +235,8 @@ __global__ void xw_impl(
         const half* warp_x = shmem_x_read + warp_m * DIM_WM * DIM_BK + 0 * DIM_WK;
         const half* warp_w = shmem_w_read + 0 * DIM_WK * DIM_BN + warp_n * DIM_WN;
 
-        ldmatrix_a<DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_x, x_reg[0]);
-        ldmatrix_b<DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_w, w_reg[0]);
+        ldmatrix<false, DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_x, x_reg[0]);
+        ldmatrix<true, DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_w, w_reg[0]);
     }
 
     const half* block_base_x = x + block_m*DIM_BM*stride_x;
@@ -232,7 +245,7 @@ __global__ void xw_impl(
     // for each K block tile (this does iterate BLOCKS_K times)
     while (k_block_count > -((int)K_PIPE_MAX-1)) {
         
-        #pragma unroll
+#pragma unroll
         for (int tile_k = 0; tile_k < TILES_K; ++tile_k) {
 
             if (tile_k == TILES_K-1) {
@@ -250,8 +263,8 @@ __global__ void xw_impl(
             const half* warp_x = shmem_x_read + warp_m * DIM_WM * DIM_BK + tile_k_next * DIM_WK;
             const half* warp_w = shmem_w_read + tile_k_next * DIM_WK * DIM_BN + warp_n * DIM_WN;
 
-            ldmatrix_a<DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_x, x_reg[tile_k_next]);
-            ldmatrix_b<DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_w, w_reg[tile_k_next]);
+            ldmatrix<false, DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_x, x_reg[tile_k_next]);
+            ldmatrix<true, DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_w, w_reg[tile_k_next]);
 
             if (tile_k == 0) {
                 const half* block_x = block_base_x + k_block_next*DIM_BK;
@@ -260,8 +273,8 @@ __global__ void xw_impl(
                 half* shmem_x_write = shmem_base_x + shmem_pipe_write * DIM_BM * DIM_BK;
                 half* shmem_w_write = shmem_base_w + shmem_pipe_write * DIM_BK * DIM_BN;
 
-                toShmem<DIM_MM, DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_x_write);
-                toShmem<DIM_MK, DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w_write);
+                toShmem<DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_x_write);
+                toShmem<DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w_write);
                 cp_async_fence();
 
                 --k_block_count;
@@ -270,39 +283,19 @@ __global__ void xw_impl(
                 shmem_pipe_read = (shmem_pipe_read == K_PIPE_MAX-1) ? 0 : shmem_pipe_read+1;
             }
 
-            // mma on tile_k regs
-            #pragma unroll
-            for (int mma_k = 0; mma_k < MMAS_K; ++mma_k) {
-                #pragma unroll
-                for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
-                    #pragma unroll
-                    for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
-                        mma_sync_m16n8k16(
-                            x_reg[tile_k][mma_m][mma_k],
-                            w_reg[tile_k][mma_k][mma_n],
-                            acc_reg[mma_m][mma_n]
-                        );
-                    }
-                }
-            }
+            // mma on regs for tile_k
+            mma_sync<DIM_MM, DIM_MK, DIM_MN, MMAS_M, MMAS_K, MMAS_N>(
+                x_reg[tile_k],
+                w_reg[tile_k],
+                acc_reg
+            );
         }
     }
 
-    // half* block_out = out + block_m * DIM_BM * stride_out + block_n * DIM_BN;
-    // half* warp_out = block_out + warp_m * DIM_WM * stride_out + warp_n * DIM_WN;
-
-    // #pragma unroll
-    // for (int mma_m = 0; mma_m < MMAS_M; ++mma_m) {
-    //     #pragma unroll
-    //     for (int mma_n = 0; mma_n < MMAS_N; ++mma_n) {
-    //         half* mma_out = warp_out + mma_m * DIM_MM * stride_out + mma_n * DIM_MN;
-    //         stmatrix_m16n8(lane_idx, stride_out, mma_out, acc_reg[mma_m][mma_n]);
-    //     }
-    // }
-
     // worst case is probably: ((K_PIPE_MAX-1)*(DIM_BM*DIM_BK+DIM_BK*DIM_BN)*2 bytes)/(864e9 bytes/s)
-    // negligible compared to kernel runtime?
+    // likely negligible compared to kernel runtime
     cp_async_wait<0>();
+    __syncthreads();
 
     // regs -> shmem -> gmem
     half* shmem_warp_out = shmem_base_out + warp_m * DIM_WM * DIM_BN + warp_n * DIM_WN;

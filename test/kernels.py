@@ -238,6 +238,12 @@ def test_matmul(backend, shape):
     kerns.matmul(qtype, qblock_size, qtype_size, input_A.unsqueeze(0), weight_A, actual_A.unsqueeze(0))
     torch.cuda.synchronize()
 
+    print(f"expected_A first two rows: {expected_A[0:2, :20]}")
+    print(f"actual_A first two rows: {actual_A[0:2, :20]}")
+
+    print(f"expected_A last two rows: {expected_A[-2:, :20]}")
+    print(f"actual_A last two rows: {actual_A[-2:, :20]}")
+
     assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-1), "matmul"
 
     torch.cuda.empty_cache()

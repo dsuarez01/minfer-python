@@ -6,6 +6,8 @@ import torch
 from minfer.kernels import KernelBackend
 from minfer.const import GGMLQuantizationType, GGML_QUANT_SIZES
 
+torch.backends.cuda.matmul.allow_fp16_accumulation = True
+
 def rmsnorm_head(backend: str = "torch_ext"):
     kerns = KernelBackend(backend)
     B, L, eps, n_heads, head_dim = 8, 4096, 1e-6, 48, 128

@@ -33,8 +33,11 @@ template <
     unsigned int DIM_BK,
     unsigned int DIM_BN,
     unsigned int WARPS_M,
-    unsigned int WARPS_N,
     unsigned int TILES_K,
+    unsigned int WARPS_N,
+    unsigned int DIM_MM,
+    unsigned int DIM_MK,
+    unsigned int DIM_MN,
     unsigned int K_PIPE_MAX
 >
 inline void launch_xw_kernel(
@@ -74,6 +77,9 @@ inline void launch_xw_kernel(
                 DIM_WM,
                 DIM_WK,
                 DIM_WN,
+                DIM_MM,
+                DIM_MK,
+                DIM_MN,
                 TILES_K,
                 K_PIPE_MAX,
                 NUM_THRS
@@ -92,6 +98,7 @@ inline void launch_xw_kernel(
     xw_impl<
         DIM_BM, DIM_BK, DIM_BN, 
         DIM_WM, DIM_WK, DIM_WN, 
+        DIM_MM, DIM_MK, DIM_MN,
         TILES_K, K_PIPE_MAX, NUM_THRS
     ><<<grid, block, SHMEM_SZ, stream>>>(
         M, K, N, x_ptr, w_ptr, out_ptr
@@ -116,13 +123,16 @@ inline void dispatch_f16_xw(
     constexpr unsigned int DIM_BK = 64;
     constexpr unsigned int DIM_BN = 128;
     
-    // ldmatrix m16n8k16 instruction
     constexpr unsigned int K_PIPE_MAX = 2;
     constexpr unsigned int WARPS_M = 4;
-    constexpr unsigned int TILES_K = 2;
+    constexpr unsigned int TILES_K = 4;
     constexpr unsigned int WARPS_N = 2;
+
+    constexpr unsigned int DIM_MM = 16;
+    constexpr unsigned int DIM_MK = 8;
+    constexpr unsigned int DIM_MN = 8;
     
-    launch_xw_kernel<DIM_BM, DIM_BK, DIM_BN, WARPS_M, WARPS_N, TILES_K, K_PIPE_MAX>(
+    launch_xw_kernel<DIM_BM, DIM_BK, DIM_BN, WARPS_M, TILES_K, WARPS_N, DIM_MM, DIM_MK, DIM_MN, K_PIPE_MAX>(
         M, K, N, x_ptr, w_ptr, out_ptr, deviceProp, device_index
     );
 }
