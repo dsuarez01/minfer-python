@@ -149,6 +149,106 @@ namespace minfer::impl {
 //     }
 // }
 
+// improvement 3: pipelining (autotuning, sync version of kernel)
+template <
+    unsigned int DIM_BM,
+    unsigned int DIM_BK,
+    unsigned int DIM_BN,
+    unsigned int DIM_WM,
+    unsigned int DIM_WK,
+    unsigned int DIM_WN,
+    unsigned int DIM_MM,
+    unsigned int DIM_MK,
+    unsigned int DIM_MN,
+    unsigned int TILES_K,
+    unsigned int NUM_THRS
+>
+__global__ void xw_sync_impl(
+    size_t M,
+    size_t K,
+    size_t N,
+    const half* __restrict__ x,
+    const half* __restrict__ w,
+    half* __restrict__ out
+) {
+
+    const unsigned int BLOCKS_K = (K+DIM_BK-1)/DIM_BK;
+
+    constexpr unsigned int MMAS_M = (DIM_WM+DIM_MM-1)/DIM_MM;
+    constexpr unsigned int MMAS_K = (DIM_WK+DIM_MK-1)/DIM_MK;
+    constexpr unsigned int MMAS_N = (DIM_WN+DIM_MN-1)/DIM_MN;
+
+    constexpr unsigned int ELEMS_THR_X = DIM_BM / (NUM_THRS / (DIM_BK / 8));
+    constexpr unsigned int ELEMS_THR_W = DIM_BK / (NUM_THRS / (DIM_BN / 8));
+
+    const unsigned int block_m = blockIdx.y;
+    const unsigned int block_n = blockIdx.x;
+    const unsigned int warp_m = threadIdx.y;
+    const unsigned int warp_n = threadIdx.x/32;
+    const unsigned int lane_idx = threadIdx.x%32;
+
+    const size_t stride_x = K;
+    const size_t stride_w = N;
+    const size_t stride_out = N;
+
+    extern __shared__ half shmem[];
+    half* shmem_base_x = shmem;
+    half* shmem_base_w = &shmem[DIM_BM*DIM_BK];
+    half* shmem_base_out = shmem;
+
+    uint32_t x_reg[TILES_K][MMAS_M][MMAS_K][(DIM_MM/8)*(DIM_MK/8)];
+    uint32_t w_reg[TILES_K][MMAS_K][MMAS_N][(DIM_MK/8)*(DIM_MN/8)];
+    uint32_t acc_reg[MMAS_M][MMAS_N][(DIM_MM/8)*(DIM_MN/8)];
+
+    memset(acc_reg, 0, sizeof(acc_reg));
+
+    int4 x_cache_reg[ELEMS_THR_X];
+    int4 w_cache_reg[ELEMS_THR_W];
+
+    // fetch first tile
+    const half* block_x = x + block_m*DIM_BM*stride_x + k_block_next*DIM_BK;
+    const half* block_w = w + k_block_next*DIM_BK*stride_w + block_n*DIM_BN;
+
+    // for each K block tile
+    for (int block_k = 0; block_k < BLOCKS_K; ++block_k) {
+        
+        const half* block_x = x + block_m * DIM_BM * stride_x + block_k * DIM_BK;
+        const half* block_w = w + block_k * DIM_BK * stride_w + block_n * DIM_BN;
+
+        // load from gmem to x_shmem and w_shmem
+        toShmemSync<DIM_MM, DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_base_x);
+        toShmemSync<DIM_MK, DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_base_w);
+
+        __syncthreads();
+    
+#pragma unroll
+        for (int tile_k = 0; tile_k < TILES_K; ++tile_k) {
+
+            const half* warp_x = shmem_base_x + warp_m * DIM_WM * DIM_BK + tile_k * DIM_WK;
+            const half* warp_w = shmem_base_w + tile_k * DIM_WK * DIM_BN + warp_n * DIM_WN;
+
+            // load from shmem into registers
+            ldmatrix<false, DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_x, x_reg[0]);
+            ldmatrix<true, DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_w, w_reg[0]);
+
+            // compute
+            mma_sync<DIM_MM, DIM_MK, DIM_MN, MMAS_M, MMAS_K, MMAS_N>(x_reg[tile_k], w_reg[tile_k], acc_reg);
+        }
+
+        __syncthreads();
+    }
+
+    // regs -> shmem
+    half* shmem_warp_out = shmem_base_out + warp_m * DIM_WM * DIM_BN + warp_n * DIM_WN;
+    stmatrix<DIM_MM, DIM_MN, MMAS_M, MMAS_N, DIM_BN>(lane_idx, shmem_warp_out, acc_reg);
+
+    __syncthreads();
+
+    // shmem -> gmem
+    half* block_out = out + block_m * DIM_BM * stride_out + block_n * DIM_BN;
+    toGmem<DIM_MM, DIM_BM, DIM_BN, NUM_THRS>(stride_out, shmem_base_out, block_out);
+}
+
 // improvement 3: pipelining
 template <
     unsigned int DIM_BM,
@@ -164,7 +264,7 @@ template <
     unsigned int K_PIPE_MAX,
     unsigned int NUM_THRS
 >
-__global__ void xw_impl(
+__global__ void xw_async_impl(
     size_t M,
     size_t K,
     size_t N,
@@ -213,8 +313,8 @@ __global__ void xw_impl(
         half* shmem_x = shmem_base_x + k_pipe * DIM_BM * DIM_BK;
         half* shmem_w = shmem_base_w + k_pipe * DIM_BK * DIM_BN;
 
-        toShmem<DIM_MM, DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_x);
-        toShmem<DIM_MK, DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w);
+        toShmemAsync<DIM_MM, DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_x);
+        toShmemAsync<DIM_MK, DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w);
         cp_async_fence();
 
         --k_block_count;
@@ -273,8 +373,8 @@ __global__ void xw_impl(
                 half* shmem_x_write = shmem_base_x + shmem_pipe_write * DIM_BM * DIM_BK;
                 half* shmem_w_write = shmem_base_w + shmem_pipe_write * DIM_BK * DIM_BN;
 
-                toShmem<DIM_MM, DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_x_write);
-                toShmem<DIM_MK, DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w_write);
+                toShmemAsync<DIM_MM, DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_x_write);
+                toShmemAsync<DIM_MK, DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w_write);
                 cp_async_fence();
 
                 --k_block_count;
