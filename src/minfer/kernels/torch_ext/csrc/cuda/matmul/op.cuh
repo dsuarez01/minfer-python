@@ -61,6 +61,14 @@ inline void launch_xw_kernel(
     constexpr unsigned int NUM_THRS = THRS_M * THRS_N;
     constexpr unsigned int SHMEM_SZ = K_PIPE_MAX*(DIM_BM*DIM_BK+DIM_BK*DIM_BN)*sizeof(half);
 
+    // (toShmem for x and w)
+    static_assert(DIM_BM*(DIM_BK/8) >= NUM_THRS);
+    static_assert(DIM_BK*(DIM_BN/8) >= NUM_THRS);
+
+    // (toGmem for output)
+    static_assert(DIM_BM*(DIM_BN/8) >= NUM_THRS);
+    
+    // (reuse shmem for output)
     static_assert(DIM_BM*DIM_BN*sizeof(half) <= K_PIPE_MAX*(DIM_BM*DIM_BK+DIM_BK*DIM_BN)*sizeof(half));
 
     STD_TORCH_CHECK(SHMEM_SZ <= deviceProp.sharedMemPerBlockOptin, "Too much shmem (per block) requested");
@@ -119,14 +127,14 @@ inline void dispatch_f16_xw(
 
     STD_TORCH_CHECK(deviceProp.major >= 8, "SM 8.0 or higher required to use tensor cores + async memcpy");
 
-    constexpr unsigned int DIM_BM = 128;
-    constexpr unsigned int DIM_BK = 32;
-    constexpr unsigned int DIM_BN = 128;
+    constexpr unsigned int DIM_BM = 16;
+    constexpr unsigned int DIM_BK = 16;
+    constexpr unsigned int DIM_BN = 16;
     
     constexpr unsigned int K_PIPE_MAX = 2;
-    constexpr unsigned int WARPS_M = 4;
-    constexpr unsigned int TILES_K = 4;
-    constexpr unsigned int WARPS_N = 2;
+    constexpr unsigned int WARPS_M = 1;
+    constexpr unsigned int TILES_K = 1;
+    constexpr unsigned int WARPS_N = 1;
 
     constexpr unsigned int DIM_MM = 16;
     constexpr unsigned int DIM_MK = 8;

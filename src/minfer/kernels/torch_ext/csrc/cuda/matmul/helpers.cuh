@@ -176,13 +176,11 @@ template <
     unsigned int MMAS_COL,
     unsigned int COLS_BLOCK
 >
-__device__ __forceinline__ void ldmatrix_1x1(
+__device__ __forceinline__ void ldmatrix(
     unsigned int lane_idx,
     const half* src,
     uint32_t (&reg)[MMAS_ROW][MMAS_COL][(ROWS_MMA/8)*(COLS_MMA/8)]
 ) {
-    static_assert(MMAS_ROW == 1);
-    static_assert(MMAS_COL == 1);
 
     // swizzling
     constexpr unsigned int BITS = int_log2(ROWS_MMA);
@@ -190,22 +188,41 @@ __device__ __forceinline__ void ldmatrix_1x1(
     constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
     constexpr unsigned int BITMASK = ((1u<<BITS)-1) << (BASE+SHIFT);
 
+    // GRID_ROWS x GRID_COLS grid of 8x8 tiles
+    constexpr unsigned int GRID_ROWS = ROWS_MMA / 8;
+    constexpr unsigned int GRID_COLS = COLS_MMA / 8;
+    constexpr unsigned int NUM_TILES = GRID_ROWS * GRID_COLS;
+
+    static_assert(NUM_TILES == 1 || NUM_TILES == 2 || NUM_TILES == 4);
+
+    constexpr unsigned int EFF_ROW_SPAN = (GRID_ROWS == 1 && MMAS_ROW >= 2) ? 2 : 1;
+    constexpr unsigned int EFF_COL_SPAN = (GRID_COLS == 1 && MMAS_COL >= 2) ? 2 : 1;
+    constexpr unsigned int EFF_GRID_ROWS = GRID_ROWS * EFF_ROW_SPAN;
+    constexpr unsigned int EFF_GRID_COLS = GRID_COLS * EFF_COL_SPAN;
+    constexpr unsigned int EFF_NUM_TILES = (NUM_TILES*EFF_ROW_SPAN*EFF_COL_SPAN>4) ? 4 : NUM_TILES*EFF_ROW_SPAN*EFF_COL_SPAN;
+
     constexpr uint32_t STRIDE_COL = COLS_MMA * sizeof(half);
     constexpr uint32_t STRIDE_ROW = ROWS_MMA * COLS_BLOCK * sizeof(half);
+
+    constexpr unsigned int ROW_INCR = EFF_ROW_SPAN;
+    constexpr unsigned int COL_INCR = EFF_COL_SPAN;
 
     const uint32_t shared_base = __cvta_generic_to_shared(src);
 
     // see: https://veitner.bearblog.dev/load-and-store-matrices-efficently-with-ptx-instructions/
-    // the idx calc is the same regardless of LOAD_TRANS or not
-    unsigned int row = ((lane_idx/8)%2)*8 + (lane_idx%8);
-    unsigned int col = (lane_idx/16)*8;
+    unsigned int tile_id = lane_idx / 8;
+    unsigned int row_in_tile = lane_idx % 8;
+
+    unsigned int tile_row = tile_id%EFF_GRID_ROWS;
+    unsigned int tile_col = tile_id/EFF_GRID_ROWS;
+
+    unsigned int row = tile_row*8+row_in_tile;
+    unsigned int col = tile_col*8;
+
     unsigned int idx_thr = row*COLS_BLOCK+col;
 
-    uint32_t base_addr = shared_base + idx_thr * sizeof(half);
+    uint32_t base_addr = shared_base + idx_thr*sizeof(half);
     uint32_t src_addr = base_addr ^ ((base_addr & BITMASK) >> SHIFT);
-
-    constexpr unsigned int ROW_INCR = 1;
-    constexpr unsigned int COL_INCR = 1;
 
 #pragma unroll
     for (int mma_row = 0; mma_row < MMAS_ROW; mma_row += ROW_INCR) {
@@ -215,67 +232,163 @@ __device__ __forceinline__ void ldmatrix_1x1(
 #pragma unroll
         for (int mma_col = 0; mma_col < MMAS_COL; mma_col += COL_INCR) {
 
-            if constexpr (LOAD_TRANS) {
-                if constexpr (ROWS_MMA == 8 && COLS_MMA == 8) {
+            if constexpr (EFF_NUM_TILES == 1) {
+                if constexpr (LOAD_TRANS) {
                     asm(
                         "ldmatrix.sync.aligned.m8n8.x1.trans.shared.b16 "
                         "{%0}, [%1];\n"
                         : "=r"(reg[mma_row][mma_col][0])
                         : "r"(src_addr)
                     );
-                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 8) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 "
-                        "{%0, %1}, [%2];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr(ROWS_MMA == 8 && COLS_MMA == 16) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 "
-                        "{%0, %1}, [%2];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 16) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]),
-                          "=r"(reg[mma_row][mma_col][2]), "=r"(reg[mma_row][mma_col][3])
-                        : "r"(src_addr)
-                    );
-                }
-            } else {
-                if constexpr (ROWS_MMA == 8 && COLS_MMA == 8) {
+                } else {
                     asm(
                         "ldmatrix.sync.aligned.m8n8.x1.shared.b16 "
                         "{%0}, [%1];\n"
                         : "=r"(reg[mma_row][mma_col][0])
                         : "r"(src_addr)
                     );
-                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 8) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
-                        "{%0, %1}, [%2];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr(ROWS_MMA == 8 && COLS_MMA == 16) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
-                        "{%0, %1}, [%2];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 16) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]),
-                          "=r"(reg[mma_row][mma_col][2]), "=r"(reg[mma_row][mma_col][3])
-                        : "r"(src_addr)
-                    );
+                }
+            } else if constexpr (EFF_NUM_TILES == 2) {
+                if constexpr (LOAD_TRANS) {
+                    if constexpr (EFF_ROW_SPAN == 2 && EFF_COL_SPAN == 1) {
+                        // spans 2 MMA rows
+                        asm(
+                            "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 "
+                            "{%0, %1}, [%2];\n"
+                            : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0])
+                            : "r"(src_addr)
+                        );
+                    } else if constexpr (EFF_ROW_SPAN == 1 && EFF_COL_SPAN == 2) {
+                        // spans 2 MMA cols
+                        asm(
+                            "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 "
+                            "{%0, %1}, [%2];\n"
+                            : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col+1][0])
+                            : "r"(src_addr)
+                        );
+                    } else if constexpr (GRID_ROWS == 2 && GRID_COLS == 1) {
+                        // 16x8 w/in 1 MMA tile
+                        asm(
+                            "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 "
+                            "{%0, %1}, [%2];\n"
+                            : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1])
+                            : "r"(src_addr)
+                        );
+                    } else if constexpr (GRID_ROWS == 1 && GRID_COLS == 2) {
+                        // 8x16 w/in 1 MMA tile
+                        asm(
+                            "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 "
+                            "{%0, %1}, [%2];\n"
+                            : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1])
+                            : "r"(src_addr)
+                        );
+                    }
+                } else {
+                    if constexpr (EFF_ROW_SPAN == 2 && EFF_COL_SPAN == 1) {
+                        // in terms of args, identical to above
+                        asm(
+                            "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
+                            "{%0, %1}, [%2];\n"
+                            : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0])
+                            : "r"(src_addr)
+                        );
+                    } else if constexpr (EFF_ROW_SPAN == 1 && EFF_COL_SPAN == 2) {
+                        asm(
+                            "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
+                            "{%0, %1}, [%2];\n"
+                            : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col+1][0])
+                            : "r"(src_addr)
+                        );
+                    } else if constexpr (GRID_ROWS == 2 && GRID_COLS == 1) {
+                        asm(
+                            "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
+                            "{%0, %1}, [%2];\n"
+                            : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1])
+                            : "r"(src_addr)
+                        );
+                    } else if constexpr (GRID_ROWS == 1 && GRID_COLS == 2) {
+                        asm(
+                            "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
+                            "{%0, %1}, [%2];\n"
+                            : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1])
+                            : "r"(src_addr)
+                        );
+                    }
+                }
+            } else if constexpr (EFF_NUM_TILES == 4) {
+                if constexpr (LOAD_TRANS) {
+                    if constexpr (EFF_ROW_SPAN == 2 && EFF_COL_SPAN == 2) {
+                        // 8x8 load spanning 2x2 MMA tiles
+                        asm(
+                            "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 "
+                            "{%0, %1, %2, %3}, [%4];\n"
+                            : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0]),
+                              "=r"(reg[mma_row][mma_col+1][0]), "=r"(reg[mma_row+1][mma_col+1][0])
+                            : "r"(src_addr)
+                        );
+                    } else if constexpr (EFF_ROW_SPAN == 2 && EFF_COL_SPAN == 1 && GRID_COLS == 2) {
+                        // 8x16 load spanning 2 MMA rows
+                        asm(
+                            "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 "
+                            "{%0, %1, %2, %3}, [%4];\n"
+                            : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0]),
+                              "=r"(reg[mma_row][mma_col][1]), "=r"(reg[mma_row+1][mma_col][1])
+                            : "r"(src_addr)
+                        );
+                    } else if constexpr (EFF_ROW_SPAN == 1 && EFF_COL_SPAN == 2 && GRID_ROWS == 2) {
+                        // 16x8 load spanning 2 MMA cols
+                        asm(
+                            "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 "
+                            "{%0, %1, %2, %3}, [%4];\n"
+                            : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]),
+                              "=r"(reg[mma_row][mma_col+1][0]), "=r"(reg[mma_row][mma_col+1][1])
+                            : "r"(src_addr)
+                        );
+                    } else if constexpr (GRID_ROWS == 2 && GRID_COLS == 2) {
+                        // 16x16 w/in 1 MMA tile
+                        asm(
+                            "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 "
+                            "{%0, %1, %2, %3}, [%4];\n"
+                            : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]),
+                              "=r"(reg[mma_row][mma_col][2]), "=r"(reg[mma_row][mma_col][3])
+                            : "r"(src_addr)
+                        );
+                    }
+                } else {
+                    if constexpr (EFF_ROW_SPAN == 2 && EFF_COL_SPAN == 2) {
+                        // in terms of args, identical to above
+                        asm(
+                            "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
+                            "{%0, %1, %2, %3}, [%4];\n"
+                            : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0]),
+                              "=r"(reg[mma_row][mma_col+1][0]), "=r"(reg[mma_row+1][mma_col+1][0])
+                            : "r"(src_addr)
+                        );
+                    } else if constexpr (EFF_ROW_SPAN == 2 && EFF_COL_SPAN == 1 && GRID_COLS == 2) {
+                        asm(
+                            "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
+                            "{%0, %1, %2, %3}, [%4];\n"
+                            : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0]),
+                              "=r"(reg[mma_row][mma_col][1]), "=r"(reg[mma_row+1][mma_col][1])
+                            : "r"(src_addr)
+                        );
+                    } else if constexpr (EFF_ROW_SPAN == 1 && EFF_COL_SPAN == 2 && GRID_ROWS == 2) {
+                        asm(
+                            "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
+                            "{%0, %1, %2, %3}, [%4];\n"
+                            : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]),
+                              "=r"(reg[mma_row][mma_col+1][0]), "=r"(reg[mma_row][mma_col+1][1])
+                            : "r"(src_addr)
+                        );
+                    } else if constexpr (GRID_ROWS == 2 && GRID_COLS == 2) {
+                        asm(
+                            "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
+                            "{%0, %1, %2, %3}, [%4];\n"
+                            : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]),
+                              "=r"(reg[mma_row][mma_col][2]), "=r"(reg[mma_row][mma_col][3])
+                            : "r"(src_addr)
+                        );
+                    }
                 }
             }
 
@@ -283,395 +396,6 @@ __device__ __forceinline__ void ldmatrix_1x1(
         }
 
         src_addr = row_addr ^ xor_pattern<STRIDE_ROW, BITMASK, SHIFT, ROW_INCR>(mma_row);
-    }
-}
-
-template <
-    bool LOAD_TRANS,
-    unsigned int ROWS_MMA,
-    unsigned int COLS_MMA,
-    unsigned int MMAS_ROW,
-    unsigned int MMAS_COL,
-    unsigned int COLS_BLOCK
->
-__device__ __forceinline__ void ldmatrix_2x1(
-    unsigned int lane_idx,
-    const half* src,
-    uint32_t (&reg)[MMAS_ROW][MMAS_COL][(ROWS_MMA/8)*(COLS_MMA/8)]
-) {
-    static_assert(MMAS_ROW >= 2);
-    static_assert(MMAS_COL == 1);
-
-    // swizzling
-    constexpr unsigned int BITS = int_log2(ROWS_MMA);
-    constexpr unsigned int BASE = int_log2(sizeof(int4));
-    constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
-    constexpr unsigned int BITMASK = ((1u<<BITS)-1) << (BASE+SHIFT);
-
-    constexpr uint32_t STRIDE_COL = COLS_MMA * sizeof(half);
-    constexpr uint32_t STRIDE_ROW = ROWS_MMA * COLS_BLOCK * sizeof(half);
-
-    const uint32_t shared_base = __cvta_generic_to_shared(src);
-
-    // see: https://veitner.bearblog.dev/load-and-store-matrices-efficently-with-ptx-instructions/
-    // the idx calc is the same regardless of LOAD_TRANS or not
-    unsigned int row = ((lane_idx/8)%2)*8 + (lane_idx%8);
-    unsigned int col = (lane_idx/16)*8;
-    unsigned int idx_thr = row*COLS_BLOCK+col;
-
-    uint32_t base_addr = shared_base + idx_thr * sizeof(half);
-    uint32_t src_addr = base_addr ^ ((base_addr & BITMASK) >> SHIFT);
-
-    constexpr unsigned int ROW_INCR = (ROWS_MMA == 8) ? 2 : 1;
-    constexpr unsigned int COL_INCR = 1;
-
-#pragma unroll
-    for (int mma_row = 0; mma_row < MMAS_ROW; mma_row += ROW_INCR) {
-        
-        const uint32_t row_addr = src_addr;
-
-#pragma unroll
-        for (int mma_col = 0; mma_col < MMAS_COL; mma_col += COL_INCR) {
-
-            if constexpr (LOAD_TRANS) {
-                if constexpr (ROWS_MMA == 8 && COLS_MMA == 8) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 "
-                        "{%0, %1}, [%2];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 8) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 "
-                        "{%0, %1}, [%2];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr(ROWS_MMA == 8 && COLS_MMA == 16) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0]),
-                        "=r"(reg[mma_row][mma_col][1]), "=r"(reg[mma_row+1][mma_col][1])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 16) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]),
-                          "=r"(reg[mma_row][mma_col][2]), "=r"(reg[mma_row][mma_col][3])
-                        : "r"(src_addr)
-                    );
-                }
-            } else {
-                if constexpr (ROWS_MMA == 8 && COLS_MMA == 8) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
-                        "{%0, %1}, [%2];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 8) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
-                        "{%0, %1}, [%2];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr(ROWS_MMA == 8 && COLS_MMA == 16) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0]),
-                        "=r"(reg[mma_row][mma_col][1]), "=r"(reg[mma_row+1][mma_col][1])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 16) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]),
-                          "=r"(reg[mma_row][mma_col][2]), "=r"(reg[mma_row][mma_col][3])
-                        : "r"(src_addr)
-                    );
-                }
-            }
-
-            src_addr ^= xor_pattern<STRIDE_COL, BITMASK, SHIFT, COL_INCR>(mma_col);
-        }
-
-        src_addr = row_addr ^ xor_pattern<STRIDE_ROW, BITMASK, SHIFT, ROW_INCR>(mma_row);
-    }
-}
-
-template <
-    bool LOAD_TRANS,
-    unsigned int ROWS_MMA,
-    unsigned int COLS_MMA,
-    unsigned int MMAS_ROW,
-    unsigned int MMAS_COL,
-    unsigned int COLS_BLOCK
->
-__device__ __forceinline__ void ldmatrix_1x2(
-    unsigned int lane_idx,
-    const half* src,
-    uint32_t (&reg)[MMAS_ROW][MMAS_COL][(ROWS_MMA/8)*(COLS_MMA/8)]
-) {
-    static_assert(MMAS_ROW == 1);
-    static_assert(MMAS_COL >= 2);
-
-    // swizzling
-    constexpr unsigned int BITS = int_log2(ROWS_MMA);
-    constexpr unsigned int BASE = int_log2(sizeof(int4));
-    constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
-    constexpr unsigned int BITMASK = ((1u<<BITS)-1) << (BASE+SHIFT);
-
-    constexpr uint32_t STRIDE_COL = COLS_MMA * sizeof(half);
-    constexpr uint32_t STRIDE_ROW = ROWS_MMA * COLS_BLOCK * sizeof(half);
-
-    const uint32_t shared_base = __cvta_generic_to_shared(src);
-
-    // see: https://veitner.bearblog.dev/load-and-store-matrices-efficently-with-ptx-instructions/
-    // the idx calc is the same regardless of LOAD_TRANS or not
-    unsigned int row = (lane_idx%8);
-    unsigned int col = ((lane_idx/8)%2)*8;
-    unsigned int idx_thr = row*COLS_BLOCK+col;
-
-    uint32_t base_addr = shared_base + idx_thr * sizeof(half);
-    uint32_t src_addr = base_addr ^ ((base_addr & BITMASK) >> SHIFT);
-
-    constexpr unsigned int ROW_INCR = 1;
-    constexpr unsigned int COL_INCR = (COLS_MMA == 8) ? 2 : 1;
-
-#pragma unroll
-    for (int mma_row = 0; mma_row < MMAS_ROW; mma_row += ROW_INCR) {
-        
-        const uint32_t row_addr = src_addr;
-
-#pragma unroll
-        for (int mma_col = 0; mma_col < MMAS_COL; mma_col += COL_INCR) {
-
-            if constexpr (LOAD_TRANS) {
-                if constexpr (ROWS_MMA == 8 && COLS_MMA == 8) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 "
-                        "{%0, %1}, [%2];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col+1][0])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 8) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]),
-                        "=r"(reg[mma_row][mma_col+1][0]), "=r"(reg[mma_row][mma_col+1][1])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr(ROWS_MMA == 8 && COLS_MMA == 16) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 "
-                        "{%0, %1}, [%2];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 16) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]),
-                          "=r"(reg[mma_row][mma_col][2]), "=r"(reg[mma_row][mma_col][3])
-                        : "r"(src_addr)
-                    );
-                }
-            } else {
-                if constexpr (ROWS_MMA == 8 && COLS_MMA == 8) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
-                        "{%0, %1}, [%2];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col+1][0])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 8) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]),
-                        "=r"(reg[mma_row][mma_col+1][0]), "=r"(reg[mma_row][mma_col+1][1])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr(ROWS_MMA == 8 && COLS_MMA == 16) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
-                        "{%0, %1}, [%2];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 16) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]),
-                          "=r"(reg[mma_row][mma_col][2]), "=r"(reg[mma_row][mma_col][3])
-                        : "r"(src_addr)
-                    );
-                }
-            }
-
-            src_addr ^= xor_pattern<STRIDE_COL, BITMASK, SHIFT, COL_INCR>(mma_col);
-        }
-
-        src_addr = row_addr ^ xor_pattern<STRIDE_ROW, BITMASK, SHIFT, ROW_INCR>(mma_row);
-    }
-}
-
-template <
-    bool LOAD_TRANS,
-    unsigned int ROWS_MMA,
-    unsigned int COLS_MMA,
-    unsigned int MMAS_ROW,
-    unsigned int MMAS_COL,
-    unsigned int COLS_BLOCK
->
-__device__ __forceinline__ void ldmatrix_2x2(
-    unsigned int lane_idx,
-    const half* src,
-    uint32_t (&reg)[MMAS_ROW][MMAS_COL][(ROWS_MMA/8)*(COLS_MMA/8)]
-) {
-
-    static_assert(MMAS_ROW >= 2);
-    static_assert(MMAS_COL >= 2);
-
-    // swizzling
-    constexpr unsigned int BITS = int_log2(ROWS_MMA);
-    constexpr unsigned int BASE = int_log2(sizeof(int4));
-    constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
-    constexpr unsigned int BITMASK = ((1u<<BITS)-1) << (BASE+SHIFT);
-
-    constexpr uint32_t STRIDE_COL = COLS_MMA * sizeof(half);
-    constexpr uint32_t STRIDE_ROW = ROWS_MMA * COLS_BLOCK * sizeof(half);
-
-    const uint32_t shared_base = __cvta_generic_to_shared(src);
-
-    // see: https://veitner.bearblog.dev/load-and-store-matrices-efficently-with-ptx-instructions/
-    // the idx calc is the same regardless of LOAD_TRANS or not
-    unsigned int row = ((lane_idx/8)%2)*8 + (lane_idx%8);
-    unsigned int col = (lane_idx/16)*8;
-    unsigned int idx_thr = row*COLS_BLOCK+col;
-
-    uint32_t base_addr = shared_base + idx_thr * sizeof(half);
-    uint32_t src_addr = base_addr ^ ((base_addr & BITMASK) >> SHIFT);
-
-    constexpr unsigned int ROW_INCR = (ROWS_MMA == 8) ? 2 : 1;
-    constexpr unsigned int COL_INCR = (COLS_MMA == 8) ? 2 : 1;
-
-#pragma unroll
-    for (int mma_row = 0; mma_row < MMAS_ROW; mma_row += ROW_INCR) {
-        
-        const uint32_t row_addr = src_addr;
-
-#pragma unroll
-        for (int mma_col = 0; mma_col < MMAS_COL; mma_col += COL_INCR) {
-
-            if constexpr (LOAD_TRANS) {
-                if constexpr (ROWS_MMA == 8 && COLS_MMA == 8) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0]), 
-                          "=r"(reg[mma_row][mma_col+1][0]), "=r"(reg[mma_row+1][mma_col+1][0])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 8) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]), 
-                          "=r"(reg[mma_row][mma_col+1][0]), "=r"(reg[mma_row][mma_col+1][1])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr(ROWS_MMA == 8 && COLS_MMA == 16) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0]), 
-                          "=r"(reg[mma_row][mma_col][1]), "=r"(reg[mma_row+1][mma_col][1])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 16) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][2]), 
-                          "=r"(reg[mma_row][mma_col][1]), "=r"(reg[mma_row][mma_col][3])
-                        : "r"(src_addr)
-                    );
-                }
-            } else {
-                if constexpr (ROWS_MMA == 8 && COLS_MMA == 8) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0]), 
-                          "=r"(reg[mma_row][mma_col+1][0]), "=r"(reg[mma_row+1][mma_col+1][0])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 8) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]), 
-                          "=r"(reg[mma_row][mma_col+1][0]), "=r"(reg[mma_row][mma_col+1][1])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr(ROWS_MMA == 8 && COLS_MMA == 16) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row+1][mma_col][0]), 
-                          "=r"(reg[mma_row][mma_col][1]), "=r"(reg[mma_row+1][mma_col][1])
-                        : "r"(src_addr)
-                    );
-                } else if constexpr (ROWS_MMA == 16 && COLS_MMA == 16) {
-                    asm(
-                        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
-                        "{%0, %1, %2, %3}, [%4];\n"
-                        : "=r"(reg[mma_row][mma_col][0]), "=r"(reg[mma_row][mma_col][1]), 
-                          "=r"(reg[mma_row][mma_col][2]), "=r"(reg[mma_row][mma_col][3])
-                        : "r"(src_addr)
-                    );
-                }
-            }
-
-            src_addr ^= xor_pattern<STRIDE_COL, BITMASK, SHIFT, COL_INCR>(mma_col);
-        }
-
-        src_addr = row_addr ^ xor_pattern<STRIDE_ROW, BITMASK, SHIFT, ROW_INCR>(mma_row);
-    }
-}
-
-template <
-    bool LOAD_TRANS,
-    unsigned int ROWS_MMA,
-    unsigned int COLS_MMA,
-    unsigned int MMAS_ROW,
-    unsigned int MMAS_COL,
-    unsigned int COLS_BLOCK
->
-__device__ __forceinline__ void ldmatrix(
-    unsigned int lane_idx,
-    const half* src,
-    uint32_t (&reg)[MMAS_ROW][MMAS_COL][(ROWS_MMA/8)*(COLS_MMA/8)]
-) {
-    if constexpr (MMAS_ROW >= 2 && MMAS_COL >= 2) {
-        ldmatrix_2x2<LOAD_TRANS, ROWS_MMA, COLS_MMA, MMAS_ROW, MMAS_COL, COLS_BLOCK>(lane_idx, src, reg);
-    } else if constexpr (MMAS_ROW == 1 && MMAS_COL >= 2) {
-        ldmatrix_1x2<LOAD_TRANS, ROWS_MMA, COLS_MMA, MMAS_ROW, MMAS_COL, COLS_BLOCK>(lane_idx, src, reg);
-    } else if constexpr (MMAS_ROW >= 2 && MMAS_COL == 1) {
-        ldmatrix_2x1<LOAD_TRANS, ROWS_MMA, COLS_MMA, MMAS_ROW, MMAS_COL, COLS_BLOCK>(lane_idx, src, reg);
-    } else if constexpr (MMAS_ROW == 1 && MMAS_COL == 1) {
-        ldmatrix_1x1<LOAD_TRANS, ROWS_MMA, COLS_MMA, MMAS_ROW, MMAS_COL, COLS_BLOCK>(lane_idx, src, reg);
     }
 }
 
@@ -975,10 +699,9 @@ template <
 __device__ __forceinline__ void stmatrix(
     unsigned int lane_idx,
     half* dst,
-    uint32_t (&reg)[MMAS_ROW][MMAS_COL][2]
+    uint32_t (&reg)[MMAS_ROW][MMAS_COL][(ROWS_MMA/8)*(COLS_MMA/8)]
 ) {
-    static_assert(ROWS_MMA == 16);
-    static_assert(COLS_MMA == 8);
+    static_assert(ROWS_MMA == 16 && COLS_MMA == 8);
 
     constexpr unsigned int BITS = int_log2(ROWS_MMA);
     constexpr unsigned int BASE = int_log2(sizeof(int4)); // 16-byte alignment for toGmem
