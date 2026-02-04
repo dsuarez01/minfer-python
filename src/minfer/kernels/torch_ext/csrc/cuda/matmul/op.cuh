@@ -119,8 +119,8 @@ inline void dispatch_f16_xw(
 
     STD_TORCH_CHECK(deviceProp.major >= 8, "SM 8.0 or higher required to use tensor cores + async memcpy");
 
-    constexpr unsigned int DIM_BM = 256;
-    constexpr unsigned int DIM_BK = 64;
+    constexpr unsigned int DIM_BM = 128;
+    constexpr unsigned int DIM_BK = 32;
     constexpr unsigned int DIM_BN = 128;
     
     constexpr unsigned int K_PIPE_MAX = 2;

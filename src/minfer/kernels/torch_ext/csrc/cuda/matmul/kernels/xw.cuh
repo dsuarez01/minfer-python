@@ -213,8 +213,8 @@ __global__ void xw_impl(
         half* shmem_x = shmem_base_x + k_pipe * DIM_BM * DIM_BK;
         half* shmem_w = shmem_base_w + k_pipe * DIM_BK * DIM_BN;
 
-        toShmem<DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_x);
-        toShmem<DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w);
+        toShmem<DIM_MM, DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_x);
+        toShmem<DIM_MK, DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w);
         cp_async_fence();
 
         --k_block_count;
@@ -273,8 +273,8 @@ __global__ void xw_impl(
                 half* shmem_x_write = shmem_base_x + shmem_pipe_write * DIM_BM * DIM_BK;
                 half* shmem_w_write = shmem_base_w + shmem_pipe_write * DIM_BK * DIM_BN;
 
-                toShmem<DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_x_write);
-                toShmem<DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w_write);
+                toShmem<DIM_MM, DIM_BM, DIM_BK, NUM_THRS>(stride_x, block_x, shmem_x_write);
+                toShmem<DIM_MK, DIM_BK, DIM_BN, NUM_THRS>(stride_w, block_w, shmem_w_write);
                 cp_async_fence();
 
                 --k_block_count;

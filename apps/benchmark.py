@@ -134,7 +134,7 @@ def matmul(which: str):
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
     # sizes = [512,1024,2048,4096,8192,16384,32768]
-    sizes = [4096]
+    sizes = [16384]
     results = []
 
     for s in sizes:
@@ -161,7 +161,7 @@ def matmul(which: str):
             description=f'{which}',
         )
 
-        result = timer.blocked_autorange()
+        result = timer.blocked_autorange(min_run_time=1.0)
         
         results.append(result)
 

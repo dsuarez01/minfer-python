@@ -88,5 +88,5 @@ if __name__ == "__main__":
     # rmsnorm_head()
     # rmsnorm_vec()
     # rope()
-    matmul(which=args.which, shape=(4096,4096,4096))
+    matmul(which=args.which, shape=(16384,16384,16384))
     # flash_attn()
