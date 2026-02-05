@@ -601,7 +601,7 @@ template <
     unsigned int NUM_THRS,
     unsigned int ELEMS_THR
 >
-__device__ __forceinline__ void toRegSync(
+__device__ __forceinline__ void gmemToRegSync(
     size_t stride_src,
     const half* __restrict__ src,
     int4 (&dst)[ELEMS_THR]
@@ -641,10 +641,9 @@ template <
     unsigned int NUM_THRS,
     unsigned int ELEMS_THR
 >
-__device__ __forceinline__ void toShmemSync(
-    size_t stride_src,
-    const int4 (&src)[ELEMS_THR],
-    half* __restrict__ dst
+__device__ __forceinline__ void regToShmemSync(
+    half* __restrict__ dst,
+    const int4 (&src)[ELEMS_THR]
 ) {
 
     // swizzling
@@ -656,9 +655,7 @@ __device__ __forceinline__ void toShmemSync(
     // can issue up to 128-bit load/store instrs (8 half elements)
     // alignment checks
     static_assert(COLS_BLOCK % 8 == 0);
-    // assert(stride_src % 8 == 0);
-    
-    size_t eff_stride_src = stride_src / 8;
+
     constexpr unsigned int EFF_COLS_BLOCK = COLS_BLOCK / 8;
 
     static_assert(NUM_THRS % EFF_COLS_BLOCK == 0);
@@ -692,7 +689,67 @@ __device__ __forceinline__ void toShmemSync(
             : "memory"
         );
 
+        dst_addr ^= xor_pattern<STRIDE_DST, BITMASK, SHIFT, 1u>(i); // NOTE: this imposes a constraint on i, i believe it is i <= 31
+    }
+}
+
+// for prefetching before loop, not strictly necessary
+template <
+    unsigned int ROWS_MMA,
+    unsigned int ROWS_BLOCK,
+    unsigned int COLS_BLOCK,
+    unsigned int NUM_THRS
+>
+__device__ __forceinline__ void toShmemSync(
+    size_t stride_src,
+    const half* __restrict__ src,
+    half* __restrict__ dst
+) {
+
+    // swizzling
+    constexpr unsigned int BITS = int_log2(ROWS_MMA);
+    constexpr unsigned int BASE = int_log2(sizeof(int4)); // 16-byte alignment
+    constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
+    constexpr unsigned int BITMASK  = ((1u<<BITS)-1) << (BASE+SHIFT);
+
+    unsigned int idx_thr = threadIdx.y * blockDim.x + threadIdx.x;
+
+    // can issue up to 128-bit load/store instrs (8 half elements)
+    // alignment checks
+    static_assert(COLS_BLOCK % 8 == 0);
+    // assert(stride_src % 8 == 0);
+    
+    size_t eff_stride_src = stride_src / 8;
+    constexpr unsigned int EFF_COLS_BLOCK = COLS_BLOCK / 8;
+
+    static_assert(NUM_THRS % EFF_COLS_BLOCK == 0);
+    
+    constexpr unsigned int INCR_ROW = NUM_THRS / EFF_COLS_BLOCK;
+    constexpr unsigned int NUM_ITERS = ROWS_BLOCK / INCR_ROW;
+
+    unsigned int row_thr = idx_thr / EFF_COLS_BLOCK;
+    unsigned int col_thr = idx_thr % EFF_COLS_BLOCK;
+    
+    // reduce instrs by XOR dst pointer with const
+    uint32_t shared_base = __cvta_generic_to_shared(dst);
+    unsigned int idx_dst = row_thr*EFF_COLS_BLOCK+col_thr;
+    uint32_t base_addr = shared_base + idx_dst*sizeof(int4);
+    uint32_t dst_addr = swizzle<BITMASK, SHIFT>(base_addr);
+    constexpr uint32_t STRIDE_DST = INCR_ROW * EFF_COLS_BLOCK * sizeof(int4);
+
+    int4 dst_vals;
+
+#pragma unroll
+    for (int i=0; i<NUM_ITERS; ++i) {
+        asm(
+            "ld.shared.v4.u32 {%0, %1, %2, %3}, [%4];\n"
+            : "=r"(dst_vals.x), "=r"(dst_vals.y), "=r"(dst_vals.z), "=r"(dst_vals.w)
+            : "r"(dst_addr)
+        );
+
+        dst_vals = reinterpret_cast<const int4*>(src)[row_thr*eff_stride_src+col_thr];
         dst_addr ^= xor_pattern<STRIDE_DST, BITMASK, SHIFT, 1u>(i);
+        row_thr += INCR_ROW;
     }
 }
 
@@ -826,7 +883,7 @@ __device__ __forceinline__ void stmatrix(
     constexpr uint32_t STRIDE_COL = COLS_MMA * sizeof(half);
     constexpr uint32_t STRIDE_ROW = ROWS_MMA * COLS_BLOCK * sizeof(half);
     constexpr uint32_t STRIDE_8 = 8 * COLS_BLOCK * sizeof(half);
-    constexpr uint32_t PATTERN_8 = STRIDE_8 ^ ((STRIDE_8 & BITMASK) >> SHIFT);
+    constexpr uint32_t PATTERN_8 = swizzle(STRIDE_8);
 
 #pragma unroll
     for (int mma_row = 0; mma_row < MMAS_ROW; ++mma_row) {
