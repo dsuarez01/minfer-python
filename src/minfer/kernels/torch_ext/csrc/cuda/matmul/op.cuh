@@ -78,7 +78,7 @@ inline void launch_xw_kernel(
 
     STD_CUDA_CHECK(
         cudaFuncSetAttribute(
-            xw_impl<
+            xw_sync_impl<
                 DIM_BM,
                 DIM_BK,
                 DIM_BN,
@@ -89,7 +89,6 @@ inline void launch_xw_kernel(
                 DIM_MK,
                 DIM_MN,
                 TILES_K,
-                K_PIPE_MAX,
                 NUM_THRS
             >,
             cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -103,11 +102,11 @@ inline void launch_xw_kernel(
     );
     cudaStream_t stream = static_cast<cudaStream_t>(stream_ptr);
 
-    xw_impl<
+    xw_sync_impl<
         DIM_BM, DIM_BK, DIM_BN, 
         DIM_WM, DIM_WK, DIM_WN, 
         DIM_MM, DIM_MK, DIM_MN,
-        TILES_K, K_PIPE_MAX, NUM_THRS
+        TILES_K, NUM_THRS
     ><<<grid, block, SHMEM_SZ, stream>>>(
         M, K, N, x_ptr, w_ptr, out_ptr
     );
@@ -127,14 +126,14 @@ inline void dispatch_f16_xw(
 
     STD_TORCH_CHECK(deviceProp.major >= 8, "SM 8.0 or higher required to use tensor cores + async memcpy");
 
-    constexpr unsigned int DIM_BM = 16;
-    constexpr unsigned int DIM_BK = 16;
-    constexpr unsigned int DIM_BN = 16;
+    constexpr unsigned int DIM_BM = 64;
+    constexpr unsigned int DIM_BK = 64;
+    constexpr unsigned int DIM_BN = 64;
     
     constexpr unsigned int K_PIPE_MAX = 2;
-    constexpr unsigned int WARPS_M = 1;
-    constexpr unsigned int TILES_K = 1;
-    constexpr unsigned int WARPS_N = 1;
+    constexpr unsigned int WARPS_M = 2;
+    constexpr unsigned int TILES_K = 4;
+    constexpr unsigned int WARPS_N = 2;
 
     constexpr unsigned int DIM_MM = 16;
     constexpr unsigned int DIM_MK = 8;

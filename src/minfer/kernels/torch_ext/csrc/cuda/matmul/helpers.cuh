@@ -172,7 +172,7 @@ template<
     unsigned int INCR
 >
 __device__ __forceinline__ constexpr uint32_t xor_pattern(unsigned int i) {
-    return swizzle((i+INCR)*STRIDE) ^ swizzle(i*STRIDE);
+    return swizzle<BITMASK, SHIFT>((i+INCR)*STRIDE) ^ swizzle<BITMASK, SHIFT>(i*STRIDE);
 }
 
 template <
@@ -679,16 +679,8 @@ __device__ __forceinline__ void regToShmemSync(
 
 #pragma unroll
     for (int i=0; i<NUM_ITERS; ++i) {
-        asm(
-            "st.shared.v4.u32 [%0], {%1, %2, %3, %4};\n"
-            :: "r"(dst_addr), 
-               "r"(reinterpret_cast<const uint32_t*>(&src[i])[0]),
-               "r"(reinterpret_cast<const uint32_t*>(&src[i])[1]),
-               "r"(reinterpret_cast<const uint32_t*>(&src[i])[2]),
-               "r"(reinterpret_cast<const uint32_t*>(&src[i])[3])
-            : "memory"
-        );
-
+        int4* dst_ptr = reinterpret_cast<int4*>(__cvta_shared_to_generic(dst_addr));
+        *dst_ptr = src[i];
         dst_addr ^= xor_pattern<STRIDE_DST, BITMASK, SHIFT, 1u>(i); // NOTE: this imposes a constraint on i, i believe it is i <= 31
     }
 }
@@ -737,17 +729,10 @@ __device__ __forceinline__ void toShmemSync(
     uint32_t dst_addr = swizzle<BITMASK, SHIFT>(base_addr);
     constexpr uint32_t STRIDE_DST = INCR_ROW * EFF_COLS_BLOCK * sizeof(int4);
 
-    int4 dst_vals;
-
 #pragma unroll
     for (int i=0; i<NUM_ITERS; ++i) {
-        asm(
-            "ld.shared.v4.u32 {%0, %1, %2, %3}, [%4];\n"
-            : "=r"(dst_vals.x), "=r"(dst_vals.y), "=r"(dst_vals.z), "=r"(dst_vals.w)
-            : "r"(dst_addr)
-        );
-
-        dst_vals = reinterpret_cast<const int4*>(src)[row_thr*eff_stride_src+col_thr];
+        int4* dst_ptr = reinterpret_cast<int4*>(__cvta_shared_to_generic(dst_addr));
+        *dst_ptr = reinterpret_cast<const int4*>(src)[row_thr*eff_stride_src+col_thr];
         dst_addr ^= xor_pattern<STRIDE_DST, BITMASK, SHIFT, 1u>(i);
         row_thr += INCR_ROW;
     }
@@ -883,7 +868,7 @@ __device__ __forceinline__ void stmatrix(
     constexpr uint32_t STRIDE_COL = COLS_MMA * sizeof(half);
     constexpr uint32_t STRIDE_ROW = ROWS_MMA * COLS_BLOCK * sizeof(half);
     constexpr uint32_t STRIDE_8 = 8 * COLS_BLOCK * sizeof(half);
-    constexpr uint32_t PATTERN_8 = swizzle(STRIDE_8);
+    constexpr uint32_t PATTERN_8 = swizzle<BITMASK, SHIFT>(STRIDE_8);
 
 #pragma unroll
     for (int mma_row = 0; mma_row < MMAS_ROW; ++mma_row) {
@@ -951,16 +936,10 @@ __device__ __forceinline__ void toGmem(
     uint32_t src_addr = swizzle<BITMASK, SHIFT>(base_addr);
     constexpr uint32_t STRIDE_SRC = INCR_ROW * EFF_COLS_BLOCK * sizeof(int4);
 
-    int4 src_vals;
-
 #pragma unroll
     for (int i = 0; i < NUM_ITERS; ++i) {
-        asm(
-            "ld.shared.v4.u32 {%0, %1, %2, %3}, [%4];\n"
-            : "=r"(src_vals.x), "=r"(src_vals.y), "=r"(src_vals.z), "=r"(src_vals.w)
-            : "r"(src_addr)
-        );
-        reinterpret_cast<int4*>(dst)[row_thr*eff_stride_dst+col_thr] = src_vals;
+        int4* src_ptr = reinterpret_cast<int4*>(__cvta_shared_to_generic(src_addr));
+        reinterpret_cast<int4*>(dst)[row_thr*eff_stride_dst+col_thr] = *src_ptr;
         src_addr ^= xor_pattern<STRIDE_SRC, BITMASK, SHIFT, 1u>(i);
         row_thr += INCR_ROW;
     }
