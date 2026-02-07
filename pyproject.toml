@@ -25,4 +25,5 @@ where = ["src"]
 dev = [
     "pytest>=8.3.5",
     "pytest-randomly>=3.16.0",
+    "z3-solver>=4.13.0"
 ]

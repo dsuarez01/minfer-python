@@ -533,7 +533,7 @@ __device__ __forceinline__ void mma_sync(
     
 //     constexpr unsigned int INCR_ROW = NUM_THRS / EFF_COLS_BLOCK;
 //     constexpr unsigned int NUM_ITERS = ROWS_BLOCK / INCR_ROW;
-
+//     static_assert(NUM_ITERS >= 1u);
 //     unsigned int row_thr = idx_thr / EFF_COLS_BLOCK;
 //     unsigned int col_thr = idx_thr % EFF_COLS_BLOCK;
     
@@ -579,7 +579,7 @@ __device__ __forceinline__ void mma_sync(
     
 //     constexpr unsigned int INCR_ROW = NUM_THRS / EFF_COLS_BLOCK;
 //     constexpr unsigned int NUM_ITERS = ROWS_BLOCK / INCR_ROW;
-
+//     static_assert(NUM_ITERS >= 1u);
 //     unsigned int row_thr = idx_thr / EFF_COLS_BLOCK;
 //     unsigned int col_thr = idx_thr % EFF_COLS_BLOCK;
     
@@ -619,7 +619,7 @@ __device__ __forceinline__ void gmemToRegSync(
     
     constexpr unsigned int INCR_ROW = NUM_THRS / EFF_COLS_BLOCK;
     constexpr unsigned int NUM_ITERS = ROWS_BLOCK / INCR_ROW;
-
+    static_assert(NUM_ITERS >= 1u);
     static_assert(NUM_ITERS == ELEMS_THR);
 
     unsigned int idx_thr = threadIdx.y * blockDim.x + threadIdx.x;
@@ -663,6 +663,7 @@ __device__ __forceinline__ void regToShmemSync(
     constexpr unsigned int INCR_ROW = NUM_THRS / EFF_COLS_BLOCK;
     constexpr unsigned int NUM_ITERS = ROWS_BLOCK / INCR_ROW;
 
+    static_assert(NUM_ITERS >= 1u);
     static_assert(ELEMS_THR == NUM_ITERS);
 
     unsigned int idx_thr = threadIdx.y * blockDim.x + threadIdx.x;
@@ -718,7 +719,7 @@ __device__ __forceinline__ void toShmemSync(
     
     constexpr unsigned int INCR_ROW = NUM_THRS / EFF_COLS_BLOCK;
     constexpr unsigned int NUM_ITERS = ROWS_BLOCK / INCR_ROW;
-
+    static_assert(NUM_ITERS >= 1u);
     unsigned int row_thr = idx_thr / EFF_COLS_BLOCK;
     unsigned int col_thr = idx_thr % EFF_COLS_BLOCK;
     
@@ -796,7 +797,7 @@ __device__ __forceinline__ void toShmemAsync(
     
     constexpr unsigned int INCR_ROW = NUM_THRS / EFF_COLS_BLOCK;
     constexpr unsigned int NUM_ITERS = ROWS_BLOCK / INCR_ROW;
-
+    static_assert(NUM_ITERS >= 1u);
     unsigned int row_thr = idx_thr / EFF_COLS_BLOCK;
     unsigned int col_thr = idx_thr % EFF_COLS_BLOCK;
     
@@ -925,7 +926,7 @@ __device__ __forceinline__ void toGmem(
 
     constexpr unsigned int INCR_ROW = NUM_THRS / EFF_COLS_BLOCK;
     constexpr unsigned int NUM_ITERS = ROWS_BLOCK / INCR_ROW;
-
+    static_assert(NUM_ITERS >= 1u);
     unsigned int row_thr = idx_thr / EFF_COLS_BLOCK;
     unsigned int col_thr = idx_thr % EFF_COLS_BLOCK;
 

@@ -32,9 +32,9 @@ template <
     unsigned int DIM_BM,
     unsigned int DIM_BK,
     unsigned int DIM_BN,
-    unsigned int WARPS_M,
-    unsigned int TILES_K,
-    unsigned int WARPS_N,
+    unsigned int DIM_WM,
+    unsigned int DIM_WK,
+    unsigned int DIM_WN,
     unsigned int DIM_MM,
     unsigned int DIM_MK,
     unsigned int DIM_MN,
@@ -48,9 +48,9 @@ inline void launch_xw_kernel(
     const cudaDeviceProp& deviceProp,
     int device_index
 ) {
-    constexpr unsigned int DIM_WM = (DIM_BM+WARPS_M-1) / WARPS_M;
-    constexpr unsigned int DIM_WK = (DIM_BK+TILES_K-1) / TILES_K;
-    constexpr unsigned int DIM_WN = (DIM_BN+WARPS_N-1) / WARPS_N;
+    constexpr unsigned int WARPS_M = (DIM_BM+DIM_WM-1) / DIM_WM;
+    constexpr unsigned int TILES_K = (DIM_BK+DIM_WK-1) / DIM_WK;
+    constexpr unsigned int WARPS_N = (DIM_BN+DIM_WN-1) / DIM_WN;
 
     const unsigned int blocks_m = (M+DIM_BM-1)/DIM_BM;
     const unsigned int blocks_n = (N+DIM_BN-1)/DIM_BN;
@@ -70,7 +70,8 @@ inline void launch_xw_kernel(
     
     // (reuse shmem for output)
     static_assert(DIM_BM*DIM_BN*sizeof(half) <= K_PIPE_MAX*(DIM_BM*DIM_BK+DIM_BK*DIM_BN)*sizeof(half));
-
+    
+    STD_TORCH_CHECK(NUM_THRS <= deviceProp.maxThreadsPerBlock, "Too many threads (per block) requested");
     STD_TORCH_CHECK(SHMEM_SZ <= deviceProp.sharedMemPerBlockOptin, "Too much shmem (per block) requested");
 
     dim3 grid(blocks_n, blocks_m);
@@ -130,16 +131,17 @@ inline void dispatch_f16_xw(
     constexpr unsigned int DIM_BK = 64;
     constexpr unsigned int DIM_BN = 64;
     
-    constexpr unsigned int K_PIPE_MAX = 2;
-    constexpr unsigned int WARPS_M = 2;
-    constexpr unsigned int TILES_K = 4;
-    constexpr unsigned int WARPS_N = 2;
+    constexpr unsigned int DIM_WM = 32;
+    constexpr unsigned int DIM_WK = 16;
+    constexpr unsigned int DIM_WN = 32;
 
     constexpr unsigned int DIM_MM = 16;
     constexpr unsigned int DIM_MK = 8;
     constexpr unsigned int DIM_MN = 8;
+
+    constexpr unsigned int K_PIPE_MAX = 2;
     
-    launch_xw_kernel<DIM_BM, DIM_BK, DIM_BN, WARPS_M, TILES_K, WARPS_N, DIM_MM, DIM_MK, DIM_MN, K_PIPE_MAX>(
+    launch_xw_kernel<DIM_BM, DIM_BK, DIM_BN, DIM_WM, DIM_WK, DIM_WN, DIM_MM, DIM_MK, DIM_MN, K_PIPE_MAX>(
         M, K, N, x_ptr, w_ptr, out_ptr, deviceProp, device_index
     );
 }
