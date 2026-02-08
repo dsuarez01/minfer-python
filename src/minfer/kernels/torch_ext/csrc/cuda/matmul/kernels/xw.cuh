@@ -2,7 +2,7 @@
 
 #include <cuda_fp16.h>
 
-#include "common/types.hpp"
+#include <cstddef>
 #include "../helpers.cuh"
 
 namespace minfer::impl {
@@ -179,8 +179,8 @@ __global__ void xw_sync_impl(
     constexpr unsigned int MMAS_N = (DIM_WN+DIM_MN-1)/DIM_MN;
 
     // for caching gmem loads into regs
-    constexpr unsigned int ELEMS_THR_X = DIM_BM / (NUM_THRS / (DIM_BK / 8));
-    constexpr unsigned int ELEMS_THR_W = DIM_BK / (NUM_THRS / (DIM_BN / 8));
+    constexpr unsigned int ELEMS_THR_X = DIM_BM/(NUM_THRS/(DIM_BK/8));
+    constexpr unsigned int ELEMS_THR_W = DIM_BK/(NUM_THRS/(DIM_BN/8));
 
     const unsigned int block_m = blockIdx.y;
     const unsigned int block_n = blockIdx.x;

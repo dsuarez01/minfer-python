@@ -4,11 +4,11 @@
 #include <vector_types.h>
 #include <cassert>
 
-#include "common/types.hpp"
+#include <cstddef>
 
 namespace minfer::impl {
 
-constexpr unsigned int int_log2(unsigned int n) {
+constexpr __host__ __device__ unsigned int int_log2(unsigned int n) {
     unsigned int result = 0;
     while (n >>= 1) result++;
     return result;
