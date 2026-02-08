@@ -6,8 +6,6 @@
 #include <iostream>
 #include <algorithm>
 #include <fstream>
-#include <random>
-#include <map>
 #include <filesystem>
 
 #include "tune.cuh"
@@ -211,14 +209,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    // shuffle for better load balancing
-    std::random_device rd;
-    std::mt19937 g(rd());
-    std::shuffle(problems.begin(), problems.end(), g);
-
     double target_time_ms = 200.0; // how long we want each case to run in total
-
-    std::vector<Result> results = {};
 
     std::filesystem::create_directories("./logs");
     std::ofstream results_file("./logs/tuning_results_job" + std::to_string(job_id) + ".csv");
