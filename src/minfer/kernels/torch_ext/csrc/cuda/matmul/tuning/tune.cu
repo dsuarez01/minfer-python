@@ -45,7 +45,8 @@ namespace minfer::tuning {
         constexpr unsigned int WARPS_N = (BN+WN-1)/WN;
         constexpr unsigned int TILES_K = (BK+WK-1)/WK;
         
-        constexpr unsigned int THRS_N = 32*WARPS_N;
+        constexpr unsigned int WARP_SIZE = 32;
+        constexpr unsigned int THRS_N = WARP_SIZE*WARPS_N;
         constexpr unsigned int THRS_M = WARPS_M;
         constexpr unsigned int NUM_THRS = THRS_M*THRS_N;
         constexpr unsigned int SHMEM_SZ = K_PIPE_MAX*(BM*BK+BK*BN)*sizeof(half);

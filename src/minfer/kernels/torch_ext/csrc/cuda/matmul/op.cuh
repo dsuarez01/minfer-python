@@ -12,10 +12,11 @@
 #include <cuda_fp16.h>
 
 #include "common/types.hpp"
+#include "lookup.cuh"
 #include "kernels/xw.cuh"
 
 // basic compatibility checks here
-// note that this is optimized for V100
+// note that this is optimized for L40S
 
 namespace minfer::impl {
 
@@ -38,7 +39,8 @@ template <
     unsigned int DIM_MM,
     unsigned int DIM_MK,
     unsigned int DIM_MN,
-    unsigned int K_PIPE_MAX
+    unsigned int K_PIPE_MAX,
+    unsigned int USE_SYNC
 >
 inline void launch_xw_kernel(
     size_t M, size_t K, size_t N,
@@ -77,43 +79,91 @@ inline void launch_xw_kernel(
     dim3 grid(blocks_n, blocks_m);
     dim3 block(THRS_N, THRS_M);
 
-    STD_CUDA_CHECK(
-        cudaFuncSetAttribute(
-            xw_sync_impl<
-                DIM_BM,
-                DIM_BK,
-                DIM_BN,
-                DIM_WM,
-                DIM_WK,
-                DIM_WN,
-                DIM_MM,
-                DIM_MK,
-                DIM_MN,
-                TILES_K,
-                NUM_THRS
-            >,
-            cudaFuncAttributeMaxDynamicSharedMemorySize,
-            SHMEM_SZ
-        )
-    );
-
     void* stream_ptr = nullptr;
     TORCH_ERROR_CODE_CHECK(
         aoti_torch_get_current_cuda_stream(device_index, &stream_ptr)
     );
     cudaStream_t stream = static_cast<cudaStream_t>(stream_ptr);
 
-    xw_sync_impl<
-        DIM_BM, DIM_BK, DIM_BN, 
-        DIM_WM, DIM_WK, DIM_WN, 
-        DIM_MM, DIM_MK, DIM_MN,
-        TILES_K, NUM_THRS
-    ><<<grid, block, SHMEM_SZ, stream>>>(
-        M, K, N, x_ptr, w_ptr, out_ptr
-    );
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    cudaEventRecord(start, stream);
+
+    if constexpr (USE_SYNC == 1u) {
+        STD_CUDA_CHECK(
+            cudaFuncSetAttribute(
+                xw_sync_impl<
+                    DIM_BM,
+                    DIM_BK,
+                    DIM_BN,
+                    DIM_WM,
+                    DIM_WK,
+                    DIM_WN,
+                    DIM_MM,
+                    DIM_MK,
+                    DIM_MN,
+                    TILES_K,
+                    NUM_THRS
+                >,
+                cudaFuncAttributeMaxDynamicSharedMemorySize,
+                SHMEM_SZ
+            )
+        );
+
+        xw_sync_impl<
+            DIM_BM, DIM_BK, DIM_BN, 
+            DIM_WM, DIM_WK, DIM_WN, 
+            DIM_MM, DIM_MK, DIM_MN,
+            TILES_K, NUM_THRS
+        ><<<grid, block, SHMEM_SZ, stream>>>(
+            M, K, N, x_ptr, w_ptr, out_ptr
+        );
+    } else {
+        STD_CUDA_CHECK(
+            cudaFuncSetAttribute(
+                xw_async_impl<
+                    DIM_BM,
+                    DIM_BK,
+                    DIM_BN,
+                    DIM_WM,
+                    DIM_WK,
+                    DIM_WN,
+                    DIM_MM,
+                    DIM_MK,
+                    DIM_MN,
+                    TILES_K,
+                    K_PIPE_MAX,
+                    NUM_THRS
+                >,
+                cudaFuncAttributeMaxDynamicSharedMemorySize,
+                SHMEM_SZ
+            )
+        );
+
+        xw_async_impl<
+            DIM_BM, DIM_BK, DIM_BN, 
+            DIM_WM, DIM_WK, DIM_WN, 
+            DIM_MM, DIM_MK, DIM_MN,
+            TILES_K, K_PIPE_MAX, NUM_THRS
+        ><<<grid, block, SHMEM_SZ, stream>>>(
+            M, K, N, x_ptr, w_ptr, out_ptr
+        );
+    }
+
+    cudaEventRecord(stop, stream);
+    cudaEventSynchronize(stop);
+
+    float kernel_ms = 0;
+    cudaEventElapsedTime(&kernel_ms, start, stop);
+    printf("Kernel execution time: %.2f ms\n", kernel_ms);
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
 }
 
-// TODO: incomplete, finish
 inline void dispatch_f16_xw(
     size_t M, size_t K, size_t N,
     const half* __restrict__ x_ptr,
@@ -121,29 +171,26 @@ inline void dispatch_f16_xw(
     half* __restrict__ out_ptr
 ) {
     auto device_index = torch::stable::accelerator::getCurrentDeviceIndex();
-
     cudaDeviceProp deviceProp;
     STD_CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, device_index));
+    STD_TORCH_CHECK(deviceProp.major >= 8, "SM 8.0 or higher required");
 
-    STD_TORCH_CHECK(deviceProp.major >= 8, "SM 8.0 or higher required to use tensor cores + async memcpy");
-
-    constexpr unsigned int DIM_BM = 64;
-    constexpr unsigned int DIM_BK = 64;
-    constexpr unsigned int DIM_BN = 64;
+    const size_t best_idx = find_nearest_config(M, K, N);
     
-    constexpr unsigned int DIM_WM = 32;
-    constexpr unsigned int DIM_WK = 16;
-    constexpr unsigned int DIM_WN = 32;
+    const auto& selected = LOOKUP_TABLE[best_idx];
+    printf("Selected config %zu: (%zu,%zu,%zu) -> BM=%u,BK=%u,BN=%u,K_PIPE=%u,USE_SYNC=%u,TFLOPS=%.2f\n",
+        best_idx, selected.M, selected.K, selected.N, 
+        selected.BM, selected.BK, selected.BN, selected.K_PIPE_MAX, selected.USE_SYNC, selected.tflops);
 
-    constexpr unsigned int DIM_MM = 16;
-    constexpr unsigned int DIM_MK = 8;
-    constexpr unsigned int DIM_MN = 8;
-
-    constexpr unsigned int K_PIPE_MAX = 2;
-    
-    launch_xw_kernel<DIM_BM, DIM_BK, DIM_BN, DIM_WM, DIM_WK, DIM_WN, DIM_MM, DIM_MK, DIM_MN, K_PIPE_MAX>(
-        M, K, N, x_ptr, w_ptr, out_ptr, deviceProp, device_index
-    );
+    switch(best_idx) {
+#define X(IDX) case IDX: { \
+    constexpr auto& entry = LOOKUP_TABLE[IDX]; \
+    launch_xw_kernel<entry.BM, entry.BK, entry.BN, entry.WM, entry.WK, entry.WN, entry.MM, entry.MK, entry.MN, entry.K_PIPE_MAX, entry.USE_SYNC>( \
+        M, K, N, x_ptr, w_ptr, out_ptr, deviceProp, device_index); \
+    break; }
+LOOKUP_INDEX_CASES
+#undef X
+    }
 }
 
 // TODO: incomplete, finish
