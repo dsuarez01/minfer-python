@@ -85,12 +85,6 @@ inline void launch_xw_kernel(
     );
     cudaStream_t stream = static_cast<cudaStream_t>(stream_ptr);
 
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-
-    cudaEventRecord(start, stream);
-
     if constexpr (USE_SYNC == 1u) {
         STD_CUDA_CHECK(
             cudaFuncSetAttribute(
@@ -151,17 +145,6 @@ inline void launch_xw_kernel(
             M, K, N, x_ptr, w_ptr, out_ptr
         );
     }
-
-    cudaEventRecord(stop, stream);
-    cudaEventSynchronize(stop);
-
-    float kernel_ms = 0;
-    cudaEventElapsedTime(&kernel_ms, start, stop);
-    printf("Kernel execution time: %.2f ms\n", kernel_ms);
-
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
-
 }
 
 inline void dispatch_f16_xw(
@@ -176,11 +159,6 @@ inline void dispatch_f16_xw(
     STD_TORCH_CHECK(deviceProp.major >= 8, "SM 8.0 or higher required");
 
     const size_t best_idx = find_nearest_config(M, K, N);
-    
-    const auto& selected = LOOKUP_TABLE[best_idx];
-    printf("Selected config %zu: (%zu,%zu,%zu) -> BM=%u,BK=%u,BN=%u,K_PIPE=%u,USE_SYNC=%u,TFLOPS=%.2f\n",
-        best_idx, selected.M, selected.K, selected.N, 
-        selected.BM, selected.BK, selected.BN, selected.K_PIPE_MAX, selected.USE_SYNC, selected.tflops);
 
     switch(best_idx) {
 #define X(IDX) case IDX: { \
