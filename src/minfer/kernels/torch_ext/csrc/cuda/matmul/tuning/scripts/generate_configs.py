@@ -13,7 +13,7 @@ def main():
     max_threads_per_block = props.max_threads_per_block
     max_shmem_per_block = props.shared_memory_per_block_optin
     max_regs_per_thread = 255 if props.major >= 2 else 63
-    min_regs_per_thread = 180 # for pruning
+    min_regs_per_thread = 150 # for pruning
 
     BM, BK, BN = Ints("BM BK BN")
     WM, WK, WN = Ints("WM WK WN")
@@ -70,6 +70,14 @@ def main():
         )
     )
 
+    # pruning
+    s.add(Or([BM == 32, BM == 64, BM == 128, BM == 256, BM == 512]))
+    s.add(Or([BK == 32, BK == 64, BK == 128]))
+    s.add(Or([BN == 32, BN == 64, BN == 128, BN == 256, BN == 512]))
+    s.add(BM >= BK, BN >= BK) # arithmetic intensity prop. to BM*BN/(BM+BN)
+    s.add(K_PIPE_MAX <= 4)
+    s.add(BN/WN >= 2) # more parallelism along N dimension due to dispatch
+    s.add((BM/WM)*(BN/WN)*32>=128) # solns w <= 128 threads likely subopt
     s.add(
         Implies(
             USE_SYNC == 1,
@@ -88,15 +96,6 @@ def main():
             >= min_regs_per_thread
         )
     )
-
-    # pruning
-    s.add(Or([BM == 32, BM == 64, BM == 128, BM == 256, BM == 512]))
-    s.add(Or([BK == 32, BK == 64, BK == 128]))
-    s.add(Or([BN == 32, BN == 64, BN == 128, BN == 256, BN == 512]))
-    s.add(BM >= BK, BN >= BK) # arithmetic intensity prop. to BM*BN/(BM+BN)
-    s.add(K_PIPE_MAX <= 4)
-    s.add(BN/WN >= 2) # more parallelism along N dimension due to dispatch
-    s.add((BM/WM)*(BN/WN)*32>=128) # solns w <= 128 threads likely subopt
 
     configs = []
 
@@ -128,11 +127,11 @@ def main():
 
     with open("./tune.cuh", "w") as f:
         
-        # write ALL_CONFIGS array
         f.write("#pragma once\n\n")
         f.write("#include <cstddef>\n\n")
         f.write("namespace minfer::tuning {\n\n")
         
+        # define structs for config and results
         f.write("struct KernelConfig {\n")
         f.write("\tconst char* dtype;\n")
         f.write("\tunsigned int BM, BK, BN;\n")
@@ -148,7 +147,7 @@ def main():
         f.write("\tint M, K, N;\n")
         f.write("\tdouble target_time_ms;\n")
         f.write("};\n\n")
-        
+
         f.write("struct Result {\n")
         f.write("\tConfig config;\n")
         f.write("\tint warmup_iters;\n")
@@ -156,11 +155,15 @@ def main():
         f.write("\tdouble median_time_ms;\n")
         f.write("\tdouble min_time_ms;\n")
         f.write("\tdouble max_time_ms;\n")
-        f.write("\tfloat tflops;\n")
+        f.write("\tfloat mean_power_watts;\n")
+        f.write("\tfloat median_power_watts;\n")
+        f.write("\tfloat max_power_watts;\n")
+        f.write("\tfloat power_limit_watts;\n")
         f.write("};\n\n")
         
         f.write(f"constexpr size_t NUM_CONFIGS = {len(configs)};\n\n")
         
+        # write ALL_CONFIGS array
         f.write("constexpr KernelConfig ALL_CONFIGS[NUM_CONFIGS] = {\n")
         for cfg in configs:
             bm, bk, bn, wm, wk, wn, mm, mk, mn, kpm, sync = cfg
@@ -173,7 +176,7 @@ def main():
             f.write(f"\tX({i}) \\\n")
         f.write("\n")
 
-        f.write("}\n") # end namespace
+        f.write("}\n")
 
 if __name__ == "__main__":
     main()

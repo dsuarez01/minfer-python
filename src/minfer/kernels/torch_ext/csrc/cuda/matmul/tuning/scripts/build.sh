@@ -14,6 +14,7 @@ nvcc -O3 \
      --use_fast_math \
      -gencode=arch=compute_89,code=sm_89 \
      --ptxas-options=-v \
+     -lnvidia-ml \
      -I"$MATMUL" \
      tune.cu \
      -o tune
