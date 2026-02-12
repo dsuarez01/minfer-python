@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import glob
 import os
@@ -6,10 +7,17 @@ def main():
     csv_files = glob.glob(os.path.join("./logs", "tuning_results_job*.csv"))
 
     df = pd.concat([pd.read_csv(f) for f in csv_files], ignore_index=True)
-
-    idx = df.groupby(['M', 'K', 'N'])['tflops'].idxmax()
     
-    best_df = df.loc[df.groupby(['M', 'K', 'N'])['tflops'].idxmax()].sort_values(['M', 'K', 'N']).reset_index(drop=True)
+    df['tflops'] = (2*df['M']*df['K']*df['N'])/(df['median_ms']*1e-3)*1e-12
+    df['tflops/watt'] = df['tflops']/df['median_power_w']
+
+    best_configs_noeff = df.loc[df.groupby(['M', 'K', 'N'])['tflops'].idxmax()]
+    best_configs_eff = df.loc[df.groupby(['M', 'K', 'N'])['tflops/watt'].idxmax()]
+
+    selected_idxs = np.where((best_configs_eff['tflops']/best_configs_noeff['tflops']) >= 0.8, best_configs_eff.index, best_configs_noeff.index)
+
+    # selection logic: use the config maxxing tflops/watt unless it causes >20% drop in throughput
+    best_df = df.loc[selected_idxs].sort_values(['M', 'K', 'N']).reset_index(drop=True)
     
     with open("../lookup.cuh", 'w') as f:
         f.write("#pragma once\n\n")
