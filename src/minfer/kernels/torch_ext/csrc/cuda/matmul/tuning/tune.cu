@@ -1,5 +1,10 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+
+#include <nvml.h>
+
+#include <thread>
+#include <atomic>
 #include <array>
 #include <vector>
 #include <exception>
@@ -19,9 +24,31 @@ inline void checkCuda(cudaError_t err, const char* file, int line) {
 }
 #define checkCudaErrors(call) checkCuda(call, __FILE__, __LINE__)
 
+inline void checkNVML(nvmlReturn_t ret, const char* file, int line) {
+    if (ret != NVML_SUCCESS) {
+        fprintf(stderr, "NVML error at %s:%d: %s\n", file, line, nvmlErrorString(ret));
+        throw std::runtime_error(nvmlErrorString(ret));
+    }
+}
+#define checkNVMLErrors(call) checkNVML(call, __FILE__, __LINE__)
+
 namespace minfer::tuning {
 
     using namespace minfer::impl;
+
+    std::atomic<bool> sampling{false};
+    std::vector<unsigned int> power_samples;
+
+    void sample_power(nvmlDevice_t device, int sleep_us) {
+        while (sampling) {
+            unsigned int power_mw;
+            // silently fails, but if taking enough measurements this shouldn't be an issue
+            if (nvmlDeviceGetPowerUsage(device, &power_mw) == NVML_SUCCESS) {
+                power_samples.push_back(power_mw);
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
+        }
+    }
 
     void flush_l2_cache(int l2_size) {
         if (l2_size > 0) {
@@ -33,7 +60,7 @@ namespace minfer::tuning {
     }
 
     template<size_t IDX>
-    cudaError_t launch_kernel_at_index(int M, int K, int N, const half* d_x, const half* d_w, half* d_out) {
+    void launch_kernel_impl(int M, int K, int N, const half* d_x, const half* d_w, half* d_out) {
         constexpr auto& kc = ALL_CONFIGS[IDX];
         constexpr unsigned int BM = kc.BM, BK = kc.BK, BN = kc.BN;
         constexpr unsigned int WM = kc.WM, WK = kc.WK, WN = kc.WN;
@@ -57,39 +84,40 @@ namespace minfer::tuning {
         dim3 grid(blocks_n, blocks_m);
         dim3 block(THRS_N, THRS_M);
         
-        cudaError_t err;
         if constexpr (USE_SYNC == 1) {
-            err = cudaFuncSetAttribute(
-                xw_sync_impl<BM, BK, BN, WM, WK, WN, MM, MK, MN, TILES_K, NUM_THRS>,
-                cudaFuncAttributeMaxDynamicSharedMemorySize,
-                SHMEM_SZ
+            checkCudaErrors(
+                cudaFuncSetAttribute(
+                    xw_sync_impl<BM, BK, BN, WM, WK, WN, MM, MK, MN, TILES_K, NUM_THRS>,
+                    cudaFuncAttributeMaxDynamicSharedMemorySize,
+                    SHMEM_SZ
+                )
             );
-            if (err != cudaSuccess) return err;
             
             xw_sync_impl<BM, BK, BN, WM, WK, WN, MM, MK, MN, TILES_K, NUM_THRS>
                 <<<grid, block, SHMEM_SZ>>>(M, K, N, d_x, d_w, d_out);
         } else {
 
-            err = cudaFuncSetAttribute(
-                xw_async_impl<BM, BK, BN, WM, WK, WN, MM, MK, MN, TILES_K, K_PIPE_MAX, NUM_THRS>,
-                cudaFuncAttributeMaxDynamicSharedMemorySize,
-                SHMEM_SZ
+            checkCudaErrors(
+                cudaFuncSetAttribute(
+                    xw_async_impl<BM, BK, BN, WM, WK, WN, MM, MK, MN, TILES_K, K_PIPE_MAX, NUM_THRS>,
+                    cudaFuncAttributeMaxDynamicSharedMemorySize,
+                    SHMEM_SZ
+                )
             );
-            if (err != cudaSuccess) return err;
             
             xw_async_impl<BM, BK, BN, WM, WK, WN, MM, MK, MN, TILES_K, K_PIPE_MAX, NUM_THRS>
                 <<<grid, block, SHMEM_SZ>>>(M, K, N, d_x, d_w, d_out);
         }
         
-        return cudaGetLastError();
+        checkCudaErrors(cudaGetLastError());
     }
 
-    cudaError_t launch_kernel(size_t idx, int M, int K, int N, const half* d_x, const half* d_w, half* d_out) {
+    void launch_kernel(size_t idx, int M, int K, int N, const half* d_x, const half* d_w, half* d_out) {
         switch(idx) {
-#define X(IDX) case IDX: return launch_kernel_at_index<IDX>(M, K, N, d_x, d_w, d_out);
+#define X(IDX) case IDX: return launch_kernel_impl<IDX>(M, K, N, d_x, d_w, d_out);
 KERNEL_CONFIG_INDICES
 #undef X
-            default: return cudaErrorInvalidValue;
+            default: throw std::runtime_error("Invalid config idx");
         }
     }
 
@@ -113,40 +141,43 @@ KERNEL_CONFIG_INDICES
             
             // estimate num iters for benchmark
             int est_iters = 10;
+            float est_ms;
             checkCudaErrors(cudaEventRecord(start));
             for (int i = 0; i < est_iters; ++i) {
-                cudaError_t err = launch_kernel(config.config_idx, M, K, N, d_x, d_w, d_out);
-                if (err != cudaSuccess) {
-                    throw std::runtime_error(std::string("Kernel launch failed: ") + cudaGetErrorString(err));
-                }
+                launch_kernel(config.config_idx, M, K, N, d_x, d_w, d_out);
                 flush_l2_cache(l2_cache_size);
             }
             checkCudaErrors(cudaEventRecord(stop));
             checkCudaErrors(cudaEventSynchronize(stop));
-            
-            float est_ms;
             checkCudaErrors(cudaEventElapsedTime(&est_ms, start, stop));
             int total_iters = std::max(10, (int)(config.target_time_ms / (est_ms/est_iters)));
             int warmup_iters = std::min(5, total_iters/10);
-            
+
             // warm-up
             for (int i = 0; i < warmup_iters; ++i) {
-                cudaError_t err = launch_kernel(config.config_idx, M, K, N, d_x, d_w, d_out);
-                if (err != cudaSuccess) {
-                    throw std::runtime_error(std::string("Kernel launch failed: ") + cudaGetErrorString(err));
-                }
+                launch_kernel(config.config_idx, M, K, N, d_x, d_w, d_out);
             }
             checkCudaErrors(cudaDeviceSynchronize());
             flush_l2_cache(l2_cache_size);
             
             // main benchmark
+            
+            // (init power sampling)
+            int sample_intvl_us = (int)((est_ms/est_iters*1000)/100); // 100 samples by default
+            nvmlDevice_t nvml_device;
+            checkNVMLErrors(nvmlDeviceGetHandleByIndex(dev_id, &nvml_device));
+            unsigned int power_lim_mw;
+            checkNVMLErrors(nvmlDeviceGetPowerManagementLimit(nvml_device, &power_lim_mw));
+            float power_lim_watts = power_lim_mw / 1000.0f;
+            power_samples.clear();
+            power_samples.reserve(total_iters * 100);
+            sampling = true;
+            std::thread sampler(sample_power, nvml_device, sample_intvl_us);
+
             std::vector<double> times;
             for (int i = 0; i < total_iters; ++i) {
                 checkCudaErrors(cudaEventRecord(start));
-                cudaError_t err = launch_kernel(config.config_idx, M, K, N, d_x, d_w, d_out);
-                if (err != cudaSuccess) {
-                    throw std::runtime_error(std::string("Kernel launch failed: ") + cudaGetErrorString(err));
-                }
+                launch_kernel(config.config_idx, M, K, N, d_x, d_w, d_out);
                 checkCudaErrors(cudaEventRecord(stop));
                 checkCudaErrors(cudaEventSynchronize(stop));
                 
@@ -157,7 +188,10 @@ KERNEL_CONFIG_INDICES
                 flush_l2_cache(l2_cache_size);
             }
             
-            // compute stats
+            sampling = false;
+            sampler.join();
+
+            // compute timing/throughput stats
             std::sort(times.begin(), times.end());
             double median_ms = times[times.size()/2];
             double min_ms = times.front();
@@ -166,6 +200,17 @@ KERNEL_CONFIG_INDICES
             double flops = 2.0*M*K*N;
             float tflops = (flops / (median_ms * 1e-3)) / 1e12;
 
+            // compute power stats
+            unsigned int sum_power_mw = 0u, max_power_mw = 0u;
+            for (auto p : power_samples) {
+                sum_power_mw += p;
+                max_power_mw = std::max(max_power_mw, p);
+            }
+            float mean_power_watts = (sum_power_mw / 1000.0f) / power_samples.size();
+            std::sort(power_samples.begin(), power_samples.end());
+            float median_power_watts = power_samples[power_samples.size()/2] / 1000.0f;
+            float max_power_watts = max_power_mw / 1000.0f;
+
             // clean-up
             checkCudaErrors(cudaFree(d_x));
             checkCudaErrors(cudaFree(d_w));
@@ -173,7 +218,14 @@ KERNEL_CONFIG_INDICES
             checkCudaErrors(cudaEventDestroy(start));
             checkCudaErrors(cudaEventDestroy(stop));
             
-            return Result{config, warmup_iters, total_iters, median_ms, min_ms, max_ms, tflops};
+            return Result{
+                config, 
+                warmup_iters, total_iters, 
+                median_ms, min_ms, max_ms,
+                mean_power_watts, median_power_watts, max_power_watts,
+                power_lim_watts
+
+            };
         } catch(...) {
             // cleanup on error
             if (d_x) cudaFree(d_x);
@@ -198,6 +250,8 @@ int main(int argc, char** argv) {
     int job_id = atoi(argv[1]);
     int num_jobs = atoi(argv[2]);
 
+    checkNVMLErrors(nvmlInit());
+
     // generate all of the problem sizes we want to test on (will do this in a second)
     std::vector<std::array<int, 3>> problems = {};
     std::vector<int> sizes = {512, 1024, 2048, 4096, 8192, 16384, 32768};
@@ -218,7 +272,9 @@ int main(int argc, char** argv) {
         std::cerr << "ERROR: Could not open ./logs/tuning_results_job" << job_id << ".csv\n";
         return 1;
     }
-    results_file << "M,K,N,config_idx,BM,BK,BN,WM,WK,WN,MM,MK,MN,K_PIPE_MAX,USE_SYNC,median_ms,min_ms,max_ms,tflops,warmup_iters,iters\n";
+    results_file << "M,K,N,config_idx,BM,BK,BN,WM,WK,WN,MM,MK,MN,K_PIPE_MAX,USE_SYNC,"
+                 << "median_ms,min_ms,max_ms,mean_power_w,median_power_w,max_power_w,power_limit_w,"
+                 << "warmup_iters,iters\n";
 
     for (size_t i = job_id; i < problems.size(); i += num_jobs) {
         auto [M, K, N] = problems[i];
@@ -239,13 +295,17 @@ int main(int argc, char** argv) {
                              << kc.MM << "," << kc.MK << "," << kc.MN << ","
                              << kc.K_PIPE_MAX << "," << kc.USE_SYNC << ","
                              << result.median_time_ms << "," << result.min_time_ms << "," << result.max_time_ms << ","
-                             << result.tflops << "," << result.warmup_iters << "," << result.iters << "\n";
+                             << result.mean_power_watts << "," << result.median_power_watts << "," 
+                             << result.max_power_watts << "," << result.power_limit_watts << ","
+                             << result.warmup_iters << "," << result.iters << "\n";
                 results_file.flush();
                 
-                best_tflops = std::max(best_tflops, result.tflops);
+                double flops = 2.0 * result.config.M * result.config.K * result.config.N;
+                float tflops = (flops / (result.median_time_ms * 1e-3)) / 1e12;
+                best_tflops = std::max(best_tflops, tflops);
                 if (i % 100 == 0) {
                     std::cout << "\tConfig " << i << "/" << NUM_CONFIGS 
-                            << " - Current: " << result.tflops 
+                            << " - Current: " << tflops 
                             << " TFLOPS, Best: " << best_tflops << " TFLOPS" << std::endl;
                 }
             } catch(const std::exception& e) {
@@ -258,6 +318,7 @@ int main(int argc, char** argv) {
     }
 
     results_file.close();
+    checkNVMLErrors(nvmlShutdown());
 
     return 0;
 }
