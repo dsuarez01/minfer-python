@@ -14,11 +14,21 @@ def main():
     best_configs_noeff = df.loc[df.groupby(['M', 'K', 'N'])['tflops'].idxmax()]
     best_configs_eff = df.loc[df.groupby(['M', 'K', 'N'])['tflops/watt'].idxmax()]
 
-    selected_idxs = np.where((best_configs_eff['tflops']/best_configs_noeff['tflops']) >= 0.8, best_configs_eff.index, best_configs_noeff.index)
+    merged = best_configs_eff[['M', 'K', 'N', 'tflops']].merge(
+        best_configs_noeff[['M', 'K', 'N', 'tflops']],
+        on=['M', 'K', 'N'],
+        suffixes=('_eff', '_noeff')
+    )
 
     # selection logic: use the config maxxing tflops/watt unless it causes >20% drop in throughput
-    best_df = df.loc[selected_idxs].sort_values(['M', 'K', 'N']).reset_index(drop=True)
+    selected_idxs = np.where(
+        (merged['tflops_eff']/merged['tflops_noeff']) >= 0.8,
+        best_configs_eff.index,
+        best_configs_noeff.index
+    )
     
+    best_df = df.loc[selected_idxs].sort_values(['M', 'K', 'N']).reset_index(drop=True)
+
     with open("../lookup.cuh", 'w') as f:
         f.write("#pragma once\n\n")
         f.write("#include <cfloat>\n")

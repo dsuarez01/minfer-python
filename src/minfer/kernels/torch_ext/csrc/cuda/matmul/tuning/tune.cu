@@ -3,15 +3,16 @@
 
 #include <nvml.h>
 
-#include <thread>
-#include <atomic>
+#include <algorithm>
 #include <array>
-#include <vector>
+#include <atomic>
+#include <climits>
 #include <exception>
 #include <iostream>
-#include <algorithm>
-#include <fstream>
 #include <filesystem>
+#include <fstream>
+#include <thread>
+#include <vector>
 
 #include "tune.cuh"
 #include "kernels/xw.cuh"
@@ -139,51 +140,90 @@ KERNEL_CONFIG_INDICES
             checkCudaErrors(cudaMalloc(&d_w, K*N*sizeof(half)));
             checkCudaErrors(cudaMalloc(&d_out, M*N*sizeof(half)));
             
-            // estimate num iters for benchmark
-            int est_iters = 10;
-            float est_ms;
-            checkCudaErrors(cudaEventRecord(start));
-            for (int i = 0; i < est_iters; ++i) {
-                launch_kernel(config.config_idx, M, K, N, d_x, d_w, d_out);
-                flush_l2_cache(l2_cache_size);
-            }
-            checkCudaErrors(cudaEventRecord(stop));
-            checkCudaErrors(cudaEventSynchronize(stop));
-            checkCudaErrors(cudaEventElapsedTime(&est_ms, start, stop));
-            int total_iters = std::max(10, (int)(config.target_time_ms / (est_ms/est_iters)));
-            int warmup_iters = std::min(5, total_iters/10);
+            // measure timer overhead 
+            std::vector<float> overhead_samples;
+            for (int i = 0; i < 5; ++i) {
+                checkCudaErrors(cudaEventRecord(start));
+                // NOTE: just timer overhead
+                checkCudaErrors(cudaEventRecord(stop));
+                checkCudaErrors(cudaEventSynchronize(stop));
 
-            // warm-up
-            for (int i = 0; i < warmup_iters; ++i) {
-                launch_kernel(config.config_idx, M, K, N, d_x, d_w, d_out);
+                float ms;
+                checkCudaErrors(cudaEventElapsedTime(&ms, start, stop));
+                overhead_samples.push_back(ms);
             }
-            checkCudaErrors(cudaDeviceSynchronize());
+            std::sort(overhead_samples.begin(), overhead_samples.end());
+            float overhead_ms = overhead_samples[2]; // median
+
+            // estimate block size (adaptive warm-up)
+            // block size determined by when total time taken 
+            // is large enough to be < 0.01% of timer overhead
+            int block_size = 1;
+            float elapsed_ms = 0.0f;
+
+            while (true) {
+                checkCudaErrors(cudaEventRecord(start));
+                for (int i = 0; i < block_size; ++i) {
+                    launch_kernel(config.config_idx, M, K, N, d_x, d_w, d_out);
+                }
+                checkCudaErrors(cudaEventRecord(stop));
+                checkCudaErrors(cudaEventSynchronize(stop));
+                
+                checkCudaErrors(cudaEventElapsedTime(&elapsed_ms, start, stop));
+                
+                float rel_overhead = overhead_ms / elapsed_ms;
+                
+                if (rel_overhead <= 1e-4 && elapsed_ms >= config.target_time_ms / 1000.0) {
+                    break;
+                }
+
+                if (elapsed_ms > config.target_time_ms) {
+                    break;
+                }
+
+                if (block_size >= INT_MAX / 10) {
+                    break;
+                }
+                
+                block_size *= 10;
+            }
+            
             flush_l2_cache(l2_cache_size);
             
             // main benchmark
             
             // (init power sampling)
-            int sample_intvl_us = (int)((est_ms/est_iters*1000)/100); // 100 samples by default
+            int sample_intvl_us = (int)((elapsed_ms*1000)/100); // 100 samples by default
             nvmlDevice_t nvml_device;
             checkNVMLErrors(nvmlDeviceGetHandleByIndex(dev_id, &nvml_device));
             unsigned int power_lim_mw;
             checkNVMLErrors(nvmlDeviceGetPowerManagementLimit(nvml_device, &power_lim_mw));
             float power_lim_watts = power_lim_mw / 1000.0f;
             power_samples.clear();
-            power_samples.reserve(total_iters * 100);
+
+            int est_blocks = (int)(config.target_time_ms / elapsed_ms)+1;
+            power_samples.reserve(est_blocks * 100); // 100 samples per block
+
             sampling = true;
             std::thread sampler(sample_power, nvml_device, sample_intvl_us);
 
             std::vector<double> times;
-            for (int i = 0; i < total_iters; ++i) {
+            double total_time_ms = 0.0;
+            
+            while (total_time_ms < config.target_time_ms) {
                 checkCudaErrors(cudaEventRecord(start));
-                launch_kernel(config.config_idx, M, K, N, d_x, d_w, d_out);
+                for (int i = 0; i < block_size; ++i) {
+                    launch_kernel(config.config_idx, M, K, N, d_x, d_w, d_out);
+                }
                 checkCudaErrors(cudaEventRecord(stop));
                 checkCudaErrors(cudaEventSynchronize(stop));
                 
-                float ms;
-                checkCudaErrors(cudaEventElapsedTime(&ms, start, stop));
-                times.push_back(ms);
+                float block_ms;
+                checkCudaErrors(cudaEventElapsedTime(&block_ms, start, stop));
+                
+                double per_iter_ms = block_ms / block_size;
+                times.push_back(per_iter_ms);
+                total_time_ms += block_ms;
                 
                 flush_l2_cache(l2_cache_size);
             }
@@ -192,6 +232,7 @@ KERNEL_CONFIG_INDICES
             sampler.join();
 
             // compute timing/throughput stats
+            int total_iters = times.size() * block_size;
             std::sort(times.begin(), times.end());
             double median_ms = times[times.size()/2];
             double min_ms = times.front();
@@ -220,7 +261,8 @@ KERNEL_CONFIG_INDICES
             
             return Result{
                 config, 
-                warmup_iters, total_iters, 
+                block_size,
+                total_iters,
                 median_ms, min_ms, max_ms,
                 mean_power_watts, median_power_watts, max_power_watts,
                 power_lim_watts
@@ -274,7 +316,7 @@ int main(int argc, char** argv) {
     }
     results_file << "M,K,N,config_idx,BM,BK,BN,WM,WK,WN,MM,MK,MN,K_PIPE_MAX,USE_SYNC,"
                  << "median_ms,min_ms,max_ms,mean_power_w,median_power_w,max_power_w,power_limit_w,"
-                 << "warmup_iters,iters\n";
+                 << "block_size,target_time_ms\n";
 
     for (size_t i = job_id; i < problems.size(); i += num_jobs) {
         auto [M, K, N] = problems[i];
@@ -286,7 +328,6 @@ int main(int argc, char** argv) {
             try {
                 auto result = run_benchmark(config);
                 
-                // Write immediately
                 auto& kc = result.config.kc;
                 results_file << result.config.M << "," << result.config.K << "," << result.config.N << ","
                              << result.config.config_idx << ","
@@ -297,7 +338,7 @@ int main(int argc, char** argv) {
                              << result.median_time_ms << "," << result.min_time_ms << "," << result.max_time_ms << ","
                              << result.mean_power_watts << "," << result.median_power_watts << "," 
                              << result.max_power_watts << "," << result.power_limit_watts << ","
-                             << result.warmup_iters << "," << result.iters << "\n";
+                             << result.block_size << "," << result.config.target_time_ms << "\n";
                 results_file.flush();
                 
                 double flops = 2.0 * result.config.M * result.config.K * result.config.N;

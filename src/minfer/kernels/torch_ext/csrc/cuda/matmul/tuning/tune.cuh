@@ -22,8 +22,8 @@ struct Config {
 
 struct Result {
 	Config config;
-	int warmup_iters;
-	int iters;
+	int block_size;
+	int total_iters;
 	double median_time_ms;
 	double min_time_ms;
 	double max_time_ms;

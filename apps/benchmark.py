@@ -161,8 +161,10 @@ def matmul(which: str):
             description=f'{which}',
         )
 
-        result = timer.blocked_autorange(min_run_time=1.0)
-        
+        result = timer.blocked_autorange()
+
+        print(result)
+
         results.append(result)
 
         del x, weight, out

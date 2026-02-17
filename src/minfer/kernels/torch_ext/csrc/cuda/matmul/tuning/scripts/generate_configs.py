@@ -150,8 +150,8 @@ def main():
 
         f.write("struct Result {\n")
         f.write("\tConfig config;\n")
-        f.write("\tint warmup_iters;\n")
-        f.write("\tint iters;\n")
+        f.write("\tint block_size;\n")
+        f.write("\tint total_iters;\n")
         f.write("\tdouble median_time_ms;\n")
         f.write("\tdouble min_time_ms;\n")
         f.write("\tdouble max_time_ms;\n")
