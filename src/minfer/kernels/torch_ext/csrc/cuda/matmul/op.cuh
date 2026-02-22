@@ -10,6 +10,7 @@
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <iostream>
 
 #include "common/types.hpp"
 #include "lookup.cuh"
@@ -85,27 +86,58 @@ inline void launch_xw_kernel(
     );
     cudaStream_t stream = static_cast<cudaStream_t>(stream_ptr);
 
-    if constexpr (USE_SYNC == 1u) {
-        STD_CUDA_CHECK(
-            cudaFuncSetAttribute(
-                xw_sync_impl<
-                    DIM_BM,
-                    DIM_BK,
-                    DIM_BN,
-                    DIM_WM,
-                    DIM_WK,
-                    DIM_WN,
-                    DIM_MM,
-                    DIM_MK,
-                    DIM_MN,
-                    TILES_K,
-                    NUM_THRS
-                >,
-                cudaFuncAttributeMaxDynamicSharedMemorySize,
-                SHMEM_SZ
-            )
-        );
+    static bool shmem_attr_set = false;
 
+    // set attr (avoid triggering JIT recompilation)
+    if (!shmem_attr_set) {
+        if constexpr (USE_SYNC == 1u) {
+            STD_CUDA_CHECK(
+                cudaFuncSetAttribute(
+                    xw_sync_impl<
+                        DIM_BM,
+                        DIM_BK,
+                        DIM_BN,
+                        DIM_WM,
+                        DIM_WK,
+                        DIM_WN,
+                        DIM_MM,
+                        DIM_MK,
+                        DIM_MN,
+                        TILES_K,
+                        NUM_THRS
+                    >,
+                    cudaFuncAttributeMaxDynamicSharedMemorySize,
+                    SHMEM_SZ
+                )
+            );
+        } else {
+            STD_CUDA_CHECK(
+                cudaFuncSetAttribute(
+                    xw_async_impl<
+                        DIM_BM,
+                        DIM_BK,
+                        DIM_BN,
+                        DIM_WM,
+                        DIM_WK,
+                        DIM_WN,
+                        DIM_MM,
+                        DIM_MK,
+                        DIM_MN,
+                        TILES_K,
+                        K_PIPE_MAX,
+                        NUM_THRS
+                    >,
+                    cudaFuncAttributeMaxDynamicSharedMemorySize,
+                    SHMEM_SZ
+                )
+            );
+        }
+        
+        shmem_attr_set = true;
+    }
+
+    // launch
+    if constexpr (USE_SYNC == 1) {
         xw_sync_impl<
             DIM_BM, DIM_BK, DIM_BN, 
             DIM_WM, DIM_WK, DIM_WN, 
@@ -115,27 +147,6 @@ inline void launch_xw_kernel(
             M, K, N, x_ptr, w_ptr, out_ptr
         );
     } else {
-        STD_CUDA_CHECK(
-            cudaFuncSetAttribute(
-                xw_async_impl<
-                    DIM_BM,
-                    DIM_BK,
-                    DIM_BN,
-                    DIM_WM,
-                    DIM_WK,
-                    DIM_WN,
-                    DIM_MM,
-                    DIM_MK,
-                    DIM_MN,
-                    TILES_K,
-                    K_PIPE_MAX,
-                    NUM_THRS
-                >,
-                cudaFuncAttributeMaxDynamicSharedMemorySize,
-                SHMEM_SZ
-            )
-        );
-
         xw_async_impl<
             DIM_BM, DIM_BK, DIM_BN, 
             DIM_WM, DIM_WK, DIM_WN, 
@@ -153,10 +164,15 @@ inline void dispatch_f16_xw(
     const half* __restrict__ w_ptr,
     half* __restrict__ out_ptr
 ) {
+    static cudaDeviceProp deviceProp;
+    static bool is_device_init = false; // assumes all GPUs are the same
     auto device_index = torch::stable::accelerator::getCurrentDeviceIndex();
-    cudaDeviceProp deviceProp;
-    STD_CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, device_index));
-    STD_TORCH_CHECK(deviceProp.major >= 8, "SM 8.0 or higher required");
+
+    if (!is_device_init) { // NOTE: isn't an issue unless you're using different GPU types on a single node
+        STD_CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, device_index));
+        STD_TORCH_CHECK(deviceProp.major >= 8, "SM 8.0 or higher required");
+        is_device_init = true;
+    }
 
     const size_t best_idx = find_nearest_config(M, K, N);
 

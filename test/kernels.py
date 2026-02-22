@@ -230,37 +230,39 @@ def test_matmul(backend, shape):
     M, K, N = shape
 
     # A: act. shape [B // dp_size, L, in_dim], weight shape [in_dim, out_dim]
-    input_A = torch.randn((M, K), dtype=torch.float16).cuda()
-    actual_A = torch.zeros((M, N), dtype=torch.float16).cuda()
-    weight_A = (1/K**0.5) * torch.randn((K, N), dtype=torch.float16).cuda()
+    input_A = torch.randn((1, M, K), dtype=torch.float16, device="cuda")
+    actual_A = torch.zeros((1, M, N), dtype=torch.float16, device="cuda")
+    weight_A = (1/K**0.5) * torch.randn((K, N), dtype=torch.float16, device="cuda")
 
     expected_A = (input_A @ weight_A)
-    kerns.matmul(qtype, qblock_size, qtype_size, input_A.unsqueeze(0), weight_A, actual_A.unsqueeze(0))
+    kerns.matmul(qtype, qblock_size, qtype_size, input_A, weight_A, actual_A)
     torch.cuda.synchronize()
-
-    print(f"expected_A first two rows: {expected_A[0:2, :20]}")
-    print(f"actual_A first two rows: {actual_A[0:2, :20]}")
-
-    print(f"expected_A last two rows: {expected_A[-2:, :20]}")
-    print(f"actual_A last two rows: {actual_A[-2:, :20]}")
 
     assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-1), "matmul"
 
     torch.cuda.empty_cache()
 
-    # # act. shape [B // dp_size, L, in_dim], weight shape [out_dim, in_dim]    
-    # input_B = torch.randn((B, L, in_dim), dtype=torch.float16).cuda()
-    # actual_B = torch.zeros((B, L, out_dim), dtype=torch.float16).cuda()
-    # weight_B = (1/in_dim**0.5) * torch.randn((in_dim, out_dim), dtype=torch.float16).cuda()
-
-    # expected_B = input_B @ weight_B
-    # kerns.matmul(qtype, qblock_size, qtype_size, input_B, weight_B, actual_B)
-    # torch.cuda.synchronize()
-    # assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=2e-1), "matmul"
-
-    # torch.cuda.empty_cache()
-
     # # output act. shape [B // dp_size, L, out_dim]
+
+@pytest.mark.parametrize("backend", ["torch_ext"])
+@pytest.mark.parametrize("shape", product(MATMUL_SIZES,MATMUL_SIZES,MATMUL_SIZES))
+def test_matmul_opcheck(backend, shape):
+
+    M,K,N = shape
+
+    kerns = KernelBackend(backend)
+    qtype = GGMLQuantizationType.F16
+    qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
+    
+    x = torch.randn((1,M,K), dtype=torch.float16, device='cuda')
+    w = torch.randn((K,N), dtype=torch.float16, device='cuda')
+    out = torch.zeros((1,M,N), dtype=torch.float16, device='cuda')
+    
+    torch.library.opcheck(
+        torch.ops.minfer.matmul.default,
+        (qtype, qblock_size, qtype_size, x, w, out)
+    )
+
 
 # A: just the usual QKV projections
 @pytest.mark.parametrize("backend", ["torch_ext"])

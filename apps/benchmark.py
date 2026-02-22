@@ -12,6 +12,7 @@ from minfer.kernels import KernelBackend
 from minfer.const import GGMLQuantizationType, GGML_QUANT_SIZES
 
 torch.backends.cuda.matmul.allow_fp16_accumulation = True
+INT_MAX = 2147483647
 
 def rmsnorm(backend: str = "torch_ext"):
     """rmsnorm against pytorch F.rms_norm"""
@@ -133,23 +134,24 @@ def matmul(which: str):
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
-    # sizes = [512,1024,2048,4096,8192,16384,32768]
-    sizes = [16384]
+    sizes = [512,1024,2048,4096,8192,16384]
     results = []
 
     for s in sizes:
 
-        M = N = K = s
+        M = K = N = s
     
-        x = torch.randn((M,K), dtype=torch.float16).cuda()
-        out = torch.zeros((M,N), dtype=torch.float16).cuda()
-        weight = (1/K**0.5) * torch.randn((K,N), dtype=torch.float16).cuda()
+        x = torch.randn((1,M,K), dtype=torch.float16, device="cuda")
+        out = torch.zeros((1,M,N), dtype=torch.float16, device="cuda")
+        weight = (1/K**0.5) * torch.randn((K,N), dtype=torch.float16, device="cuda")
 
         def ref_matmul():
-            torch.mm(x, weight, out=out)
+            with torch.no_grad():
+                torch.matmul(x, weight, out=out)
         
         def my_matmul():
-            kerns.matmul(qtype, qblock_size, qtype_size, x.unsqueeze(0), weight, out.unsqueeze(0))
+            with torch.no_grad():
+                kerns.matmul(qtype, qblock_size, qtype_size, x, weight, out)
 
         fn = my_matmul if which == "minfer" else ref_matmul
 
@@ -162,8 +164,6 @@ def matmul(which: str):
         )
 
         result = timer.blocked_autorange()
-
-        print(result)
 
         results.append(result)
 

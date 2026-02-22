@@ -49,19 +49,20 @@ def matmul(which:str, shape: tuple):
 
     M, K, N = shape
 
-    x = torch.randn((M,K), dtype=torch.float16).cuda()
-    out = torch.zeros((M,N), dtype=torch.float16).cuda()
-    weight = (1/K**0.5) * torch.randn((K,N), dtype=torch.float16).cuda()
+    x = torch.randn((1,M,K), dtype=torch.float16, device="cuda")
+    out = torch.zeros((1,M,N), dtype=torch.float16, device="cuda")
+    weight = (1/K**0.5) * torch.randn((K,N), dtype=torch.float16, device="cuda")
 
     def my_mm():
-        kerns.matmul(qtype, qblock_size, qtype_size, x.unsqueeze(0), weight, out.unsqueeze(0))
+        kerns.matmul(qtype, qblock_size, qtype_size, x, weight, out)
 
     def ref_mm():
-        torch.mm(x, weight, out=out)
+        torch.matmul(x, weight, out=out)
 
     mm = my_mm if which == "minfer" else ref_mm
 
-    mm()
+    with torch.no_grad():
+        mm()
 
     torch.cuda.synchronize()
 
