@@ -9,25 +9,8 @@ def main():
     df = pd.concat([pd.read_csv(f) for f in csv_files], ignore_index=True)
     
     df['tflops'] = (2*df['M']*df['K']*df['N'])/(df['median_ms']*1e-3)*1e-12
-    df['tflops/watt'] = df['tflops']/df['median_power_w']
-
-    best_configs_noeff = df.loc[df.groupby(['M', 'K', 'N'])['tflops'].idxmax()]
-    best_configs_eff = df.loc[df.groupby(['M', 'K', 'N'])['tflops/watt'].idxmax()]
-
-    merged = best_configs_eff[['M', 'K', 'N', 'tflops']].merge(
-        best_configs_noeff[['M', 'K', 'N', 'tflops']],
-        on=['M', 'K', 'N'],
-        suffixes=('_eff', '_noeff')
-    )
-
-    # selection logic: use the config maxxing tflops/watt unless it causes >20% drop in throughput
-    selected_idxs = np.where(
-        (merged['tflops_eff']/merged['tflops_noeff']) >= 0.8,
-        best_configs_eff.index,
-        best_configs_noeff.index
-    )
     
-    best_df = df.loc[selected_idxs].sort_values(['M', 'K', 'N']).reset_index(drop=True)
+    best_df = df.loc[df.groupby(['M', 'K', 'N'])['tflops'].idxmax()].sort_values(['M', 'K', 'N']).reset_index(drop=True)
 
     with open("../lookup.cuh", 'w') as f:
         f.write("#pragma once\n\n")

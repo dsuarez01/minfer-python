@@ -97,18 +97,18 @@ def main():
         )
     )
 
-    configs = []
+    kcs = []
 
-    print("Searching for valid configs")
+    print("Searching for valid kernel configs")
     while s.check() == sat:
         m = s.model()
-        config = (
+        kc = (
             m[BM].as_long(), m[BK].as_long(), m[BN].as_long(), # type: ignore
             m[WM].as_long(), m[WK].as_long(), m[WN].as_long(), # type: ignore
             m[MM].as_long(), m[MK].as_long(), m[MN].as_long(), # type: ignore
             m[K_PIPE_MAX].as_long(), m[USE_SYNC].as_long()     # type: ignore
         )
-        configs.append(config)
+        kcs.append(kc)
         
         # forces unique solns
         s.add(
@@ -120,10 +120,10 @@ def main():
             )
         )
         
-        if len(configs) % 100 == 0:
-            print(f"Found {len(configs)} configs so far")
+        if len(kcs) % 100 == 0:
+            print(f"Found {len(kcs)} kernel configs so far")
 
-    print(f"\nTotal valid configs: {len(configs)}")
+    print(f"\nTotal valid kernel configs: {len(kcs)}")
 
     with open("./tune.cuh", "w") as f:
         
@@ -144,8 +144,9 @@ def main():
         f.write("struct Config {\n")
         f.write("\tsize_t config_idx;\n")
         f.write("\tKernelConfig kc;\n")
-        f.write("\tint M, K, N;\n")
+        f.write("\tsize_t M, K, N;\n")
         f.write("\tdouble target_time_ms;\n")
+        f.write("\tdouble min_run_time_ms;\n")
         f.write("};\n\n")
 
         f.write("struct Result {\n")
@@ -155,24 +156,20 @@ def main():
         f.write("\tdouble median_time_ms;\n")
         f.write("\tdouble min_time_ms;\n")
         f.write("\tdouble max_time_ms;\n")
-        f.write("\tfloat mean_power_watts;\n")
-        f.write("\tfloat median_power_watts;\n")
-        f.write("\tfloat max_power_watts;\n")
-        f.write("\tfloat power_limit_watts;\n")
+        f.write("\tfloat tflops;\n")
         f.write("};\n\n")
         
-        f.write(f"constexpr size_t NUM_CONFIGS = {len(configs)};\n\n")
+        f.write(f"constexpr size_t NUM_KERNEL_CONFIGS = {len(kcs)};\n\n")
         
         # write ALL_CONFIGS array
-        f.write("constexpr KernelConfig ALL_CONFIGS[NUM_CONFIGS] = {\n")
-        for cfg in configs:
-            bm, bk, bn, wm, wk, wn, mm, mk, mn, kpm, sync = cfg
+        f.write("constexpr KernelConfig ALL_KERNEL_CONFIGS[NUM_KERNEL_CONFIGS] = {\n")
+        for bm, bk, bn, wm, wk, wn, mm, mk, mn, kpm, sync in kcs:
             f.write(f"\t{{\"float16\", {bm}, {bk}, {bn}, {wm}, {wk}, {wn}, {mm}, {mk}, {mn}, {kpm}, {sync}}},\n")
         f.write("};\n\n")
         
         # write X macro
         f.write("#define KERNEL_CONFIG_INDICES \\\n")
-        for i in range(len(configs)):
+        for i in range(len(kcs)):
             f.write(f"\tX({i}) \\\n")
         f.write("\n")
 

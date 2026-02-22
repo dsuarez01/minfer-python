@@ -16,8 +16,9 @@ struct KernelConfig {
 struct Config {
 	size_t config_idx;
 	KernelConfig kc;
-	int M, K, N;
+	size_t M, K, N;
 	double target_time_ms;
+	double min_run_time_ms;
 };
 
 struct Result {
@@ -27,15 +28,12 @@ struct Result {
 	double median_time_ms;
 	double min_time_ms;
 	double max_time_ms;
-	float mean_power_watts;
-	float median_power_watts;
-	float max_power_watts;
-	float power_limit_watts;
+	float tflops;
 };
 
-constexpr size_t NUM_CONFIGS = 582;
+constexpr size_t NUM_KERNEL_CONFIGS = 582;
 
-constexpr KernelConfig ALL_CONFIGS[NUM_CONFIGS] = {
+constexpr KernelConfig ALL_KERNEL_CONFIGS[NUM_KERNEL_CONFIGS] = {
 	{"float16", 64, 32, 512, 16, 16, 256, 16, 8, 8, 2, 0},
 	{"float16", 512, 32, 32, 256, 8, 16, 16, 8, 8, 2, 0},
 	{"float16", 512, 32, 32, 256, 32, 16, 16, 16, 8, 2, 0},
