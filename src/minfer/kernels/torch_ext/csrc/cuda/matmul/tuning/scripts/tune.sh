@@ -7,6 +7,9 @@
 #SBATCH --output=logs/slurm_%A_%a.out
 #SBATCH --error=logs/slurm_%A_%a.err
 
+# need to source env setup script at project root
+source "$(git rev-parse --show-toplevel)/setup.sh"
+
 JOB_ID=$SLURM_ARRAY_TASK_ID
 NUM_JOBS=$SLURM_ARRAY_TASK_COUNT
 NUM_CONFIGS=$(grep -oP 'NUM_KERNEL_CONFIGS\s*=\s*\K[0-9]+' tune.cuh)
@@ -31,6 +34,7 @@ for M in "${SIZES[@]}"; do
             if (( combo_index % NUM_JOBS == JOB_ID )); then
                 for config_idx in $(seq 0 $((NUM_CONFIGS - 1))); do
                     if [[ -z "${warm_done[${M},${K},${N},${config_idx}]}" ]]; then
+                        echo "Warm: starting M=$M K=$K N=$N config_idx=$config_idx"
                         ./tune warm $JOB_ID $config_idx $M $K $N
                     fi
                 done
@@ -54,6 +58,7 @@ fi
 while IFS=',' read -r M K N config_idx rest; do
     if [[ -z "${cold_done[${M},${K},${N},${config_idx}]}" ]]; then
         sleep 6
+        echo "Cold: starting M=$M K=$K N=$N config_idx=$config_idx"
         ./tune cold $JOB_ID $config_idx $M $K $N
     fi
 done < <(awk -F',' '

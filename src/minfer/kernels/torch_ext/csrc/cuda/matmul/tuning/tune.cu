@@ -221,7 +221,8 @@ KERNEL_CONFIG_INDICES
 
         std::ofstream results_file(write_path, std::ios::app);
         if (!results_file.is_open()) {
-            std::cerr << "ERROR: Could not open results CSV\n";
+            std::cerr << "Error at mode: " << mode << std::endl;
+            std::cerr << "ERROR: Could not open results CSV" << std::endl;
             return 1;
         }
 
@@ -255,9 +256,13 @@ KERNEL_CONFIG_INDICES
                          << config.min_run_time_ms << "\n";
             results_file.flush();
         } catch (const std::exception& e) {
-            std::cerr << "\tCfg " << config_idx << " failed: " << e.what() << std::endl;
+            std::cerr << "Error at mode: " << mode << std::endl;
+            std::cerr << "\tProblem size M=" << M << " K=" << K << " N=" << N << std::endl;
+            std::cerr << "\tConfig " << config_idx << " failed: " << e.what() << std::endl;
         } catch (...) {
-            std::cerr << "\tCfg " << config_idx << " failed w/ unknown err" << std::endl;
+            std::cerr << "Error at mode: " << mode << std::endl;
+            std::cerr << "\tProblem size M=" << M << " K=" << K << " N=" << N << std::endl;
+            std::cerr << "\tConfig " << config_idx << " failed w/ unknown err" << std::endl;
         }
         results_file.close();
         return 0;
