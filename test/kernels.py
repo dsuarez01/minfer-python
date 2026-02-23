@@ -55,11 +55,7 @@ def test_dequant(backend, qtype_name, shape):
 
     torch.cuda.empty_cache()
 
-## NOTE: for the rest of the tests FP16 dtype tensors are used (as appropriate)
-## since dequant already tests the relevant usage patterns in the other kernels
-## dp_size is used throughout but not actually factored in since it doesn't affect kernel usage
-
-# A: [B , L, hidden_dim]
+# A: [B, L, hidden_dim]
 # B: [B, n_heads, L, head_dim]
 @pytest.mark.parametrize("backend", ["torch_ext"])
 def test_rmsnorm(backend):

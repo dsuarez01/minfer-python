@@ -11,33 +11,32 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from minfer.kernels import KernelBackend
 from minfer.const import GGMLQuantizationType, GGML_QUANT_SIZES
 
-torch.backends.cuda.matmul.allow_fp16_accumulation = True
+torch.backends.cuda.matmul.allow_fp16_accumulation = True # forces Pytorch to use HGEMM for fair benchmarking
 INT_MAX = 2147483647
 
-def rmsnorm(backend: str = "torch_ext"):
+def rmsnorm(which: str):
     """rmsnorm against pytorch F.rms_norm"""
     
-    kerns = KernelBackend(backend)
-    
-    B,L = 8,4096
-    eps = 1e-6
-    head_dim = 128
-    n_heads = 48
-    hidden_dim = 6144
+    kerns = KernelBackend("torch_ext")
     
     test_cases = [
-        ("per_head", (B,L,n_heads,head_dim)),
-        ("full_hidden", (B,L,hidden_dim)),
+        (8,1024,(6144,),1e-6),
+        (8,4096,(6144,),1e-6),
+        (8,8192,(6144,),1e-6),
+        (8,16384,(6144,),1e-6),
+        (8,1024,(48,128),1e-6),
+        (8,4096,(48,128),1e-6),
+        (8,8192,(48,128),1e-6),
+        (8,16384,(48,128),1e-6),
     ]
     
     results = []
     
-    for name, shape in test_cases:
-        print(f"\nRunning {name}, {shape}")
-        
-        x = 1/(shape[-1]**0.5) * torch.randn(shape, dtype=torch.float16).cuda()
-        weight = torch.randn(shape[-1], dtype=torch.float16).cuda()
-        out = torch.zeros_like(x).cuda()
+    for B, L, shape, eps in test_cases:
+
+        x = 1/(shape[-1]**0.5) * torch.randn((B, L, *shape), dtype=torch.float16, device="cuda")
+        weight = torch.randn(shape[-1], dtype=torch.float16, device="cuda")
+        out = torch.zeros_like(x)
         
         def my_rmsnorm():
             kerns.rmsnorm(eps, x, weight, out)
@@ -47,15 +46,17 @@ def rmsnorm(backend: str = "torch_ext"):
             result = F.rms_norm(input=x, weight=weight, normalized_shape=(shape[-1],), eps=eps)
             torch.cuda.synchronize()
         
-        for fn_name, fn in [("my_rmsnorm", my_rmsnorm), ("ref_rmsnorm", ref_rmsnorm)]:
-            timer = Timer(
-                stmt='fn()',
-                globals={'fn': fn},
-                label=f'rms_norm_{name}',
-                sub_label=fn_name,
-                description=f'shape={shape}',
-            )
-            results.append(timer.blocked_autorange(min_run_time=1))
+        fn = my_rmsnorm if which == "minfer" else ref_rmsnorm
+
+        shape_str = f'hidden_dim={shape[-1]}' if len(shape) == 1 else f'n_heads={shape[0]}, head_dim={shape[1]}'
+        timer = Timer(
+            stmt='fn()',
+            globals={'fn': fn},
+            label=f'rmsnorm',
+            sub_label=f'B={B}, L={L}, {shape_str}',
+            description=f'{which}',
+        )
+        results.append(timer.blocked_autorange())
         
         del x, weight, out
         gc.collect()
@@ -64,61 +65,100 @@ def rmsnorm(backend: str = "torch_ext"):
     compare = Compare(results)
     compare.print()
 
-def rope(backend: str = "torch_ext"):
-    """rope (il + neox) against pytorch ref"""
+def il_rope(which: str):
+    """il_rope against pytorch ref"""
     
-    kerns = KernelBackend(backend)
-    
-    B, L, n_heads, head_dim, rotary_dim, base_freq = 8, 4096, 48, 128, 64, 1e6
+    kerns = KernelBackend("torch_ext")
     
     test_cases = [
-        ("il_rope"),
-        ("neox_rope"),
+        (8,48,1024,128,64,1e6),
+        (8,48,4096,128,64,1e6),
+        (8,48,8192,128,64,1e6),
+        (8,48,16384,128,64,1e6),
     ]
     
     results = []
     
-    for name in test_cases:
-        print(f"\nRunning {name}")
+    for B, n_heads, L, head_dim, rotary_dim, base_freq in test_cases:
         
-        x = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
+        x = torch.randn((B, n_heads, L, head_dim), dtype=torch.float16, device="cuda")
         
-        def ref_rope():
-            freqs = torch.arange(rotary_dim//2, dtype=torch.float32).cuda()
-            freqs = base_freq**(-2.0*freqs/rotary_dim)
-            freqs = torch.arange(L, dtype=torch.float32)[:, None].cuda() * freqs[None,:]
-            cos = torch.cos(freqs)
-            sin = torch.sin(freqs)
-            
+        freqs = torch.arange(rotary_dim//2, dtype=torch.float32, device="cuda")
+        freqs = base_freq**(-2.0*freqs/rotary_dim)
+        freqs = torch.arange(L, dtype=torch.float32, device="cuda")[:, None] * freqs[None,:]
+        freqs_complex = torch.polar(torch.ones_like(freqs), freqs)
+        
+        def ref_il_rope():
             x_float = x.float()
-            if name == "il_rope":
-                x_reshaped = x_float.reshape(*x_float.shape[:-1], -1, 2)
-                out = x_reshaped.clone()
-                out[..., :rotary_dim//2, 0] = cos*x_reshaped[..., :rotary_dim//2, 0]-sin*x_reshaped[..., :rotary_dim//2, 1]
-                out[..., :rotary_dim//2, 1] = sin*x_reshaped[..., :rotary_dim//2, 0]+cos*x_reshaped[..., :rotary_dim//2, 1]
-                out = out.flatten(-2).half()
-            else:
-                x_stacked = torch.stack([x_float[...,:rotary_dim//2], x_float[...,rotary_dim//2:rotary_dim]], dim=-1)
-                out = x_float.clone()
-                out[..., :rotary_dim//2] = cos*x_stacked[..., :rotary_dim//2, 0]-sin*x_stacked[..., :rotary_dim//2, 1]
-                out[..., rotary_dim//2:rotary_dim] = sin*x_stacked[..., :rotary_dim//2, 0]+cos*x_stacked[..., :rotary_dim//2, 1]
-                out = out.half()
-            torch.cuda.synchronize()
+            x_complex = torch.view_as_complex(x_float[..., :rotary_dim].reshape(*x_float.shape[:-1], rotary_dim//2, 2))
+            x_rotated = torch.view_as_real(x_complex * freqs_complex).flatten(-2)
+            x_float[..., :rotary_dim] = x_rotated
+            x_float.half()
         
-        def my_rope():
-            x_copy = x.clone()
-            getattr(kerns, name)(rotary_dim, 0, base_freq, x_copy)
-            torch.cuda.synchronize()
+        def my_il_rope():
+            kerns.il_rope(rotary_dim, 0, base_freq, x)
         
-        for fn_name, fn in [(f"my_{name}", my_rope), (f"ref_{name}", ref_rope)]:
-            timer = Timer(
-                stmt='fn()',
-                globals={'fn': fn},
-                label=f'rope_{name}',
-                sub_label=fn_name,
-                description=f'B={B}, L={L}, n_heads={n_heads}, head_dim={head_dim}',
-            )
-            results.append(timer.blocked_autorange(min_run_time=1))
+        fn = my_il_rope if which == "minfer" else ref_il_rope
+
+        timer = Timer(
+            stmt='fn()',
+            globals={'fn': fn},
+            label='il_rope',
+            sub_label=f'B={B}, n_heads={n_heads}, L={L}, head_dim={head_dim}, rotary_dim={rotary_dim}, base_freq={base_freq}',
+            description=f'{which}',
+        )
+        results.append(timer.blocked_autorange())
+        
+        del x
+        gc.collect()
+        torch.cuda.empty_cache()
+    
+    compare = Compare(results)
+    compare.print()
+
+def neox_rope(which: str):
+    """il_rope against pytorch ref"""
+    
+    kerns = KernelBackend("torch_ext")
+    
+    test_cases = [
+        (8,48,1024,128,64,1e6),
+        (8,48,4096,128,64,1e6),
+        (8,48,8192,128,64,1e6),
+        (8,48,16384,128,64,1e6),
+    ]
+    
+    results = []
+    
+    for B, n_heads, L, head_dim, rotary_dim, base_freq in test_cases:
+        
+        x = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16, device="cuda")
+        
+        freqs = torch.arange(rotary_dim//2, dtype=torch.float32, device="cuda")
+        freqs = base_freq**(-2.0*freqs/rotary_dim)
+        freqs = torch.arange(L, dtype=torch.float32, device="cuda")[:, None] * freqs[None,:]
+        freqs_complex = torch.polar(torch.ones_like(freqs), freqs)
+
+        def ref_neox_rope():
+            x_float = x.float()
+            x_complex = torch.view_as_complex(x_float[..., :rotary_dim].reshape(*x_float.shape[:-1], rotary_dim//2, 2))
+            x_rotated = torch.view_as_real(x_complex * freqs_complex).flatten(-2)
+            x_float[..., :rotary_dim] = x_rotated
+            x_float.half()
+        
+        def my_neox_rope():
+            kerns.neox_rope(rotary_dim, 0, base_freq, x)
+        
+        fn = my_neox_rope if which == "minfer" else ref_neox_rope
+
+        timer = Timer(
+            stmt='fn()',
+            globals={'fn': fn},
+            label=f'neox_rope',
+            sub_label=f'B={B}, n_heads={n_heads}, L={L}, head_dim={head_dim}, rotary_dim={rotary_dim}, base_freq={base_freq}',
+            description=f'{which}',
+        )
+        results.append(timer.blocked_autorange())
         
         del x
         gc.collect()
@@ -134,7 +174,7 @@ def matmul(which: str):
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
-    sizes = [512,1024,2048,4096,8192,16384]
+    sizes = [512,1024,2048,4096,8192,16384,32768]
     results = []
 
     for s in sizes:
@@ -174,10 +214,10 @@ def matmul(which: str):
     compare = Compare(results)
     compare.print()
 
-def flash_attn(backend: str = "torch_ext"):
+def flash_attn(which: str):
     """flash_attn against pytorch SDPA"""
 
-    kerns = KernelBackend(backend)
+    kerns = KernelBackend("torch_ext")
     
     B, n_heads, n_kv_heads, head_dim = 4, 48, 8, 128
     qtype = GGMLQuantizationType.F16
@@ -236,10 +276,22 @@ def flash_attn(backend: str = "torch_ext"):
     compare.print()
 
 if __name__ == "__main__":
+
+    KERNELS = {
+        "rmsnorm": rmsnorm,
+        "il_rope": il_rope,
+        "neox_rope": neox_rope,
+        "matmul": matmul,
+        # "embed": embed, (TODO)
+        # "qkv": qkv, (TODO)
+        "flash_attn": flash_attn,
+        # "moe_scoring": moe_scoring, (TODO)
+        # "ffn": ffn, (TODO)
+    }
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--which", choices=["minfer", "ref"], default="minfer")
+    parser.add_argument("--kernel", choices=[k for k in vars(KernelBackend) if not k.startswith('_')], required=True)
+    parser.add_argument("--which", choices=["minfer", "ref"], required=True)
     args = parser.parse_args()
-    # rmsnorm()
-    # rope()
-    matmul(which=args.which)
-    # flash_attn()
+    
+    KERNELS[args.kernel](which=args.which)
