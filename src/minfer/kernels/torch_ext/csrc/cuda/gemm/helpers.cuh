@@ -14,148 +14,6 @@ constexpr __host__ __device__ unsigned int int_log2(unsigned int n) {
     return result;
 }
 
-// baseline
-// template <
-//     unsigned int ROWS_MMA,
-//     unsigned int COLS_MMA,
-//     unsigned int COLS_BLOCK
-// >
-// __device__ __forceinline__ void ldmatrix_m16n16(
-//     int mma_row,
-//     int mma_col,
-//     unsigned int lane_idx,
-//     uint32_t src_ofst,
-//     uint32_t (&reg)[4]
-// ) {
-
-//     // see: https://veitner.bearblog.dev/load-and-store-matrices-efficently-with-ptx-instructions/
-//     uint32_t ofst_mma = (mma_row * ROWS_MMA * COLS_BLOCK + mma_col * COLS_MMA) * sizeof(half);
-//     uint32_t ofst_thr = (((lane_idx/8)%2)*8 + (lane_idx%8)) * COLS_BLOCK * sizeof(half);
-//     uint32_t tot_ofst_f1 = src_ofst + ofst_mma + ofst_thr;
-//     uint32_t tot_ofst_f2 = tot_ofst_f1 + 8*sizeof(half);
-
-//     asm volatile (
-//         "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
-//         "{%0, %1}, [%2];\n"
-//         : "=r"(reg[0]), "=r"(reg[1])
-//         : "r"(tot_ofst_f1)
-//     );
-
-//     asm volatile (
-//         "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
-//         "{%0, %1}, [%2];\n"
-//         : "=r"(reg[2]), "=r"(reg[3])
-//         : "r"(tot_ofst_f2)
-//     );
-// }
-
-// improvement 2: swizzling
-// template <
-//     unsigned int ROWS_MMA,
-//     unsigned int COLS_MMA,
-//     unsigned int COLS_BLOCK
-// >
-// __device__ __forceinline__ void ldmatrix_m16n16(
-//     int mma_row,
-//     int mma_col,
-//     unsigned int lane_idx,
-//     uint32_t src_ofst,
-//     uint32_t (&reg)[4]
-// ) {
-
-//     // swizzling
-//     constexpr unsigned int BITS = int_log2(ROWS_MMA);
-//     constexpr unsigned int BASE = int_log2(sizeof(int4)); // 16-byte alignment
-//     constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
-//     constexpr unsigned int BITMASK  = ((1u << BITS) - 1) << (BASE + SHIFT);
-    
-//     // see: https://veitner.bearblog.dev/load-and-store-matrices-efficently-with-ptx-instructions/
-//     uint32_t ofst_mma = (mma_row * ROWS_MMA * COLS_BLOCK + mma_col * COLS_MMA) * sizeof(half);
-//     uint32_t ofst_thr = (((lane_idx/8)%2)*8 + (lane_idx%8)) * COLS_BLOCK * sizeof(half);
-//     uint32_t tot_ofst_f1 = src_ofst + ofst_mma + ofst_thr;
-//     uint32_t tot_ofst_f2 = tot_ofst_f1 + 8*sizeof(half);
-
-//     tot_ofst_f1 ^= (tot_ofst_f1 & BITMASK) >> SHIFT;
-//     tot_ofst_f2 ^= (tot_ofst_f2 & BITMASK) >> SHIFT;
-
-//     asm volatile (
-//         "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
-//         "{%0, %1}, [%2];\n"
-//         : "=r"(reg[0]), "=r"(reg[1])
-//         : "r"(tot_ofst_f1)
-//     );
-
-//     asm volatile (
-//         "ldmatrix.sync.aligned.m8n8.x2.shared.b16 "
-//         "{%0, %1}, [%2];\n"
-//         : "=r"(reg[2]), "=r"(reg[3])
-//         : "r"(tot_ofst_f2)
-//     );
-// }
-
-// baseline
-// template <
-//     unsigned int ROWS_MMA,
-//     unsigned int COLS_MMA,
-//     unsigned int COLS_BLOCK
-// >
-// __device__ __forceinline__ void ldmatrix_m16n8(
-//     int mma_row,
-//     int mma_col,
-//     unsigned int lane_idx,
-//     uint32_t src_ofst,
-//     uint32_t (&reg)[2]
-// ) {
-
-//     // see: https://veitner.bearblog.dev/load-and-store-matrices-efficently-with-ptx-instructions/
-//     uint32_t ofst_mma = (mma_row * ROWS_MMA * COLS_BLOCK + mma_col * COLS_MMA) * sizeof(half);
-//     uint32_t ofst_thr = (((lane_idx/8)%2)*8 + (lane_idx%8)) * COLS_BLOCK * sizeof(half);
-//     uint32_t tot_ofst = src_ofst + ofst_mma + ofst_thr;
-
-//     asm volatile (
-//         "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 "
-//         "{%0, %1}, [%2];\n"
-//         : "=r"(reg[0]), "=r"(reg[1])
-//         : "r"(tot_ofst)
-//     );
-// }
-
-// improvement 2: swizzling
-// template <
-//     unsigned int ROWS_MMA,
-//     unsigned int COLS_MMA,
-//     unsigned int COLS_BLOCK
-// >
-// __device__ __forceinline__ void ldmatrix_m16n8(
-//     int mma_row,
-//     int mma_col,
-//     unsigned int lane_idx,
-//     uint32_t src_ofst,
-//     uint32_t (&reg)[2]
-// ) {
-
-//     // swizzling
-//     constexpr unsigned int BITS = int_log2(ROWS_MMA);
-//     constexpr unsigned int BASE = int_log2(sizeof(int4)); // 16-byte alignment
-//     constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
-//     constexpr unsigned int BITMASK  = ((1u << BITS) - 1) << (BASE + SHIFT);
-
-//     // see: https://veitner.bearblog.dev/load-and-store-matrices-efficently-with-ptx-instructions/
-//     uint32_t ofst_mma = (mma_row * ROWS_MMA * COLS_BLOCK + mma_col * COLS_MMA) * sizeof(half);
-//     uint32_t ofst_thr = (((lane_idx/8)%2)*8 + (lane_idx%8)) * COLS_BLOCK * sizeof(half);
-//     uint32_t tot_ofst = src_ofst + ofst_mma + ofst_thr;
-
-//     tot_ofst ^= (tot_ofst & BITMASK) >> SHIFT;
-
-//     asm volatile (
-//         "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 "
-//         "{%0, %1}, [%2];\n"
-//         : "=r"(reg[0]), "=r"(reg[1])
-//         : "r"(tot_ofst)
-//     );
-// }
-
-// improvement 3: (pipelining) reduce instr cnt
 // NOTE: recall that A^(A^B) = B
 template<
     unsigned int BITMASK,
@@ -175,6 +33,7 @@ __device__ __forceinline__ constexpr uint32_t xor_pattern(unsigned int i) {
     return swizzle<BITMASK, SHIFT>((i+INCR)*STRIDE) ^ swizzle<BITMASK, SHIFT>(i*STRIDE);
 }
 
+// ldmatrix for shmem -> regs
 template <
     bool LOAD_TRANS,
     unsigned int ROWS_MMA,
@@ -212,8 +71,8 @@ __device__ __forceinline__ void ldmatrix(
     constexpr unsigned int COL_INCR = EFF_COL_SPAN;
 
     // see: https://veitner.bearblog.dev/load-and-store-matrices-efficently-with-ptx-instructions/
-    unsigned int tile_id = lane_idx / 8;
-    unsigned int row_in_tile = lane_idx % 8;
+    unsigned int tile_id = lane_idx >> 3;
+    unsigned int row_in_tile = lane_idx & 7;
 
     unsigned int tile_row = tile_id%EFF_GRID_ROWS;
     unsigned int tile_col = tile_id/EFF_GRID_ROWS;
@@ -405,26 +264,7 @@ __device__ __forceinline__ void ldmatrix(
     }
 }
 
-// baseline
-// __device__ __forceinline__ void mma_sync_m16n8k16(
-//     uint32_t (&x_reg)[4],
-//     uint32_t (&w_reg)[2],
-//     uint32_t (&acc_reg)[2]
-// ) {
-//     asm(
-//         "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
-//         "{%0, %1}, "
-//         "{%2, %3, %4, %5}, "
-//         "{%6, %7}, "
-//         "{%8, %9};\n"
-//         : "=r"(acc_reg[0]), "=r"(acc_reg[1])
-//         : "r"(x_reg[0]), "r"(x_reg[1]), "r"(x_reg[2]), "r"(x_reg[3]),
-//           "r"(w_reg[0]), "r"(w_reg[1]),
-//           "r"(acc_reg[0]), "r"(acc_reg[1])
-//     );
-// }
-
-// improvement 3: pipelining (adjustable k width for autotuning)
+// configurable K mma_sync for tuning
 template <
     unsigned int DIM_MM,
     unsigned int DIM_MK,
@@ -482,118 +322,7 @@ __device__ __forceinline__ void mma_sync(
     }
 }
 
-// baseline (basic tiling)
-// __device__ __forceinline__ void toShmem(
-//     unsigned int rows_block,
-//     unsigned int cols_block,
-//     size_t stride_src,
-//     const half* __restrict__ src,
-//     half* __restrict__ dst
-// ) {
-
-//     unsigned int idx_thr = threadIdx.y * blockDim.x + threadIdx.x;
-
-//     unsigned int num_thrs = blockDim.x * blockDim.y;
-
-//     assert(num_thrs % cols_block == 0);
-
-//     unsigned int incr_row = num_thrs / cols_block;
-//     unsigned int row_thr = idx_thr / cols_block;
-//     unsigned int col_thr = idx_thr % cols_block;
-    
-//     for (int r=row_thr; r<rows_block; r+=incr_row) {
-//         dst[r*cols_block+col_thr] = src[r*stride_src+col_thr]; // this breaks down into 2 instrs, store to register then shmem
-//     }
-// }
-
-// improvement 1:
-// loop unrolling, vectorization of loads->stores
-// template <
-//     unsigned int ROWS_BLOCK,
-//     unsigned int COLS_BLOCK,
-//     unsigned int NUM_THRS
-// >
-// __device__ __forceinline__ void toShmem(
-//     size_t stride_src,
-//     const half* __restrict__ src,
-//     half* __restrict__ dst
-// ) {
-
-//     unsigned int idx_thr = threadIdx.y * blockDim.x + threadIdx.x;
-
-//     // can issue up to 128-bit load/store instrs (8 half elements)
-//     // alignment checks
-//     static_assert(COLS_BLOCK % 8 == 0);
-//     assert(stride_src % 8 == 0);
-    
-//     size_t eff_stride_src = stride_src / 8;
-//     constexpr unsigned int EFF_COLS_BLOCK = COLS_BLOCK / 8;
-
-//     static_assert(NUM_THRS % EFF_COLS_BLOCK == 0);
-    
-//     constexpr unsigned int INCR_ROW = NUM_THRS / EFF_COLS_BLOCK;
-//     constexpr unsigned int NUM_ITERS = ROWS_BLOCK / INCR_ROW;
-//     static_assert(NUM_ITERS >= 1u);
-//     unsigned int row_thr = idx_thr / EFF_COLS_BLOCK;
-//     unsigned int col_thr = idx_thr % EFF_COLS_BLOCK;
-    
-// #pragma unroll
-//     for (int i=0; i<NUM_ITERS; ++i) {
-//         reinterpret_cast<int4*>(dst)[row_thr*EFF_COLS_BLOCK+col_thr] = 
-//         reinterpret_cast<const int4*>(src)[row_thr*eff_stride_src+col_thr];
-//         row_thr += INCR_ROW;
-//     }
-// }
-
-// improvement 2:
-// swizzling
-// template <
-//     unsigned int ROWS_MMA,
-//     unsigned int ROWS_BLOCK,
-//     unsigned int COLS_BLOCK,
-//     unsigned int NUM_THRS
-// >
-// __device__ __forceinline__ void toShmem(
-//     size_t stride_src,
-//     const half* __restrict__ src,
-//     half* __restrict__ dst
-// ) {
-
-//     // swizzling
-//     constexpr unsigned int BITS = int_log2(ROWS_MMA);
-//     constexpr unsigned int BASE = 0; // no byte alignment to preserve
-//     constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
-//     constexpr unsigned int BITMASK  = ((1u << BITS) - 1) << (BASE + SHIFT);
-
-//     unsigned int idx_thr = threadIdx.y * blockDim.x + threadIdx.x;
-
-//     // can issue up to 128-bit load/store instrs (8 half elements)
-//     // alignment checks
-//     static_assert(COLS_BLOCK % 8 == 0);
-//     // assert(stride_src % 8 == 0);
-    
-//     size_t eff_stride_src = stride_src / 8;
-//     constexpr unsigned int EFF_COLS_BLOCK = COLS_BLOCK / 8;
-
-//     static_assert(NUM_THRS % EFF_COLS_BLOCK == 0);
-    
-//     constexpr unsigned int INCR_ROW = NUM_THRS / EFF_COLS_BLOCK;
-//     constexpr unsigned int NUM_ITERS = ROWS_BLOCK / INCR_ROW;
-//     static_assert(NUM_ITERS >= 1u);
-//     unsigned int row_thr = idx_thr / EFF_COLS_BLOCK;
-//     unsigned int col_thr = idx_thr % EFF_COLS_BLOCK;
-    
-// #pragma unroll
-//     for (int i=0; i<NUM_ITERS; ++i) {
-//         unsigned int idx_dst = row_thr*EFF_COLS_BLOCK+col_thr;
-//         idx_dst ^= (idx_dst & BITMASK) >> SHIFT;
-//         reinterpret_cast<int4*>(dst)[idx_dst] = 
-//         reinterpret_cast<const int4*>(src)[row_thr*eff_stride_src+col_thr];
-//         row_thr += INCR_ROW;
-//     }
-// }
-
-// improvement 3: (pipelining) async primitives, sync/async toShmem
+// sync/async toShmem
 template <
     unsigned int ROWS_MMA,
     unsigned int ROWS_BLOCK,
@@ -612,7 +341,7 @@ __device__ __forceinline__ void gmemToRegSync(
     static_assert(COLS_BLOCK % 8 == 0);
     // assert(stride_src % 8 == 0);
     
-    size_t eff_stride_src = stride_src / 8;
+    size_t eff_stride_src = stride_src >> 3;
     constexpr unsigned int EFF_COLS_BLOCK = COLS_BLOCK / 8;
 
     static_assert(NUM_THRS % EFF_COLS_BLOCK == 0);
@@ -686,7 +415,7 @@ __device__ __forceinline__ void regToShmemSync(
     }
 }
 
-// for prefetching before loop, not strictly necessary
+// for prefetching before loop in gemm_sync
 template <
     unsigned int ROWS_MMA,
     unsigned int ROWS_BLOCK,
@@ -712,7 +441,7 @@ __device__ __forceinline__ void toShmemSync(
     static_assert(COLS_BLOCK % 8 == 0);
     // assert(stride_src % 8 == 0);
     
-    size_t eff_stride_src = stride_src / 8;
+    size_t eff_stride_src = stride_src >> 3;
     constexpr unsigned int EFF_COLS_BLOCK = COLS_BLOCK / 8;
 
     static_assert(NUM_THRS % EFF_COLS_BLOCK == 0);
@@ -739,6 +468,7 @@ __device__ __forceinline__ void toShmemSync(
     }
 }
 
+// (pipelining) async wrappers
 template<unsigned int N>
 __device__ __forceinline__ void cp_async(
     uint32_t dst_shared,
@@ -783,21 +513,20 @@ __device__ __forceinline__ void toShmemAsync(
     constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
     constexpr unsigned int BITMASK  = ((1u<<BITS)-1) << (BASE+SHIFT);
 
-    unsigned int idx_thr = threadIdx.y * blockDim.x + threadIdx.x;
-
     // can issue up to 128-bit load/store instrs (8 half elements)
     // alignment checks
     static_assert(COLS_BLOCK % 8 == 0);
     // assert(stride_src % 8 == 0);
     
-    size_t eff_stride_src = stride_src / 8;
+    size_t eff_stride_src = stride_src >> 3;
     constexpr unsigned int EFF_COLS_BLOCK = COLS_BLOCK / 8;
 
     static_assert(NUM_THRS % EFF_COLS_BLOCK == 0);
-    
+
     constexpr unsigned int INCR_ROW = NUM_THRS / EFF_COLS_BLOCK;
     constexpr unsigned int NUM_ITERS = ROWS_BLOCK / INCR_ROW;
     static_assert(NUM_ITERS >= 1u);
+    unsigned int idx_thr = threadIdx.y * blockDim.x + threadIdx.x;
     unsigned int row_thr = idx_thr / EFF_COLS_BLOCK;
     unsigned int col_thr = idx_thr % EFF_COLS_BLOCK;
     
@@ -817,41 +546,38 @@ __device__ __forceinline__ void toShmemAsync(
     }
 }
 
-// // baseline
-// // (named after the Hopper instruction)
-// __device__ __forceinline__ void stmatrix_m16n8(
-//     unsigned int lane_idx,
-//     size_t stride_dst,
-//     half* dst,
-//     uint32_t (&reg)[2]
-// ) {
-
-//     uint32_t* dst_ptr = reinterpret_cast<uint32_t*>(dst);
-//     stride_dst /= 2;
-    
-//     // (16 byte transactions per row)
-//     unsigned int frag_col = lane_idx%4;
-//     unsigned int frag_row = lane_idx/4;
-
-//     dst_ptr[frag_row*stride_dst+frag_col] = reg[0]; // 4 bytes written per thr
-//     frag_row += 8;
-//     dst_ptr[frag_row*stride_dst+frag_col] = reg[1]; // 4 bytes written per thr
-// }
-
-// improvement 3: (pipelining) mitigating uncoalesced stores to gmem
+// prologue for GEMM (optimize by loading C into registers first if applicable (beta != 0))
 template <
     unsigned int ROWS_MMA,
     unsigned int COLS_MMA,
     unsigned int MMAS_ROW,
     unsigned int MMAS_COL,
-    unsigned int COLS_BLOCK
+    unsigned int ROWS_BLOCK,
+    unsigned int COLS_BLOCK,
+    unsigned int NUM_THRS
 >
-__device__ __forceinline__ void stmatrix(
+__device__ __forceinline__ void prologue(
     unsigned int lane_idx,
-    half* dst,
-    uint32_t (&reg)[MMAS_ROW][MMAS_COL][(ROWS_MMA/8)*(COLS_MMA/8)]
+    size_t stride_src,
+    float alpha,
+    float beta,
+    const half* __restrict__ bias_src,
+    half* __restrict__ shmem_bias_base,
+    half* __restrict__ shmem_bias_warp,
+    uint32_t (&regs_acc)[MMAS_ROW][MMAS_COL][(ROWS_MMA/8)*(COLS_MMA/8)]
 ) {
     static_assert(ROWS_MMA == 16 && COLS_MMA == 8); // for now DIM_MM = 16 and DIM_MN = 8 are fixed
+
+    if (beta == 0.0f) {
+        memset(regs_acc, 0, sizeof(regs_acc));
+        return;
+    }
+
+    // alignment checks
+    static_assert(COLS_BLOCK % 8 == 0);
+
+    size_t eff_stride_src = stride_src >> 3;
+    constexpr unsigned int EFF_COLS_BLOCK = COLS_BLOCK / 8;
 
     // swizzle
     constexpr unsigned int BITS = int_log2(ROWS_MMA);
@@ -859,11 +585,92 @@ __device__ __forceinline__ void stmatrix(
     constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
     constexpr unsigned int BITMASK = ((1u<<BITS)-1) << (BASE+SHIFT);
 
-    unsigned int frag_col = lane_idx%4;
-    unsigned int frag_row = lane_idx/4;
+    constexpr unsigned int INCR_ROW = NUM_THRS / EFF_COLS_BLOCK;
+    constexpr unsigned int NUM_ITERS = ROWS_BLOCK / INCR_ROW;
+    static_assert(NUM_ITERS >= 1u);
+    unsigned int idx_thr = threadIdx.y * blockDim.x + threadIdx.x;
+    unsigned int row_thr = idx_thr / EFF_COLS_BLOCK;
+    unsigned int col_thr = idx_thr % EFF_COLS_BLOCK;
 
     // reduce instrs by XOR dst pointer with const
-    uint32_t shared_base = __cvta_generic_to_shared(dst);
+    uint32_t shared_base = __cvta_generic_to_shared(shmem_bias_base);
+    unsigned int idx_dst = row_thr*EFF_COLS_BLOCK+col_thr;
+    uint32_t base_addr = shared_base + idx_dst*sizeof(int4);
+    uint32_t dst_addr = swizzle<BITMASK, SHIFT>(base_addr);
+    constexpr uint32_t STRIDE_DST = INCR_ROW * EFF_COLS_BLOCK * sizeof(int4);
+
+    // gmem -> C shmem
+#pragma unroll
+    for (int i=0; i<NUM_ITERS; ++i) {
+        int4* dst_ptr = reinterpret_cast<int4*>(__cvta_shared_to_generic(dst_addr));
+        *dst_ptr = reinterpret_cast<const int4*>(bias_src)[row_thr*eff_stride_src+col_thr];
+        dst_addr ^= xor_pattern<STRIDE_DST, BITMASK, SHIFT, 1u>(i);
+        row_thr += INCR_ROW;
+    }
+
+    __syncthreads();
+
+    // C shmem -> regs
+    ldmatrix<false, ROWS_MMA, COLS_MMA, MMAS_ROW, MMAS_COL, COLS_BLOCK>(lane_idx, shmem_bias_warp, regs_acc);
+
+    if (beta != alpha) { // alpha = 0 caught on host-side
+
+        half scale_h = __float2half(beta/alpha);
+        half2 scale_h2 = __half2half2(scale_h);
+
+#pragma unroll
+        for (int mma_row = 0; mma_row < MMAS_ROW; ++mma_row) {
+
+#pragma unroll
+            for (int mma_col = 0; mma_col < MMAS_COL; ++mma_col) {
+
+                half2 lo = *reinterpret_cast<half2*>(&regs_acc[mma_row][mma_col][0]);
+                half2 hi = *reinterpret_cast<half2*>(&regs_acc[mma_row][mma_col][1]);
+
+                lo = __hmul2(lo, scale_h2);
+                hi = __hmul2(hi, scale_h2);
+
+                regs_acc[mma_row][mma_col][0] = *reinterpret_cast<uint32_t*>(&lo);
+                regs_acc[mma_row][mma_col][1] = *reinterpret_cast<uint32_t*>(&hi);
+            }
+        }
+    }
+}
+
+// effectively computes alpha*AB + beta*C and stores to shmem
+template <
+    unsigned int ROWS_MMA,
+    unsigned int COLS_MMA,
+    unsigned int MMAS_ROW,
+    unsigned int MMAS_COL,
+    unsigned int ROWS_BLOCK,
+    unsigned int COLS_BLOCK,
+    unsigned int NUM_THRS
+>
+__device__ __forceinline__ void epilogue(
+    unsigned int lane_idx,
+    size_t stride_dst,
+    float alpha,
+    half* shmem_out_warp,
+    half* shmem_out_base,
+    half* dst,
+    uint32_t (&regs_acc)[MMAS_ROW][MMAS_COL][(ROWS_MMA/8)*(COLS_MMA/8)]
+) {
+    static_assert(ROWS_MMA == 16 && COLS_MMA == 8); // for now DIM_MM = 16 and DIM_MN = 8 are fixed
+
+    half2 alpha_h2 = __half2half2(__float2half(alpha));
+
+    // swizzle
+    constexpr unsigned int BITS = int_log2(ROWS_MMA);
+    constexpr unsigned int BASE = int_log2(sizeof(int4)); // 16-byte alignment for toGmem
+    constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
+    constexpr unsigned int BITMASK = ((1u<<BITS)-1) << (BASE+SHIFT);
+
+    unsigned int frag_row = lane_idx >> 2;
+    unsigned int frag_col = lane_idx & 3;
+
+    // reduce instrs by XOR dst pointer with const
+    uint32_t shared_base = __cvta_generic_to_shared(shmem_out_warp);
     uint32_t base_addr = shared_base + frag_row * COLS_BLOCK * sizeof(half) + frag_col * sizeof(uint32_t);
     uint32_t dst_addr = swizzle<BITMASK, SHIFT>(base_addr);
     constexpr uint32_t STRIDE_COL = COLS_MMA * sizeof(half);
@@ -871,6 +678,7 @@ __device__ __forceinline__ void stmatrix(
     constexpr uint32_t STRIDE_8 = 8 * COLS_BLOCK * sizeof(half);
     constexpr uint32_t PATTERN_8 = swizzle<BITMASK, SHIFT>(STRIDE_8);
 
+    // regs -> shmem
 #pragma unroll
     for (int mma_row = 0; mma_row < MMAS_ROW; ++mma_row) {
 
@@ -879,14 +687,26 @@ __device__ __forceinline__ void stmatrix(
 #pragma unroll
         for (int mma_col = 0; mma_col < MMAS_COL; ++mma_col) {
 
+            if (alpha != 1.0f) { // alpha = 0 caught on host side
+
+                half2 lo = *reinterpret_cast<half2*>(&regs_acc[mma_row][mma_col][0]);
+                half2 hi = *reinterpret_cast<half2*>(&regs_acc[mma_row][mma_col][1]);
+
+                lo = __hmul2(lo, alpha_h2);
+                hi = __hmul2(hi, alpha_h2);
+
+                regs_acc[mma_row][mma_col][0] = *reinterpret_cast<uint32_t*>(&lo);
+                regs_acc[mma_row][mma_col][1] = *reinterpret_cast<uint32_t*>(&hi);
+            }
+
             asm(
                 "st.shared.u32 [%0], %1;\n" 
-                :: "r"(dst_addr), "r"(reg[mma_row][mma_col][0]) 
+                :: "r"(dst_addr), "r"(regs_acc[mma_row][mma_col][0]) 
                 : "memory"
             );
             asm(
                 "st.shared.u32 [%0], %1;\n" 
-                :: "r"(dst_addr^PATTERN_8), "r"(reg[mma_row][mma_col][1]) 
+                :: "r"(dst_addr^PATTERN_8), "r"(regs_acc[mma_row][mma_col][1]) 
                 : "memory"
             );
 
@@ -895,9 +715,12 @@ __device__ __forceinline__ void stmatrix(
 
         dst_addr = row_addr ^ xor_pattern<STRIDE_ROW, BITMASK, SHIFT, 1u>(mma_row);
     }
+
+    __syncthreads();
+
+    toGmem<ROWS_MMA, ROWS_BLOCK, COLS_BLOCK, NUM_THRS>(stride_dst, shmem_out_base, dst);
 }
 
-// improvement 3: (pipelining) mitigating uncoalesced stores to gmem
 template <
     unsigned int ROWS_MMA,
     unsigned int ROWS_BLOCK,
@@ -919,7 +742,7 @@ __device__ __forceinline__ void toGmem(
     static_assert(COLS_BLOCK % 8 == 0);
     // assert(stride_dst % 8 == 0);
 
-    size_t eff_stride_dst = stride_dst / 8;
+    size_t eff_stride_dst = stride_dst >> 3;
     constexpr unsigned int EFF_COLS_BLOCK = COLS_BLOCK / 8;
 
     static_assert(NUM_THRS % EFF_COLS_BLOCK == 0);

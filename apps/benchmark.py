@@ -167,13 +167,14 @@ def neox_rope(which: str):
     compare = Compare(results)
     compare.print()
 
-def matmul(which: str):
+def gemm(which: str):
     """matmul against PyTorch @ op"""
     
     kerns = KernelBackend("torch_ext")
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
+    alpha, beta = 2.0, 3.0
     sizes = [512,1024,2048,4096,8192,16384,32768]
     results = []
 
@@ -181,17 +182,22 @@ def matmul(which: str):
 
         M = K = N = s
     
-        x = torch.randn((1,M,K), dtype=torch.float16, device="cuda")
-        out = torch.zeros((1,M,N), dtype=torch.float16, device="cuda")
+        input = torch.randn((1,M,K), dtype=torch.float16, device="cuda")
         weight = (1/K**0.5) * torch.randn((K,N), dtype=torch.float16, device="cuda")
+        bias = torch.randn((1,M,N), dtype=torch.float16, device="cuda")
+        out = torch.zeros((1,M,N), dtype=torch.float16, device="cuda")
+
+        bias_2d = bias.squeeze(0)
+        input_2d = input.squeeze(0)
+        out_2d = out.squeeze(0)
 
         def ref_matmul():
             with torch.no_grad():
-                torch.matmul(x, weight, out=out)
+                torch.addmm(bias_2d, input_2d, weight, out_dtype=torch.float16, beta=beta, alpha=alpha, out=out_2d)
         
         def my_matmul():
             with torch.no_grad():
-                kerns.matmul(qtype, qblock_size, qtype_size, x, weight, out)
+                kerns.gemm(qtype, qblock_size, qtype_size, alpha, beta, input, weight, bias, out)
 
         fn = my_matmul if which == "minfer" else ref_matmul
 
@@ -207,7 +213,7 @@ def matmul(which: str):
 
         results.append(result)
 
-        del x, weight, out
+        del input, weight, bias, out
         gc.collect()
         torch.cuda.empty_cache()
     
@@ -281,7 +287,7 @@ if __name__ == "__main__":
         "rmsnorm": rmsnorm,
         "il_rope": il_rope,
         "neox_rope": neox_rope,
-        "matmul": matmul,
+        "gemm": gemm,
         # "embed": embed, (TODO)
         # "qkv": qkv, (TODO)
         "flash_attn": flash_attn,

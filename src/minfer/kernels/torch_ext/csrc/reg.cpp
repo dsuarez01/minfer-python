@@ -24,7 +24,7 @@ namespace minfer {
         m.def("rmsnorm(float eps, Tensor input, Tensor w, Tensor(a!) out) -> ()");
         m.def("il_rope(int rotary_dim, int start_pos, float freq_base, Tensor(a!) x) -> ()");
         m.def("neox_rope(int rotary_dim, int start_pos, float freq_base, Tensor(a!) x) -> ()");
-        m.def("matmul(int qtype_int, int qblock_size, int qtype_size, Tensor x, Tensor w, Tensor(a!) out) -> ()");
+        m.def("gemm(int qtype_int, int qblock_size, int qtype_size, float alpha, float beta, Tensor A, Tensor B, Tensor C, Tensor(a!) out) -> ()");
         m.def("embed(int qtype_int, int qblock_size, int qtype_size, Tensor token_ids, Tensor w, Tensor(a!) x) -> ()");
         m.def("qkv(int q_qtype_int, int k_qtype_int, int v_qtype_int, int q_qblock_size, int k_qblock_size, int v_qblock_size, int q_qtype_size, int k_qtype_size, int v_qtype_size, Tensor x, Tensor wq, Tensor wk, Tensor wv, Tensor(a!) q_out, Tensor(a!) k_out, Tensor(a!) v_out) -> ()");
         m.def("flash_attn(int qtype_int, int qblock_size, int qtype_size, Tensor q, Tensor k, Tensor v, Tensor(a!) mask, Tensor(a!) out) -> ()");

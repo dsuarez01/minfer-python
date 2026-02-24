@@ -4,7 +4,7 @@
 #include "rmsnorm/op.cuh"
 #include "il_rope/op.cuh"
 #include "neox_rope/op.cuh"
-#include "matmul/op.cuh"
+#include "gemm/op.cuh"
 #include "embed/op.cuh"
 #include "qkv/op.cuh"
 #include "flash_attn/op.cuh"
@@ -18,7 +18,7 @@ namespace minfer {
         m.impl("rmsnorm", TORCH_BOX(&rmsnorm_cuda));
         m.impl("il_rope", TORCH_BOX(&il_rope_cuda));
         m.impl("neox_rope", TORCH_BOX(&neox_rope_cuda));
-        m.impl("matmul", TORCH_BOX(&matmul_cuda));
+        m.impl("gemm", TORCH_BOX(&gemm_cuda));
         m.impl("embed", TORCH_BOX(&embed_cuda));
         m.impl("qkv", TORCH_BOX(&qkv_cuda));
         m.impl("flash_attn", TORCH_BOX(&flash_attn_cuda));

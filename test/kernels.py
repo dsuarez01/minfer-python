@@ -212,51 +212,58 @@ def test_embed(backend):
     torch.cuda.empty_cache()
     # output act. shape [B // dp_size, L, hidden_dim]
 
-# A: X @ W
-# B: X @ W.T (NOTE: not finished right now)
+# A: alpha * AB + beta * C
+# B: alpha * AB^T + beta * C (NOTE: not finished right now)
+SCALES = [(1.0,0.0), (1.0,1.0), (2.0,3.0), (0.5,2.0), ]
 MATMUL_SIZES = [512,1024,2048]
 @pytest.mark.parametrize("backend", ["torch_ext"])
+@pytest.mark.parametrize("scales", SCALES)
 @pytest.mark.parametrize("shape", product(MATMUL_SIZES,MATMUL_SIZES,MATMUL_SIZES))
-def test_matmul(backend, shape):
+def test_gemm(backend, shape, scales):
 
     kerns = KernelBackend(backend)
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
     M, K, N = shape
+    alpha, beta = scales
 
     # A: act. shape [B // dp_size, L, in_dim], weight shape [in_dim, out_dim]
     input_A = torch.randn((1, M, K), dtype=torch.float16, device="cuda")
-    actual_A = torch.zeros((1, M, N), dtype=torch.float16, device="cuda")
     weight_A = (1/K**0.5) * torch.randn((K, N), dtype=torch.float16, device="cuda")
+    bias_A = torch.randn((1, M, N), dtype=torch.float16, device="cuda")
+    actual_A = torch.zeros((1, M, N), dtype=torch.float16, device="cuda")
 
-    expected_A = (input_A @ weight_A)
-    kerns.matmul(qtype, qblock_size, qtype_size, input_A, weight_A, actual_A)
+    expected_A = alpha*(input_A@weight_A) + beta*bias_A
+    kerns.gemm(qtype, qblock_size, qtype_size, alpha, beta, input_A, weight_A, bias_A, actual_A)
     torch.cuda.synchronize()
 
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-1), "matmul"
+    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-1), "tests for case A, matmul"
 
     torch.cuda.empty_cache()
 
     # # output act. shape [B // dp_size, L, out_dim]
 
 @pytest.mark.parametrize("backend", ["torch_ext"])
+@pytest.mark.parametrize("scales", SCALES)
 @pytest.mark.parametrize("shape", product(MATMUL_SIZES,MATMUL_SIZES,MATMUL_SIZES))
-def test_matmul_opcheck(backend, shape):
+def test_gemm_opcheck(backend, shape, scales):
 
     M,K,N = shape
+    alpha, beta = scales
 
-    kerns = KernelBackend(backend)
+    # kerns = KernelBackend(backend)
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
     
-    x = torch.randn((1,M,K), dtype=torch.float16, device='cuda')
-    w = torch.randn((K,N), dtype=torch.float16, device='cuda')
+    input = torch.randn((1,M,K), dtype=torch.float16, device='cuda')
+    weight = (1/K**0.5) * torch.randn((K,N), dtype=torch.float16, device='cuda')
+    bias = torch.randn((1,M,N), dtype=torch.float16, device='cuda')
     out = torch.zeros((1,M,N), dtype=torch.float16, device='cuda')
     
     torch.library.opcheck(
-        torch.ops.minfer.matmul.default,
-        (qtype, qblock_size, qtype_size, x, w, out)
+        torch.ops.minfer.gemm.default,
+        (qtype, qblock_size, qtype_size, alpha, beta, input, weight, bias, out)
     )
 
 

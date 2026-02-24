@@ -125,28 +125,40 @@ def _(
     torch._check(x.device.type == "cuda")
     torch._check(rotary_dim <= x.size(3))
 
-def matmul(
+def gemm(
     qtype_int: int, 
     qblock_size: int, 
     qtype_size: int, 
-    x: torch.Tensor, 
-    w: torch.Tensor,
-    out: torch.Tensor,
+    alpha: float,
+    beta: float,
+    A: torch.Tensor, 
+    B: torch.Tensor,
+    C: torch.Tensor,
+    D: torch.Tensor
 ):
     """
-    computes x @ w.T, stores in out
+    computes alpha*AB + beta*C, stores in D
     """
-    return torch.ops.minfer.matmul.default(qtype_int, qblock_size, qtype_size, x, w, out)
+    return torch.ops.minfer.gemm.default(qtype_int, qblock_size, qtype_size, alpha, beta, A, B, C, D)
 
-@torch.library.register_fake("minfer::matmul")
+@torch.library.register_fake("minfer::gemm")
 def _(
-    qtype_int: int, qblock_size: int, qtype_size: int, x: torch.Tensor, w: torch.Tensor, out: torch.Tensor
+    qtype_int: int, qblock_size: int, qtype_size: int, alpha: float, beta: float, A: torch.Tensor, B: torch.Tensor, C: torch.Tensor, D: torch.Tensor
 ):
-    torch._check(x.dtype == torch.float16)
-    torch._check(w.dtype == torch.uint8 or w.dtype == torch.float16)
-    torch._check(out.dtype == torch.float16)
-    torch._check(x.device == w.device == out.device)
-    torch._check(x.device.type == "cuda")
+    torch._check(A.dtype == torch.float16)
+    torch._check(B.dtype == torch.uint8 or B.dtype == torch.float16)
+    torch._check(C.dtype == torch.float16)
+    torch._check(D.dtype == torch.float16)
+    torch._check(A.device == B.device == C.device == D.device)
+    torch._check(A.device.type == "cuda")
+    torch._check(A.dim() == 3)
+    torch._check(B.dim() == 2)
+    torch._check(C.dim() == 3)
+    torch._check(D.dim() == 3)
+    torch._check(A.size(0) * A.size(1) == C.size(0) * C.size(1))
+    torch._check(B.size(-1) == C.size(-1) or B.size(0) == C.size(-1))
+    torch._check(C.shape == D.shape)
+    torch._check(alpha != 0.0)
 
 def embed(
     qtype_int: int, 

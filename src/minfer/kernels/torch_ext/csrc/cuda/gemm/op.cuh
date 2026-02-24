@@ -14,18 +14,20 @@
 
 #include "common/types.hpp"
 #include "lookup.cuh"
-#include "kernels/xw.cuh"
+#include "kernels/gemm.cuh"
 
 // basic compatibility checks here
 // note that this is optimized for L40S
 
 namespace minfer::impl {
 
-inline void dispatch_f16_xwt(
+inline void dispatch_f16_abt(
     size_t M, size_t K, size_t N,
-    const half* __restrict__ x_ptr,
-    const half* __restrict__ w_ptr,
-    half* __restrict__ out_ptr
+    float alpha, float beta,
+    const half* __restrict__ A_ptr,
+    const half* __restrict__ B_ptr,
+    const half* __restrict__ C_ptr,
+    half* __restrict__ D_ptr
 ) {
 
 }
@@ -43,11 +45,13 @@ template <
     unsigned int K_PIPE_MAX,
     unsigned int USE_SYNC
 >
-inline void launch_xw_kernel(
+inline void launch_ab_kernel(
     size_t M, size_t K, size_t N,
-    const half* __restrict__ x_ptr,
-    const half* __restrict__ w_ptr,
-    half* __restrict__ out_ptr,
+    float alpha, float beta,
+    const half* __restrict__ A_ptr,
+    const half* __restrict__ B_ptr,
+    const half* __restrict__ C_ptr,
+    half* __restrict__ D_ptr,
     const cudaDeviceProp& deviceProp,
     int device_index
 ) {
@@ -93,7 +97,7 @@ inline void launch_xw_kernel(
         if constexpr (USE_SYNC == 1u) {
             STD_CUDA_CHECK(
                 cudaFuncSetAttribute(
-                    xw_sync_impl<
+                    ab_sync_impl<
                         DIM_BM,
                         DIM_BK,
                         DIM_BN,
@@ -113,7 +117,7 @@ inline void launch_xw_kernel(
         } else {
             STD_CUDA_CHECK(
                 cudaFuncSetAttribute(
-                    xw_async_impl<
+                    ab_async_impl<
                         DIM_BM,
                         DIM_BK,
                         DIM_BN,
@@ -138,40 +142,42 @@ inline void launch_xw_kernel(
 
     // launch
     if constexpr (USE_SYNC == 1) {
-        xw_sync_impl<
+        ab_sync_impl<
             DIM_BM, DIM_BK, DIM_BN, 
             DIM_WM, DIM_WK, DIM_WN, 
             DIM_MM, DIM_MK, DIM_MN,
             TILES_K, NUM_THRS
         ><<<grid, block, SHMEM_SZ, stream>>>(
-            M, K, N, x_ptr, w_ptr, out_ptr
+            M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr
         );
     } else {
-        xw_async_impl<
+        ab_async_impl<
             DIM_BM, DIM_BK, DIM_BN, 
             DIM_WM, DIM_WK, DIM_WN, 
             DIM_MM, DIM_MK, DIM_MN,
             TILES_K, K_PIPE_MAX, NUM_THRS
         ><<<grid, block, SHMEM_SZ, stream>>>(
-            M, K, N, x_ptr, w_ptr, out_ptr
+            M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr
         );
     }
 }
 
-inline void dispatch_f16_xw(
+inline void dispatch_f16_ab(
     size_t M, size_t K, size_t N,
-    const half* __restrict__ x_ptr,
-    const half* __restrict__ w_ptr,
-    half* __restrict__ out_ptr
+    float alpha, float beta,
+    const half* __restrict__ A_ptr,
+    const half* __restrict__ B_ptr,
+    const half* __restrict__ C_ptr,
+    half* __restrict__ D_ptr
 ) {
     static cudaDeviceProp deviceProp;
-    static bool is_device_init = false; // assumes all GPUs are the same
+    static bool dev_props_set = false; // assumes all GPUs are the same
     auto device_index = torch::stable::accelerator::getCurrentDeviceIndex();
 
-    if (!is_device_init) { // NOTE: isn't an issue unless you're using different GPU types on a single node
+    if (!dev_props_set) { // NOTE: isn't an issue unless you're using different GPU types on a single node
         STD_CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, device_index));
         STD_TORCH_CHECK(deviceProp.major >= 8, "SM 8.0 or higher required");
-        is_device_init = true;
+        dev_props_set = true;
     }
 
     const size_t best_idx = find_nearest_config(M, K, N);
@@ -179,8 +185,8 @@ inline void dispatch_f16_xw(
     switch(best_idx) {
 #define X(IDX) case IDX: { \
     constexpr auto& entry = LOOKUP_TABLE[IDX]; \
-    launch_xw_kernel<entry.BM, entry.BK, entry.BN, entry.WM, entry.WK, entry.WN, entry.MM, entry.MK, entry.MN, entry.K_PIPE_MAX, entry.USE_SYNC>( \
-        M, K, N, x_ptr, w_ptr, out_ptr, deviceProp, device_index); \
+    launch_ab_kernel<entry.BM, entry.BK, entry.BN, entry.WM, entry.WK, entry.WN, entry.MM, entry.MK, entry.MN, entry.K_PIPE_MAX, entry.USE_SYNC>( \
+        M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr, deviceProp, device_index); \
     break; }
 LOOKUP_INDEX_CASES
 #undef X
@@ -188,12 +194,14 @@ LOOKUP_INDEX_CASES
 }
 
 // TODO: incomplete, finish
-inline void dispatch_quant_xwt(
+inline void dispatch_quant_abt(
     int qtype_int, int qblock_size, int qtype_size,
     size_t M, size_t K, size_t N,
-    const half* __restrict__ x_ptr,
-    const uint8_t* __restrict__ w_ptr,
-    half* __restrict__ out_ptr
+    float alpha, float beta,
+    const half* __restrict__ A_ptr,
+    const uint8_t* __restrict__ B_ptr,
+    const half* __restrict__ C_ptr,
+    half* __restrict__ D_ptr
 ) {
 
 }
@@ -204,76 +212,97 @@ namespace minfer {
 
 using namespace impl;
 
-void matmul_cuda(
+void gemm_cuda(
     int64_t qtype_int,
     int64_t qblock_size,
     int64_t qtype_size,
-    const torch::stable::Tensor& x, // [B,L,in_dim]
-    const torch::stable::Tensor& w, // [out_dim, in_dim (possibly bytes)]
-    torch::stable::Tensor& out // [B,L,out_dim]
+    double alpha,
+    double beta,
+    const torch::stable::Tensor& A, // [B,L,in_dim]
+    const torch::stable::Tensor& B, // [out_dim, in_dim (possibly bytes)] or [in_dim (not bytes), out_dim]
+    const torch::stable::Tensor& C, // [B,L,out_dim]
+    torch::stable::Tensor& D // [B,L,out_dim]
 ) {
     STD_TORCH_CHECK(is_valid_qtype(qtype_int));
     auto qtype = static_cast<GGMLQuantizationType>(qtype_int);
 
-    STD_TORCH_CHECK(x.device().type() == torch::headeronly::DeviceType::CUDA);
-    STD_TORCH_CHECK(out.device().type() == torch::headeronly::DeviceType::CUDA);
-    STD_TORCH_CHECK(w.device().type() == torch::headeronly::DeviceType::CUDA);
+    STD_TORCH_CHECK(A.device().type() == torch::headeronly::DeviceType::CUDA);
+    STD_TORCH_CHECK(B.device().type() == torch::headeronly::DeviceType::CUDA);
+    STD_TORCH_CHECK(C.device().type() == torch::headeronly::DeviceType::CUDA);
+    STD_TORCH_CHECK(D.device().type() == torch::headeronly::DeviceType::CUDA);
 
-    STD_TORCH_CHECK(x.device() == w.device() && x.device() == out.device());
+    STD_TORCH_CHECK(A.device() == B.device() && A.device() == C.device() && A.device() == D.device());
 
-    STD_TORCH_CHECK(x.scalar_type() == torch::headeronly::ScalarType::Half);
-    STD_TORCH_CHECK(out.scalar_type() == torch::headeronly::ScalarType::Half);
+    STD_TORCH_CHECK(A.scalar_type() == torch::headeronly::ScalarType::Half);
     STD_TORCH_CHECK(
-        w.scalar_type() == torch::headeronly::ScalarType::Byte || 
-        w.scalar_type() == torch::headeronly::ScalarType::Half
+        B.scalar_type() == torch::headeronly::ScalarType::Byte || 
+        B.scalar_type() == torch::headeronly::ScalarType::Half
     );
+    STD_TORCH_CHECK(C.scalar_type() == torch::headeronly::ScalarType::Half);
+    STD_TORCH_CHECK(D.scalar_type() == torch::headeronly::ScalarType::Half);
 
-    STD_TORCH_CHECK(x.dim() == 3);
-    STD_TORCH_CHECK(out.dim() == 3);
-    STD_TORCH_CHECK(w.dim() == 2);
+    STD_TORCH_CHECK(A.dim() == 3);
+    STD_TORCH_CHECK(B.dim() == 2);
+    STD_TORCH_CHECK(C.dim() == 3);
+    STD_TORCH_CHECK(D.dim() == 3);
 
-    STD_TORCH_CHECK(x.is_contiguous());
-    STD_TORCH_CHECK(out.is_contiguous());
-    STD_TORCH_CHECK(w.is_contiguous());
+    STD_TORCH_CHECK(A.is_contiguous());
+    STD_TORCH_CHECK(B.is_contiguous());
+    STD_TORCH_CHECK(C.is_contiguous());
+    STD_TORCH_CHECK(D.is_contiguous());
 
-    STD_TORCH_CHECK(x.size(0) == out.size(0) && x.size(1) == out.size(1));
-    STD_TORCH_CHECK(w.size(-1) == ((x.size(-1) / qblock_size) * qtype_size) || 
-                w.size(-1) == x.size(-1) || w.size(0) == x.size(-1));
-    STD_TORCH_CHECK(w.size(0) == out.size(-1) || w.size(1) == out.size(-1));
+    // can A and B be multiplied, is AB same shape as C, is C same shape as D
+    STD_TORCH_CHECK(
+        B.size(-1) == ((A.size(-1) / qblock_size) * qtype_size) || 
+        B.size(-1) == A.size(-1) || 
+        B.size(0) == A.size(-1)
+    );
+    STD_TORCH_CHECK(
+        A.size(0) * A.size(1) == C.size(0) * C.size(1) && 
+        (
+            B.size(-1) == C.size(-1) ||
+            B.size(0) == C.size(-1) ||
+            B.size(-1) == C.size(-1)
+        )
+    );
+    STD_TORCH_CHECK(C.sizes() == D.sizes());
 
-    const half* x_ptr = reinterpret_cast<const half*>(x.const_data_ptr<half_t>());
-    half* out_ptr = reinterpret_cast<half*>(out.mutable_data_ptr<half_t>());
+    STD_TORCH_CHECK(alpha != 0.0); // call PyTorch for beta*C, not this
 
-    size_t M = x.numel() / x.size(-1);
-    size_t K = x.size(-1);
+    const half* A_ptr = reinterpret_cast<const half*>(A.const_data_ptr<half_t>());
+    const half* C_ptr = reinterpret_cast<const half*>(C.const_data_ptr<half_t>());
+    half* D_ptr = reinterpret_cast<half*>(D.mutable_data_ptr<half_t>());
+
+    size_t M = A.numel() / A.size(-1);
+    size_t K = A.size(-1);
 
     if (qtype == GGMLQuantizationType::F16) {
-        const half* w_ptr = reinterpret_cast<const half*>(w.const_data_ptr<half_t>());
+        const half* B_ptr = reinterpret_cast<const half*>(B.const_data_ptr<half_t>());
 
-        if (w.size(0) == x.size(-1)) {
-            // X @ W
-            size_t N = w.size(1);
-            dispatch_f16_xw(
-                M, K, N, x_ptr, w_ptr, out_ptr
+        if (B.size(0) == A.size(-1)) {
+            // alpha * AB + beta * C
+            size_t N = B.size(1);
+            dispatch_f16_ab(
+                M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr
             );
-        } else if (w.size(-1) == x.size(-1)) {
-            // X @ W.T
-            size_t N = w.size(0);
-            dispatch_f16_xwt(
-                M, K, N, x_ptr, w_ptr, out_ptr
+        } else if (B.size(-1) == A.size(-1)) {
+            // alpha * AB^T + beta * C 
+            size_t N = B.size(0);
+            dispatch_f16_abt(
+                M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr
             );
         }
     } else {
         STD_TORCH_CHECK(is_dequant_qtype(qtype_int));
-        const uint8_t* w_ptr = w.const_data_ptr<uint8_t>();
+        const uint8_t* B_ptr = B.const_data_ptr<uint8_t>();
         
-        STD_TORCH_CHECK(K%qblock_size==0);
+        STD_TORCH_CHECK(K % qblock_size == 0);
 
-        if (w.size(-1) == (x.size(-1)/qblock_size)*qtype_size) {
-            // X @ W.T, W quantized and of shape [N, K_bytes]
-            size_t N = w.size(0);
-            dispatch_quant_xwt(
-                qtype_int, qblock_size, qtype_size, M, K, N, x_ptr, w_ptr, out_ptr
+        if (B.size(-1) == (A.size(-1)/qblock_size)*qtype_size) {
+            // alpha * AB^T + beta * C, B quantized and of shape [N, K_bytes]
+            size_t N = B.size(0);
+            dispatch_quant_abt(
+                qtype_int, qblock_size, qtype_size, M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr
             );
         } else {
             STD_TORCH_CHECK(false, "Unsupported dims for quant matmul");
