@@ -11,7 +11,7 @@ torch.backends.cuda.matmul.allow_fp16_accumulation = True
 def rmsnorm(backend: str = "torch_ext"):
     kerns = KernelBackend(backend)
     # just adjust the shapes if you need per-head (4 dims) vs per-vec (3 dims)
-    B, L, eps, n_heads, head_dim = 8, 4096, 1e-6, 48, 128
+    B, L, n_heads, head_dim, eps = 8, 4096, 48, 128, 1e-6
     
     x = torch.randn((B,L,n_heads,head_dim), dtype=torch.float16, device="cuda")
     out = torch.zeros_like(x)
