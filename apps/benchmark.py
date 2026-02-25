@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from torch.utils.benchmark import Timer, Compare
 from torch.profiler import profile, ProfilerActivity, record_function
 
+from minfer.kernels import refs
 from minfer.kernels import KernelBackend
 from minfer.const import GGMLQuantizationType, GGML_QUANT_SIZES
 
@@ -39,10 +40,12 @@ def rmsnorm(backend: str, which: str):
         out = torch.zeros_like(x)
         
         def my_rmsnorm():
-            kerns.rmsnorm(eps, x, weight, out)
+            with torch.no_grad():
+                kerns.rmsnorm(eps, x, weight, out)
         
         def ref_rmsnorm():
-            F.rms_norm(input=x, weight=weight, normalized_shape=(shape[-1],), eps=eps)
+            with torch.no_grad():
+                refs.rmsnorm(x, weight, eps)
         
         fn = my_rmsnorm if which == "minfer" else ref_rmsnorm
 
@@ -81,21 +84,14 @@ def il_rope(backend: str, which: str):
         
         x = torch.randn((B,L,n_heads,head_dim), dtype=torch.float16, device="cuda")
         
-        freqs = torch.arange(rotary_dim//2, dtype=torch.float32, device="cuda")
-        freqs = base_freq**(-2.0*freqs/rotary_dim)
-        freqs = torch.arange(L, dtype=torch.float32, device="cuda")[:, None] * freqs[None,:]
-        freqs_complex = torch.polar(torch.ones_like(freqs), freqs)
+        def my_il_rope():
+            with torch.no_grad():
+                kerns.il_rope(rotary_dim, 0, base_freq, x)
         
         def ref_il_rope():
-            x_float = x.float()
-            x_complex = torch.view_as_complex(x_float[..., :rotary_dim].reshape(*x_float.shape[:-1], rotary_dim//2, 2))
-            x_rotated = torch.view_as_real(x_complex * freqs_complex).flatten(-2)
-            x_float[..., :rotary_dim] = x_rotated
-            x_float.half()
-        
-        def my_il_rope():
-            kerns.il_rope(rotary_dim, 0, base_freq, x)
-        
+            with torch.no_grad():
+                refs.il_rope(x, rotary_dim, 0, base_freq)
+
         fn = my_il_rope if which == "minfer" else ref_il_rope
 
         timer = Timer(
@@ -131,24 +127,14 @@ def neox_rope(backend: str, which: str):
     for B, L, n_heads, head_dim, rotary_dim, base_freq in test_cases:
         
         x = torch.randn((B,L,n_heads,head_dim), dtype=torch.float16, device="cuda")
-        
-        freqs = torch.arange(rotary_dim//2, dtype=torch.float32, device="cuda")
-        freqs = base_freq**(-2.0*freqs/rotary_dim)
-        freqs = torch.arange(L, dtype=torch.float32, device="cuda")[:, None] * freqs[None,:]
-        freqs_complex = torch.polar(torch.ones_like(freqs), freqs)
+
+        def my_neox_rope():
+            with torch.no_grad():
+                kerns.neox_rope(rotary_dim, 0, base_freq, x)
 
         def ref_neox_rope():
-            x_float = x.float()
-            x1 = x_float[..., :rotary_dim//2]
-            x2 = x_float[..., rotary_dim//2:rotary_dim]
-            x_complex = torch.view_as_complex(torch.stack([x1, x2], dim=-1))
-            x_rotated = torch.view_as_real(x_complex * freqs_complex)
-            x_float[..., :rotary_dim//2] = x_rotated[..., 0]
-            x_float[..., rotary_dim//2:rotary_dim] = x_rotated[..., 1]
-            x_float.half()
-        
-        def my_neox_rope():
-            kerns.neox_rope(rotary_dim, 0, base_freq, x)
+            with torch.no_grad():
+                refs.neox_rope(x, rotary_dim, 0, base_freq)
         
         fn = my_neox_rope if which == "minfer" else ref_neox_rope
 
@@ -192,15 +178,15 @@ def gemm(backend: str, which: str):
         input_2d = input.squeeze(0)
         out_2d = out.squeeze(0)
 
-        def ref_matmul():
-            with torch.no_grad():
-                torch.addmm(bias_2d, input_2d, weight, out_dtype=torch.float16, beta=beta, alpha=alpha, out=out_2d)
-        
-        def my_matmul():
+        def my_gemm():
             with torch.no_grad():
                 kerns.gemm(qtype, qblock_size, qtype_size, alpha, beta, input, weight, bias, out)
 
-        fn = my_matmul if which == "minfer" else ref_matmul
+        def ref_gemm():
+            with torch.no_grad():
+                refs.gemm(input_2d, weight, bias_2d, out_2d, alpha, beta)
+
+        fn = my_gemm if which == "minfer" else ref_gemm
 
         timer = Timer(
             stmt='fn()',
@@ -214,7 +200,7 @@ def gemm(backend: str, which: str):
 
         results.append(result)
 
-        del input, weight, bias, out
+        del input, weight, bias, out, input_2d, bias_2d, out_2d
         gc.collect()
         torch.cuda.empty_cache()
     
@@ -238,11 +224,11 @@ def flash_attn(backend: str, which: str):
         Q = (1/head_dim**0.5) * torch.randn((B,L,n_heads*head_dim), dtype=torch.float16).cuda()
         Q = Q.view(B,L,n_heads,head_dim).transpose(1,2)
 
-        K1 = (1/head_dim**0.5) * torch.randn((B,L,n_kv_heads*head_dim), dtype=torch.float16).cuda()
-        K1 = K1.view(B,L,n_kv_heads,head_dim).transpose(1,2)
+        K = (1/head_dim**0.5) * torch.randn((B,L,n_kv_heads*head_dim), dtype=torch.float16).cuda()
+        K = K.view(B,L,n_kv_heads,head_dim).transpose(1,2)
 
-        V1 = (1/head_dim**0.5) * torch.randn((B,L,n_kv_heads*head_dim), dtype=torch.float16).cuda()
-        V1 = V1.view(B,L,n_kv_heads,head_dim).transpose(1,2)
+        V = (1/head_dim**0.5) * torch.randn((B,L,n_kv_heads*head_dim), dtype=torch.float16).cuda()
+        V = V.view(B,L,n_kv_heads,head_dim).transpose(1,2)
         
         # we choose causal mask
         mask = (torch.arange(L).unsqueeze(0) <= torch.arange(L).unsqueeze(1))
@@ -252,15 +238,14 @@ def flash_attn(backend: str, which: str):
         
         # pytorch SDPA doesn't handle GQA natively
         n_rep = n_heads // n_kv_heads
-        K2 = K1.repeat_interleave(n_rep, dim=1)
-        V2 = V1.repeat_interleave(n_rep, dim=1)
+        K_exp = K.repeat_interleave(n_rep, dim=1)
+        V_exp = V.repeat_interleave(n_rep, dim=1)
         
         def my_flash_attn():
-            kerns.flash_attn(qtype, qblock_size, qtype_size, Q, K1, V1, mask, out)
+            kerns.flash_attn(qtype, qblock_size, qtype_size, Q, K, V, mask, out)
         
         def ref_flash_attn():
-            """pytorch SDPA"""
-            F.scaled_dot_product_attention(Q, K2, V2, attn_mask=mask)
+            refs.flash_attn(Q, K_exp, V_exp, mask)
         
         fn = my_flash_attn if which == "minfer" else ref_flash_attn
 
@@ -273,7 +258,7 @@ def flash_attn(backend: str, which: str):
         )
         results.append(timer.blocked_autorange())
 
-        del Q, K1, V1, K2, V2, mask, out
+        del Q, K, V, K_exp, V_exp, mask, out
         gc.collect()
         torch.cuda.empty_cache()
     

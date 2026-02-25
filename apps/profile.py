@@ -4,6 +4,7 @@ import argparse
 import torch
 import torch.nn.functional as F
 
+from minfer.kernels import refs
 from minfer.kernels import KernelBackend
 from minfer.const import GGMLQuantizationType, GGML_QUANT_SIZES
 
@@ -22,7 +23,7 @@ def rmsnorm(backend: str, which: str):
         kerns.rmsnorm(eps, x, weight, out)
 
     def ref_rmsnorm():
-        F.rms_norm(input=x, weight=weight, normalized_shape=(shape[-1],), eps=eps)
+        refs.rmsnorm(x, weight, eps)
     
     rmsnorm_kern = my_rmsnorm if which == "minfer" else ref_rmsnorm
 
@@ -35,21 +36,12 @@ def il_rope(backend: str, which: str):
     B, L, n_heads, head_dim, rotary_dim, base_freq = 8, 4096, 48, 128, 64, 1e6
     
     x = torch.randn((B,L,n_heads,head_dim), dtype=torch.float16, device="cuda")
-    
-    freqs = torch.arange(rotary_dim//2, dtype=torch.float32, device="cuda")
-    freqs = base_freq**(-2.0*freqs/rotary_dim)
-    freqs = torch.arange(L, dtype=torch.float32, device="cuda")[:, None] * freqs[None,:]
-    freqs_complex = torch.polar(torch.ones_like(freqs), freqs)
 
     def my_il_rope():
         kerns.il_rope(rotary_dim, 0, base_freq, x)
 
     def ref_il_rope():
-        x_float = x.float()
-        x_complex = torch.view_as_complex(x_float[..., :rotary_dim].reshape(*x_float.shape[:-1], rotary_dim//2, 2))
-        x_rotated = torch.view_as_real(x_complex * freqs_complex).flatten(-2)
-        x_float[..., :rotary_dim] = x_rotated
-        x_float.half()
+        refs.il_rope(x, rotary_dim, 0, base_freq)
     
     il_rope_kern = my_il_rope if which == "minfer" else ref_il_rope
 
@@ -61,24 +53,12 @@ def neox_rope(backend: str, which: str):
     B, L, n_heads, head_dim, rotary_dim, base_freq = 8, 4096, 48, 128, 64, 1e6
     
     x = torch.randn((B,L,n_heads,head_dim), dtype=torch.float16, device="cuda")
-    
-    freqs = torch.arange(rotary_dim//2, dtype=torch.float32, device="cuda")
-    freqs = base_freq**(-2.0*freqs/rotary_dim)
-    freqs = torch.arange(L, dtype=torch.float32, device="cuda")[:, None] * freqs[None,:]
-    freqs_complex = torch.polar(torch.ones_like(freqs), freqs)
 
     def my_neox_rope():
         kerns.neox_rope(rotary_dim, 0, base_freq, x)
 
     def ref_neox_rope():
-        x_float = x.float()
-        x1 = x_float[..., :rotary_dim//2]
-        x2 = x_float[..., rotary_dim//2:rotary_dim]
-        x_complex = torch.view_as_complex(torch.stack([x1, x2], dim=-1))
-        x_rotated = torch.view_as_real(x_complex * freqs_complex)
-        x_float[..., :rotary_dim//2] = x_rotated[..., 0]
-        x_float[..., rotary_dim//2:rotary_dim] = x_rotated[..., 1]
-        x_float.half()
+        refs.neox_rope(x, rotary_dim, 0, base_freq)
 
     neox_rope_kern = my_neox_rope if which == "minfer" else ref_neox_rope
 
@@ -86,7 +66,7 @@ def neox_rope(backend: str, which: str):
         neox_rope_kern()
 
 def gemm(backend: str, which: str):
-    kerns = KernelBackend("torch_ext")
+    kerns = KernelBackend(backend)
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
@@ -106,7 +86,7 @@ def gemm(backend: str, which: str):
         kerns.gemm(qtype, qblock_size, qtype_size, alpha, beta, input, weight, bias, out)
 
     def ref_gemm():
-        torch.addmm(bias_2d, input_2d, weight, out_dtype=torch.float16, beta=beta, alpha=alpha, out=out_2d)
+        refs.gemm(input_2d, weight, bias_2d, out_2d, alpha, beta)
 
     gemm_kern = my_gemm if which == "minfer" else ref_gemm
 
@@ -125,16 +105,16 @@ def flash_attn(backend: str, which: str):
     mask = (torch.arange(L, device="cuda").unsqueeze(0) <= torch.arange(L,device="cuda").unsqueeze(1)).unsqueeze(0).unsqueeze(0).expand(B, 1, L, L).to(torch.bool)
     out = torch.zeros((B,n_heads,L,head_dim), dtype=torch.float16, device="cuda")
 
-    def my_flash_attn():
-        kerns.flash_attn(qtype, qblock_size, qtype_size, Q, K, V, mask, out)
-
     # for pytorch impl, K and V need to be expanded from n_kv_heads -> n_heads for GQA
     n_rep = n_heads // n_kv_heads
     K_exp = K.repeat_interleave(n_rep, dim=1)
     V_exp = V.repeat_interleave(n_rep, dim=1)
 
+    def my_flash_attn():
+        kerns.flash_attn(qtype, qblock_size, qtype_size, Q, K, V, mask, out)
+
     def ref_flash_attn():
-        return F.scaled_dot_product_attention(Q, K_exp, V_exp, attn_mask=mask)
+        refs.flash_attn(Q, K_exp, V_exp, mask)
     
     flash_attn_kern = my_flash_attn if which == "minfer" else ref_flash_attn
 

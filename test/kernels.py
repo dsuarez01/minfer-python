@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 import pytest
 
+from minfer.kernels import refs
 from minfer.kernels import KernelBackend
 from minfer.const import GGMLQuantizationType, GGML_QUANT_SIZES
 
@@ -55,143 +56,45 @@ def test_dequant(backend, qtype_name, shape):
 
     torch.cuda.empty_cache()
 
-# A: [B, L, hidden_dim]
-# B: [B, n_heads, L, head_dim]
 @pytest.mark.parametrize("backend", ["torch_ext"])
-def test_rmsnorm(backend):
+@pytest.mark.parametrize("shape", [
+    ((8,4096,6144)), # per-vec
+    ((8,4096,48,128)), # per-head
+])
+def test_rmsnorm(backend, shape):
     kerns = KernelBackend(backend)
-    B, L, hidden_dim, n_heads, head_dim, eps = 8, 4096, 6144, 48, 128, 1e-6 # adjust as needed
-    
-    # test for rmsnorm applied across entire vector (act. shape [B // dp_size, L, hidden_dim], weight shape [hidden_dim,])
-    input_A = torch.randn((B,L,hidden_dim), dtype=torch.float16).cuda()
-    actual_A = torch.zeros_like(input_A)
-    weight_A = (1/hidden_dim**0.5) * torch.randn((hidden_dim), dtype=torch.float16).cuda()
-    expected_A = F.rms_norm(input=input_A, weight=weight_A, normalized_shape=(hidden_dim,),  eps=eps)
-    kerns.rmsnorm(eps, input_A, weight_A, actual_A)
+    eps = 1e-6
+    x = torch.randn(shape, dtype=torch.float16, device="cuda")
+    out = torch.zeros_like(x)
+    weight = (1/shape[-1]**0.5) * torch.randn(shape[-1], dtype=torch.float16, device="cuda")
+    expected = refs.rmsnorm(x, weight, eps)
+    kerns.rmsnorm(eps, x, weight, out)
     torch.cuda.synchronize()
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=1e-3), "rmsnorm: over entire vec"
-
-    # test for rmsnorm applied across heads (act. shape [B // dp_size, n_heads, L, head_dim], weight shape [head_dim,])
-    input_B = torch.randn((B,n_heads,L,head_dim), dtype=torch.float16).cuda()
-    actual_B = torch.zeros_like(input_B)
-    weight_B = (1/head_dim**0.5) * torch.randn((head_dim,), dtype=torch.float16).cuda()
-    expected_B = F.rms_norm(input=input_B, weight=weight_B, normalized_shape=(head_dim,),  eps=eps)
-    kerns.rmsnorm(eps, input_B, weight_B, actual_B)
-    torch.cuda.synchronize()
-    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=1e-3), "rmsnorm: per head"
-
-    torch.cuda.empty_cache()
-    # output act. identical shape to input in both cases
-
-# A: interleaved rope
-# B: neox rope
-# TODO: change this test to operate on [B,L,n_heads,head_dim]
-@pytest.mark.parametrize("backend", ["torch_ext"])
-def test_rope(backend):
-    kerns = KernelBackend(backend)
-    B, L, n_heads, head_dim, rotary_dim, base_freq = 8, 4096, 48, 128, 64, 1e6 # adjust as needed
-
-    # test for IL rope (act. shape [B // dp_size, L, n_heads, head_dim])
-    input_A = torch.randn((B,L,n_heads,head_dim), dtype=torch.float16).float().cuda()
-    actual_A = input_A.half().clone()
-
-    # computing expected case (interleaved)
-    freqs_A = torch.arange(rotary_dim // 2, dtype=torch.float32).cuda()
-    freqs_A = base_freq ** (-2.0 * freqs_A / rotary_dim)
-    freqs_A = torch.arange(L, dtype=torch.float32)[:, None].cuda() * freqs_A[None,:]
-    cos_A = torch.cos(freqs_A)
-    sin_A = torch.sin(freqs_A)
-
-    cos_A = cos_A[None, :, None, :]
-    sin_A = sin_A[None, :, None, :]
-
-    input_A = input_A.reshape(*input_A.shape[:-1], -1, 2)
-    expected_A = input_A.clone()
-    expected_A[..., :rotary_dim//2, 0] = cos_A * input_A[..., :rotary_dim//2, 0] - sin_A * input_A[..., :rotary_dim//2, 1]
-    expected_A[..., :rotary_dim//2, 1] = sin_A * input_A[..., :rotary_dim//2, 0] + cos_A * input_A[..., :rotary_dim//2, 1]
-    expected_A = expected_A.flatten(-2).half()
-
-    kerns.il_rope(rotary_dim, 0, base_freq, actual_A)
-    torch.cuda.synchronize()
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=5e-3), "rope: interleaved"
-
-    # test for neox rope (act. shape [B // dp_size, L, n_heads, head_dim])
-    input_B = torch.randn((B,L,n_heads,head_dim), dtype=torch.float16).float().cuda()
-    actual_B = input_B.half().clone()
-
-    # computing expected case (neox)
-    freqs_B = torch.arange(rotary_dim // 2, dtype=torch.float32).cuda()
-    freqs_B = base_freq ** (-2.0 * freqs_B / rotary_dim)
-    freqs_B = torch.arange(L, dtype=torch.float32)[:, None].cuda() * freqs_B[None,:]
-    cos_B = torch.cos(freqs_B)
-    sin_B = torch.sin(freqs_B)
-
-    cos_B = cos_B[None, :, None, :]
-    sin_B = sin_B[None, :, None, :]
-
-    expected_B = input_B.clone()
-    input_B = torch.stack([input_B[...,:rotary_dim//2], input_B[...,rotary_dim//2:rotary_dim]], dim=-1)
-    expected_B[..., :rotary_dim//2] = cos_B * input_B[..., :rotary_dim//2, 0] - sin_B * input_B[..., :rotary_dim//2, 1]
-    expected_B[..., rotary_dim//2:rotary_dim] = sin_B * input_B[..., :rotary_dim//2, 0] + cos_B * input_B[..., :rotary_dim//2, 1]
-    expected_B = expected_B.half()
-
-    kerns.neox_rope(rotary_dim, 0, base_freq, actual_B)
-    torch.cuda.synchronize()
-    assert torch.allclose(expected_B.cpu(), actual_B.cpu(), atol=5e-3), "rope: neox"
-
-    # test with non-zero start_pos
-    start_pos = 2048
-    input_C = torch.randn((B,L,n_heads,head_dim), dtype=torch.float16).float().cuda()
-    actual_C = input_C.half().clone()
-
-    freqs_C = torch.arange(rotary_dim // 2, dtype=torch.float32).cuda()
-    freqs_C = base_freq ** (-2.0 * freqs_C / rotary_dim)
-    freqs_C = (torch.arange(L, dtype=torch.float32).cuda() + start_pos)[:, None] * freqs_C[None,:]
-    cos_C = torch.cos(freqs_C)
-    sin_C = torch.sin(freqs_C)
-
-    cos_C = cos_C[None, :, None, :]
-    sin_C = sin_C[None, :, None, :]
-
-    input_C = input_C.reshape(*input_C.shape[:-1], -1, 2)
-    expected_C = input_C.clone()
-    expected_C[..., :rotary_dim//2, 0] = cos_C * input_C[..., :rotary_dim//2, 0] - sin_C * input_C[..., :rotary_dim//2, 1]
-    expected_C[..., :rotary_dim//2, 1] = sin_C * input_C[..., :rotary_dim//2, 0] + cos_C * input_C[..., :rotary_dim//2, 1]
-    expected_C = expected_C.flatten(-2).half()
-
-    kerns.il_rope(rotary_dim, start_pos, base_freq, actual_C)
-    torch.cuda.synchronize()
-    assert torch.allclose(expected_C.cpu(), actual_C.cpu(), atol=5e-3), "rope: interleaved w/ start_pos"
-
-    # test neox with non-zero start_pos
-    input_D = torch.randn((B,L,n_heads,head_dim), dtype=torch.float16).float().cuda()
-    actual_D = input_D.half().clone()
-
-    freqs_D = torch.arange(rotary_dim // 2, dtype=torch.float32).cuda()
-    freqs_D = base_freq ** (-2.0 * freqs_D / rotary_dim)
-    freqs_D = (torch.arange(L, dtype=torch.float32).cuda() + start_pos)[:, None] * freqs_D[None,:]
-    cos_D = torch.cos(freqs_D)
-    sin_D = torch.sin(freqs_D)
-
-    cos_D = cos_D[None, :, None, :]
-    sin_D = sin_D[None, :, None, :]
-
-    expected_D = input_D.clone()
-    input_D = torch.stack([input_D[...,:rotary_dim//2], input_D[...,rotary_dim//2:rotary_dim]], dim=-1)
-    expected_D[..., :rotary_dim//2] = cos_D * input_D[..., :rotary_dim//2, 0] - sin_D * input_D[..., :rotary_dim//2, 1]
-    expected_D[..., rotary_dim//2:rotary_dim] = sin_D * input_D[..., :rotary_dim//2, 0] + cos_D * input_D[..., :rotary_dim//2, 1]
-    expected_D = expected_D.half()
-
-    kerns.neox_rope(rotary_dim, start_pos, base_freq, actual_D)
-    torch.cuda.synchronize()
-    assert torch.allclose(expected_D.cpu(), actual_D.cpu(), atol=5e-3), "rope: neox w/ start_pos"
-
+    assert torch.allclose(expected.cpu(), out.cpu(), atol=1e-3)
     torch.cuda.empty_cache()
 
-    # output act. identical shape to input
-    # NOTE: there's some precision issue here (large vals of angle=freq*pos), so had to manually adjust the rtol and atol values
+@pytest.mark.parametrize("backend", ["torch_ext"])
+@pytest.mark.parametrize("start_pos", [0, 2048])
+@pytest.mark.parametrize("rope_type", ["il", "neox"])
+def test_rope(backend, rope_type, start_pos):
+    kerns = KernelBackend(backend)
+    B, L, n_heads, head_dim, rotary_dim, base_freq = 8, 4096, 48, 128, 64, 1e6
 
-# A: just the usual embed
+    x = torch.randn((B, L, n_heads, head_dim), dtype=torch.float16, device="cuda")
+    actual = x.clone()
+
+    if rope_type == "il":
+        expected = refs.il_rope(x, rotary_dim, start_pos, base_freq)
+        kerns.il_rope(rotary_dim, start_pos, base_freq, actual)
+    else:
+        expected = refs.neox_rope(x, rotary_dim, start_pos, base_freq)
+        kerns.neox_rope(rotary_dim, start_pos, base_freq, actual)
+
+    torch.cuda.synchronize()
+    # NOTE: atol adjusted for large angle vals (freq*pos)
+    assert torch.allclose(expected.cpu(), actual.cpu(), atol=5e-3)
+    torch.cuda.empty_cache()
+
 @pytest.mark.parametrize("backend", ["torch_ext"])
 def test_embed(backend):
     kerns = KernelBackend(backend)
@@ -199,18 +102,15 @@ def test_embed(backend):
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
-    # act. shape [B // dp_size, L], weight shape [vocab_size, hidden_dim]
-    input_A = torch.randint(0, vocab_size, (B,L)).cuda()
-    actual_A = torch.zeros((B, L, hidden_dim), dtype=torch.float16).cuda()
-    weight_A = torch.randn((vocab_size, hidden_dim), dtype=torch.float16).cuda()
+    token_ids = torch.randint(0, vocab_size, (B, L), device="cuda")
+    weight = torch.randn((vocab_size, hidden_dim), dtype=torch.float16, device="cuda")
+    actual = torch.zeros((B, L, hidden_dim), dtype=torch.float16, device="cuda")
 
-    expected_A = weight_A[input_A]
-    kerns.embed(qtype, qblock_size, qtype_size, input_A, weight_A, actual_A)
+    expected = weight[token_ids]
+    kerns.embed(qtype, qblock_size, qtype_size, token_ids, weight, actual)
     torch.cuda.synchronize()
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu()), "embed"
-    
+    assert torch.allclose(expected.cpu(), actual.cpu())
     torch.cuda.empty_cache()
-    # output act. shape [B // dp_size, L, hidden_dim]
 
 # A: alpha * AB + beta * C
 # B: alpha * AB^T + beta * C (NOTE: not finished right now)
@@ -237,9 +137,6 @@ def test_gemm(backend, shape, scales):
     expected_A = alpha*(input_A@weight_A) + beta*bias_A
     kerns.gemm(qtype, qblock_size, qtype_size, alpha, beta, input_A, weight_A, bias_A, actual_A)
     torch.cuda.synchronize()
-
-    print("avg abs err:", (expected_A.cpu() - actual_A.cpu()).abs().mean())
-    print("max abs err:", (expected_A.cpu() - actual_A.cpu()).abs().max())
 
     assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=2e-1), "tests for case A, matmul"
 
