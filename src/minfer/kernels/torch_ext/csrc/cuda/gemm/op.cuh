@@ -182,7 +182,10 @@ inline void dispatch_f16_ab(
 
     // launch_ab_kernel<128, 64, 256, 64, 32, 64, 16, 16, 8, 2, 1>(M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr, deviceProp, device_index);
 
-    launch_ab_kernel<128, 64, 256, 64, 32, 64, 16, 16, 8, 2, 0>(M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr, deviceProp, device_index);
+    // launch_ab_kernel<128, 64, 256, 64, 32, 64, 16, 16, 8, 2, 0>(M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr, deviceProp, device_index);
+
+    // register overflow
+    launch_ab_kernel<64, 32, 512, 64, 16, 128, 16, 16, 8, 2, 0>(M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr, deviceProp, device_index);
 
 //     const size_t best_idx = find_nearest_config(M, K, N);
 
