@@ -257,7 +257,7 @@ __global__ void ab_async_impl(
 
             // x,w shmem -> regs for tile_k+1
             const half* warp_A = shmem_read_A + warp_m * DIM_WM * DIM_BK + tile_k_next * DIM_WK;
-            const half* warp_B = shmem_read_B + tile_k_next * DIM_BK * DIM_BN + warp_n * DIM_WN;
+            const half* warp_B = shmem_read_B + tile_k_next * DIM_WK * DIM_BN + warp_n * DIM_WN;
 
             ldmatrix<false, DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_A, regs_A[tile_k_next]);
             ldmatrix<true, DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_B, regs_B[tile_k_next]);

@@ -637,6 +637,54 @@ __device__ __forceinline__ void prologue(
     }
 }
 
+template <
+    unsigned int ROWS_MMA,
+    unsigned int ROWS_BLOCK,
+    unsigned int COLS_BLOCK,
+    unsigned int NUM_THRS
+>
+__device__ __forceinline__ void toGmem(
+    size_t stride_dst,
+    const half* src,
+    half* dst
+) {
+    constexpr unsigned int BITS = int_log2(ROWS_MMA);
+    constexpr unsigned int BASE = int_log2(sizeof(int4));
+    constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
+    constexpr unsigned int BITMASK = ((1u<<BITS)-1) << (BASE+SHIFT);
+
+    unsigned int idx_thr = threadIdx.y * blockDim.x + threadIdx.x;
+
+    static_assert(COLS_BLOCK % 8 == 0);
+    // assert(stride_dst % 8 == 0);
+
+    size_t eff_stride_dst = stride_dst >> 3;
+    constexpr unsigned int EFF_COLS_BLOCK = COLS_BLOCK / 8;
+
+    static_assert(NUM_THRS % EFF_COLS_BLOCK == 0);
+
+    constexpr unsigned int INCR_ROW = NUM_THRS / EFF_COLS_BLOCK;
+    constexpr unsigned int NUM_ITERS = ROWS_BLOCK / INCR_ROW;
+    static_assert(NUM_ITERS >= 1u);
+    unsigned int row_thr = idx_thr / EFF_COLS_BLOCK;
+    unsigned int col_thr = idx_thr % EFF_COLS_BLOCK;
+
+    // reduce instrs by XOR src pointer with const
+    uint32_t shared_base = __cvta_generic_to_shared(src);
+    uint32_t idx_src = row_thr*EFF_COLS_BLOCK+col_thr;
+    uint32_t base_addr = shared_base + idx_src*sizeof(int4);
+    uint32_t src_addr = swizzle<BITMASK, SHIFT>(base_addr);
+    constexpr uint32_t STRIDE_SRC = INCR_ROW * EFF_COLS_BLOCK * sizeof(int4);
+
+#pragma unroll
+    for (int i = 0; i < NUM_ITERS; ++i) {
+        int4* src_ptr = reinterpret_cast<int4*>(__cvta_shared_to_generic(src_addr));
+        reinterpret_cast<int4*>(dst)[row_thr*eff_stride_dst+col_thr] = *src_ptr;
+        src_addr ^= xor_pattern<STRIDE_SRC, BITMASK, SHIFT, 1u>(i);
+        row_thr += INCR_ROW;
+    }
+}
+
 // effectively computes alpha*AB + beta*C and stores to shmem
 template <
     unsigned int ROWS_MMA,
@@ -719,54 +767,6 @@ __device__ __forceinline__ void epilogue(
     __syncthreads();
 
     toGmem<ROWS_MMA, ROWS_BLOCK, COLS_BLOCK, NUM_THRS>(stride_dst, shmem_out_base, dst);
-}
-
-template <
-    unsigned int ROWS_MMA,
-    unsigned int ROWS_BLOCK,
-    unsigned int COLS_BLOCK,
-    unsigned int NUM_THRS
->
-__device__ __forceinline__ void toGmem(
-    size_t stride_dst,
-    const half* src,
-    half* dst
-) {
-    constexpr unsigned int BITS = int_log2(ROWS_MMA);
-    constexpr unsigned int BASE = int_log2(sizeof(int4));
-    constexpr unsigned int SHIFT = int_log2(COLS_BLOCK / 8);
-    constexpr unsigned int BITMASK = ((1u<<BITS)-1) << (BASE+SHIFT);
-
-    unsigned int idx_thr = threadIdx.y * blockDim.x + threadIdx.x;
-
-    static_assert(COLS_BLOCK % 8 == 0);
-    // assert(stride_dst % 8 == 0);
-
-    size_t eff_stride_dst = stride_dst >> 3;
-    constexpr unsigned int EFF_COLS_BLOCK = COLS_BLOCK / 8;
-
-    static_assert(NUM_THRS % EFF_COLS_BLOCK == 0);
-
-    constexpr unsigned int INCR_ROW = NUM_THRS / EFF_COLS_BLOCK;
-    constexpr unsigned int NUM_ITERS = ROWS_BLOCK / INCR_ROW;
-    static_assert(NUM_ITERS >= 1u);
-    unsigned int row_thr = idx_thr / EFF_COLS_BLOCK;
-    unsigned int col_thr = idx_thr % EFF_COLS_BLOCK;
-
-    // reduce instrs by XOR src pointer with const
-    uint32_t shared_base = __cvta_generic_to_shared(src);
-    uint32_t idx_src = row_thr*EFF_COLS_BLOCK+col_thr;
-    uint32_t base_addr = shared_base + idx_src*sizeof(int4);
-    uint32_t src_addr = swizzle<BITMASK, SHIFT>(base_addr);
-    constexpr uint32_t STRIDE_SRC = INCR_ROW * EFF_COLS_BLOCK * sizeof(int4);
-
-#pragma unroll
-    for (int i = 0; i < NUM_ITERS; ++i) {
-        int4* src_ptr = reinterpret_cast<int4*>(__cvta_shared_to_generic(src_addr));
-        reinterpret_cast<int4*>(dst)[row_thr*eff_stride_dst+col_thr] = *src_ptr;
-        src_addr ^= xor_pattern<STRIDE_SRC, BITMASK, SHIFT, 1u>(i);
-        row_thr += INCR_ROW;
-    }
 }
 
 }

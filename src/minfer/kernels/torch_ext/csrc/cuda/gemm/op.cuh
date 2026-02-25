@@ -180,17 +180,21 @@ inline void dispatch_f16_ab(
         dev_props_set = true;
     }
 
-    const size_t best_idx = find_nearest_config(M, K, N);
+    // launch_ab_kernel<128, 64, 256, 64, 32, 64, 16, 16, 8, 2, 1>(M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr, deviceProp, device_index);
 
-    switch(best_idx) {
-#define X(IDX) case IDX: { \
-    constexpr auto& entry = LOOKUP_TABLE[IDX]; \
-    launch_ab_kernel<entry.BM, entry.BK, entry.BN, entry.WM, entry.WK, entry.WN, entry.MM, entry.MK, entry.MN, entry.K_PIPE_MAX, entry.USE_SYNC>( \
-        M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr, deviceProp, device_index); \
-    break; }
-LOOKUP_INDEX_CASES
-#undef X
-    }
+    launch_ab_kernel<128, 64, 256, 64, 32, 64, 16, 16, 8, 2, 0>(M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr, deviceProp, device_index);
+
+//     const size_t best_idx = find_nearest_config(M, K, N);
+
+//     switch(best_idx) {
+// #define X(IDX) case IDX: { \
+//     constexpr auto& entry = LOOKUP_TABLE[IDX]; \
+//     launch_ab_kernel<entry.BM, entry.BK, entry.BN, entry.WM, entry.WK, entry.WN, entry.MM, entry.MK, entry.MN, entry.K_PIPE_MAX, entry.USE_SYNC>( \
+//         M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr, deviceProp, device_index); \
+//     break; }
+// LOOKUP_INDEX_CASES
+// #undef X
+//     }
 }
 
 // TODO: incomplete, finish
@@ -265,7 +269,7 @@ void gemm_cuda(
             B.size(-1) == C.size(-1)
         )
     );
-    STD_TORCH_CHECK(C.sizes() == D.sizes());
+    STD_TORCH_CHECK(C.sizes().equals(D.sizes()));
 
     STD_TORCH_CHECK(alpha != 0.0); // call PyTorch for beta*C, not this
 
