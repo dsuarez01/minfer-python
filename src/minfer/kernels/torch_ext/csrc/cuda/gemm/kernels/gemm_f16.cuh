@@ -50,24 +50,26 @@ __global__ void ab_sync_impl(
 
     const size_t stride_A = K;
     const size_t stride_B = N;
-    const size_t stride_CD = N;
 
     extern __shared__ half shmem[];
     half* shmem_base_A = shmem;
     half* shmem_base_B = &shmem[2*DIM_BM*DIM_BK];
-    half* shmem_base_CD = shmem;
 
-    uint32_t regs_A[TILES_K][MMAS_M][MMAS_K][(DIM_MM/8)*(DIM_MK/8)];
-    uint32_t regs_B[TILES_K][MMAS_K][MMAS_N][(DIM_MK/8)*(DIM_MN/8)];
+    uint32_t regs_A[2][MMAS_M][MMAS_K][(DIM_MM/8)*(DIM_MK/8)];
+    uint32_t regs_B[2][MMAS_K][MMAS_N][(DIM_MK/8)*(DIM_MN/8)];
     uint32_t regs_acc[MMAS_M][MMAS_N][(DIM_MM/8)*(DIM_MN/8)];
 
     int4 cache_regs_A[ELEMS_THR_A];
     int4 cache_regs_B[ELEMS_THR_B];
 
     // load beta*C into regs_acc, use shmem_base_CD as staging area
-    const half* block_C = C + block_m * DIM_BM * stride_CD + block_n * DIM_BN;
-    half* shmem_warp_CD = shmem_base_CD + warp_m * DIM_WM * DIM_BN + warp_n * DIM_WN;
-    prologue<DIM_MM, DIM_MN, MMAS_M, MMAS_N, DIM_BM, DIM_BN, NUM_THRS>(lane_idx, stride_CD, alpha, beta, block_C, shmem_base_CD, shmem_warp_CD, regs_acc);
+    {
+        const size_t stride_CD = N;
+        const half* block_C = C + block_m * DIM_BM * stride_CD + block_n * DIM_BN;
+        half* shmem_base_CD = shmem;
+        half* shmem_warp_CD = shmem_base_CD + warp_m * DIM_WM * DIM_BN + warp_n * DIM_WN;
+        prologue<DIM_MM, DIM_MN, MMAS_M, MMAS_N, DIM_BM, DIM_BN, NUM_THRS>(lane_idx, stride_CD, alpha, beta, block_C, shmem_base_CD, shmem_warp_CD, regs_acc);
+    }
     
     __syncthreads();
 
@@ -109,17 +111,20 @@ __global__ void ab_sync_impl(
 #pragma unroll
         for (int tile_k = 0; tile_k < TILES_K; ++tile_k) {
 
-            // x,w shmem -> regs for tile_k+1
+            const int tile_k_cur = tile_k & 1;
+            const int tile_k_nxt = tile_k ^ 1;
+
+            // x,w shmem -> regs for tile_k_nxt
             if (tile_k != TILES_K-1) {
                 const half* warp_A = shmem_read_A + warp_m * DIM_WM * DIM_BK + (tile_k+1) * DIM_WK;
                 const half* warp_B = shmem_read_B + (tile_k+1) * DIM_WK * DIM_BN + warp_n * DIM_WN;
 
-                ldmatrix<false, DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_A, regs_A[tile_k+1]);
-                ldmatrix<true, DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_B, regs_B[tile_k+1]);
+                ldmatrix<false, DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_A, regs_A[tile_k_nxt]);
+                ldmatrix<true, DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_B, regs_B[tile_k_nxt]);
             }
             
-            // compute on tile_k
-            mma_sync<DIM_MM, DIM_MK, DIM_MN, MMAS_M, MMAS_K, MMAS_N>(regs_A[tile_k], regs_B[tile_k], regs_acc);
+            // compute on tile_k_cur
+            mma_sync<DIM_MM, DIM_MK, DIM_MN, MMAS_M, MMAS_K, MMAS_N>(regs_A[tile_k_cur], regs_B[tile_k_cur], regs_acc);
         }
 
         if (block_k != BLOCKS_K-1) {
@@ -135,8 +140,13 @@ __global__ void ab_sync_impl(
     }
  
     // acc regs -> alpha*AB -> shmem
-    half* block_D = D + block_m * DIM_BM * stride_CD + block_n * DIM_BN;
-    epilogue<DIM_MM, DIM_MN, MMAS_M, MMAS_N, DIM_BM, DIM_BN, NUM_THRS>(lane_idx, stride_CD, alpha, shmem_warp_CD, shmem_base_CD, block_D, regs_acc);
+    {
+        const size_t stride_CD = N;
+        half* block_D = D + block_m * DIM_BM * stride_CD + block_n * DIM_BN;
+        half* shmem_base_CD = shmem;
+        half* shmem_warp_CD = shmem_base_CD + warp_m * DIM_WM * DIM_BN + warp_n * DIM_WN;
+        epilogue<DIM_MM, DIM_MN, MMAS_M, MMAS_N, DIM_BM, DIM_BN, NUM_THRS>(lane_idx, stride_CD, alpha, shmem_warp_CD, shmem_base_CD, block_D, regs_acc);
+    }
 }
 
 // improvement 3: pipelining
@@ -180,21 +190,23 @@ __global__ void ab_async_impl(
 
     const size_t stride_A = K;
     const size_t stride_B = N;
-    const size_t stride_CD = N;
 
     extern __shared__ half shmem[];
     half* shmem_base_A = shmem;
     half* shmem_base_B = &shmem[K_PIPE_MAX*DIM_BM*DIM_BK];
-    half* shmem_base_CD = shmem;
 
-    uint32_t regs_A[TILES_K][MMAS_M][MMAS_K][(DIM_MM/8)*(DIM_MK/8)];
-    uint32_t regs_B[TILES_K][MMAS_K][MMAS_N][(DIM_MK/8)*(DIM_MN/8)];
+    uint32_t regs_A[2][MMAS_M][MMAS_K][(DIM_MM/8)*(DIM_MK/8)];
+    uint32_t regs_B[2][MMAS_K][MMAS_N][(DIM_MK/8)*(DIM_MN/8)];
     uint32_t regs_acc[MMAS_M][MMAS_N][(DIM_MM/8)*(DIM_MN/8)];
 
     // load beta*C into regs_acc, use shmem_base_CD as staging area
-    const half* block_C = C + block_m * DIM_BM * stride_CD + block_n * DIM_BN;
-    half* shmem_warp_CD = shmem_base_CD + warp_m * DIM_WM * DIM_BN + warp_n * DIM_WN;
-    prologue<DIM_MM, DIM_MN, MMAS_M, MMAS_N, DIM_BM, DIM_BN, NUM_THRS>(lane_idx, stride_CD, alpha, beta, block_C, shmem_base_CD, shmem_warp_CD, regs_acc);
+    {
+        const size_t stride_CD = N;
+        const half* block_C = C + block_m * DIM_BM * stride_CD + block_n * DIM_BN;
+        half* shmem_base_CD = shmem;
+        half* shmem_warp_CD = shmem_base_CD + warp_m * DIM_WM * DIM_BN + warp_n * DIM_WN;
+        prologue<DIM_MM, DIM_MN, MMAS_M, MMAS_N, DIM_BM, DIM_BN, NUM_THRS>(lane_idx, stride_CD, alpha, beta, block_C, shmem_base_CD, shmem_warp_CD, regs_acc);
+    }
 
     __syncthreads();
 
@@ -203,7 +215,7 @@ __global__ void ab_async_impl(
     int k_block_next = 0;
 
     // prefetch first K_PIPE_MAX-1 tiles
-#pragma unroll
+#pragma unroll 1
     for (int k_pipe=0; k_pipe < K_PIPE_MAX-1; ++k_pipe) {
         const half* block_A = A + block_m*DIM_BM*stride_A + k_block_next*DIM_BK;
         const half* block_B = B + k_block_next*DIM_BK*stride_B + block_n*DIM_BN;
@@ -244,6 +256,9 @@ __global__ void ab_async_impl(
 #pragma unroll
         for (int tile_k = 0; tile_k < TILES_K; ++tile_k) {
 
+            const int tile_k_cur = tile_k & 1;
+            const int tile_k_nxt = tile_k ^ 1;
+
             if (tile_k == TILES_K-1) {
 
                 shmem_read_A = shmem_base_A + shmem_pipe_read * DIM_BM * DIM_BK;
@@ -255,12 +270,12 @@ __global__ void ab_async_impl(
 
             const int tile_k_next = (tile_k == TILES_K-1) ? 0 : tile_k+1;
 
-            // x,w shmem -> regs for tile_k+1
+            // x,w shmem -> regs for tile_k_nxt
             const half* warp_A = shmem_read_A + warp_m * DIM_WM * DIM_BK + tile_k_next * DIM_WK;
             const half* warp_B = shmem_read_B + tile_k_next * DIM_WK * DIM_BN + warp_n * DIM_WN;
 
-            ldmatrix<false, DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_A, regs_A[tile_k_next]);
-            ldmatrix<true, DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_B, regs_B[tile_k_next]);
+            ldmatrix<false, DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_A, regs_A[tile_k_nxt]);
+            ldmatrix<true, DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_B, regs_B[tile_k_nxt]);
 
             if (tile_k == 0) {
                 const half* block_A = A + block_m*DIM_BM*stride_A + k_block_next*DIM_BK;
@@ -279,10 +294,10 @@ __global__ void ab_async_impl(
                 shmem_pipe_read = (shmem_pipe_read == K_PIPE_MAX-1) ? 0 : shmem_pipe_read+1;
             }
 
-            // mma on regs for tile_k
+            // mma on regs for tile_k_cur
             mma_sync<DIM_MM, DIM_MK, DIM_MN, MMAS_M, MMAS_K, MMAS_N>(
-                regs_A[tile_k],
-                regs_B[tile_k],
+                regs_A[tile_k_cur],
+                regs_B[tile_k_cur],
                 regs_acc
             );
         }
@@ -294,8 +309,13 @@ __global__ void ab_async_impl(
     __syncthreads();
 
     // regs -> shmem -> gmem
-    half* block_D = D + block_m * DIM_BM * stride_CD + block_n * DIM_BN;
-    epilogue<DIM_MM, DIM_MN, MMAS_M, MMAS_N, DIM_BM, DIM_BN, NUM_THRS>(lane_idx, stride_CD, alpha, shmem_warp_CD, shmem_base_CD, block_D, regs_acc);
+    {
+        const size_t stride_CD = N;
+        half* block_D = D + block_m * DIM_BM * stride_CD + block_n * DIM_BN;
+        half* shmem_base_CD = shmem;
+        half* shmem_warp_CD = shmem_base_CD + warp_m * DIM_WM * DIM_BN + warp_n * DIM_WN;
+        epilogue<DIM_MM, DIM_MN, MMAS_M, MMAS_N, DIM_BM, DIM_BN, NUM_THRS>(lane_idx, stride_CD, alpha, shmem_warp_CD, shmem_base_CD, block_D, regs_acc);
+    }
 }
 
 }

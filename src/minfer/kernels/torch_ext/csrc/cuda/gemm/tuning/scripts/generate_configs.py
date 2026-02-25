@@ -14,6 +14,10 @@ def main():
     max_shmem_per_block = props.shared_memory_per_block_optin
     max_regs_per_thread = 255 if props.major >= 2 else 63
     min_regs_per_thread = 150 # for pruning
+    
+    # had to add these due to the prologue
+    sync_reg_overhead = 51
+    async_reg_overhead = 74
 
     BM, BK, BN = Ints("BM BK BN")
     WM, WK, WN = Ints("WM WK WN")
@@ -54,18 +58,20 @@ def main():
     s.add( # (register constrs.)
         Implies(
             USE_SYNC == 1, 
-            (BK/WK)*((WM/MM)*(WK/MK)*(MM/8)*(MK/8)+(WK/MK)*(WN/MN)*(MK/8)*(MN/8)) 
+            2*((WM/MM)*(WK/MK)*(MM/8)*(MK/8)+(WK/MK)*(WN/MN)*(MK/8)*(MN/8)) 
             + (WM/MM)*(WN/MN)*(MM/8)*(MN/8)
             + 4*(BM/(((BM/WM)*(BN/WN)*32)/(BK/8))) 
             + 4*(BK/(((BM/WM)*(BN/WN)*32)/(BN/8))) 
+            + sync_reg_overhead
             <= max_regs_per_thread
         )
     )
     s.add( # (register constrs.)
         Implies(
             USE_SYNC == 0, 
-            (BK/WK)*((WM/MM)*(WK/MK)*(MM/8)*(MK/8)+(WK/MK)*(WN/MN)*(MK/8)*(MN/8)) 
+            2*((WM/MM)*(WK/MK)*(MM/8)*(MK/8)+(WK/MK)*(WN/MN)*(MK/8)*(MN/8)) 
             + (WM/MM)*(WN/MN)*(MM/8)*(MN/8) 
+            + async_reg_overhead
             <= max_regs_per_thread
         )
     )
@@ -81,7 +87,7 @@ def main():
     s.add(
         Implies(
             USE_SYNC == 1,
-            (BK/WK)*((WM/MM)*(WK/MK)*(MM/8)*(MK/8)+(WK/MK)*(WN/MN)*(MK/8)*(MN/8)) 
+            2*((WM/MM)*(WK/MK)*(MM/8)*(MK/8)+(WK/MK)*(WN/MN)*(MK/8)*(MN/8)) 
             + (WM/MM)*(WN/MN)*(MM/8)*(MN/8)
             + 4*(BM/(((BM/WM)*(BN/WN)*32)/(BK/8))) 
             + 4*(BK/(((BM/WM)*(BN/WN)*32)/(BN/8))) 
@@ -91,7 +97,7 @@ def main():
     s.add(
         Implies(
             USE_SYNC == 0,
-            (BK/WK)*((WM/MM)*(WK/MK)*(MM/8)*(MK/8)+(WK/MK)*(WN/MN)*(MK/8)*(MN/8)) 
+            2*((WM/MM)*(WK/MK)*(MM/8)*(MK/8)+(WK/MK)*(WN/MN)*(MK/8)*(MN/8)) 
             + (WM/MM)*(WN/MN)*(MM/8)*(MN/8)
             >= min_regs_per_thread
         )
