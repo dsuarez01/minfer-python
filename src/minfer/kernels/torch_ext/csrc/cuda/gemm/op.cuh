@@ -14,7 +14,7 @@
 
 #include "common/types.hpp"
 #include "lookup.cuh"
-#include "kernels/gemm.cuh"
+#include "kernels/gemm_f16.cuh"
 
 // basic compatibility checks here
 // note that this is optimized for L40S

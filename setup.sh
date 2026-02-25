@@ -6,6 +6,7 @@
 ## Notes about (preliminary) uv setup on this cluster:
 ## ensure ~/.local/bin is in PATH env (check ~/.bashrc), 
 ## otherwise uv isn't found
+export PATH="$HOME/.local/bin:$PATH"
 
 export CC=$(which gcc)
 export CXX=$(which g++)

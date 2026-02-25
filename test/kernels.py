@@ -34,25 +34,25 @@ def test_dequant(backend, qtype_name, shape):
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
     bytes_per_row = (N//qblock_size)*qtype_size
     
-    data_A = torch.randn(shape, dtype=torch.float32)
+    data = torch.randn(shape, dtype=torch.float32)
     
     # round-trip on CPU is ground truth
-    quantized_A = torch.zeros((M, bytes_per_row), dtype=torch.uint8)
-    expected_A = torch.zeros(shape, dtype=torch.float32)
+    quantized = torch.zeros((M, bytes_per_row), dtype=torch.uint8)
+    expected = torch.zeros(shape, dtype=torch.float32)
     
-    kerns._quant(qtype, qblock_size, qtype_size, data_A, quantized_A)
-    kerns._dequant(qtype, qblock_size, qtype_size, quantized_A, expected_A)
+    kerns._quant(qtype, qblock_size, qtype_size, data, quantized)
+    kerns._dequant(qtype, qblock_size, qtype_size, quantized, expected)
     
     # test dequant on GPU
-    quantized_A = quantized_A.cuda()
-    actual_A = torch.zeros(shape, dtype=torch.float32).cuda()
+    quantized = quantized.cuda()
+    actual = torch.zeros(shape, dtype=torch.float32).cuda()
     
     grid = (M,)
-    kerns._dequant(qtype, qblock_size, qtype_size, quantized_A, actual_A)
+    kerns._dequant(qtype, qblock_size, qtype_size, quantized, actual)
     
     torch.cuda.synchronize()
 
-    assert torch.allclose(actual_A.cpu(), expected_A)
+    assert torch.allclose(actual.cpu(), expected)
 
     torch.cuda.empty_cache()
 

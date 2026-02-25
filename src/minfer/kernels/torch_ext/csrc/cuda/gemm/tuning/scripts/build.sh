@@ -7,7 +7,7 @@ while [[ ! -f "$REPO_ROOT/pyproject.toml" ]]; do
     REPO_ROOT="$(dirname "$REPO_ROOT")"
 done
 
-MATMUL="$REPO_ROOT/src/minfer/kernels/torch_ext/csrc/cuda/matmul"
+GEMM="$REPO_ROOT/src/minfer/kernels/torch_ext/csrc/cuda/gemm"
 
 nvcc -O3 \
      -std=c++17 \
@@ -15,6 +15,6 @@ nvcc -O3 \
      -gencode=arch=compute_89,code=sm_89 \
      --ptxas-options=-v \
      -lnvidia-ml \
-     -I"$MATMUL" \
+     -I"$GEMM" \
      tune.cu \
      -o tune

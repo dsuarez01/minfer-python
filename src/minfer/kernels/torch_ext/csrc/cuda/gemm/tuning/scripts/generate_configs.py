@@ -145,6 +145,7 @@ def main():
         f.write("\tsize_t config_idx;\n")
         f.write("\tKernelConfig kc;\n")
         f.write("\tsize_t M, K, N;\n")
+        f.write("\tfloat alpha, beta;\n")
         f.write("\tdouble target_time_ms;\n")
         f.write("\tdouble min_run_time_ms;\n")
         f.write("};\n\n")

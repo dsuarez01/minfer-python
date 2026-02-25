@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "tune.cuh"
-#include "kernels/xw.cuh"
+#include "kernels/gemm_f16.cuh"
 
 inline void checkCuda(cudaError_t err, const char* file, int line) {
     if (err != cudaSuccess) {
@@ -30,7 +30,17 @@ namespace minfer::tuning {
     using namespace minfer::impl;
 
     template<size_t IDX>
-    void launch_kernel_impl(int M, int K, int N, const half* d_x, const half* d_w, half* d_out) {
+    void launch_kernel_impl(
+        int M,
+        int K,
+        int N,
+        float alpha,
+        float beta,
+        const half* d_A,
+        const half* d_B,
+        const half* d_C,
+        half* d_D
+    ) {
         constexpr auto& kc = ALL_KERNEL_CONFIGS[IDX];
         constexpr unsigned int BM = kc.BM, BK = kc.BK, BN = kc.BN;
         constexpr unsigned int WM = kc.WM, WK = kc.WK, WN = kc.WN;
@@ -57,34 +67,45 @@ namespace minfer::tuning {
         if constexpr (USE_SYNC == 1) {
             checkCudaErrors(
                 cudaFuncSetAttribute(
-                    xw_sync_impl<BM, BK, BN, WM, WK, WN, MM, MK, MN, TILES_K, NUM_THRS>,
+                    ab_sync_impl<BM, BK, BN, WM, WK, WN, MM, MK, MN, TILES_K, NUM_THRS>,
                     cudaFuncAttributeMaxDynamicSharedMemorySize,
                     SHMEM_SZ
                 )
             );
             
-            xw_sync_impl<BM, BK, BN, WM, WK, WN, MM, MK, MN, TILES_K, NUM_THRS>
-                <<<grid, block, SHMEM_SZ>>>(M, K, N, d_x, d_w, d_out);
+            ab_sync_impl<BM, BK, BN, WM, WK, WN, MM, MK, MN, TILES_K, NUM_THRS>
+                <<<grid, block, SHMEM_SZ>>>(M, K, N, alpha, beta, d_A, d_B, d_C, d_D);
         } else {
 
             checkCudaErrors(
                 cudaFuncSetAttribute(
-                    xw_async_impl<BM, BK, BN, WM, WK, WN, MM, MK, MN, TILES_K, K_PIPE_MAX, NUM_THRS>,
+                    ab_async_impl<BM, BK, BN, WM, WK, WN, MM, MK, MN, TILES_K, K_PIPE_MAX, NUM_THRS>,
                     cudaFuncAttributeMaxDynamicSharedMemorySize,
                     SHMEM_SZ
                 )
             );
             
-            xw_async_impl<BM, BK, BN, WM, WK, WN, MM, MK, MN, TILES_K, K_PIPE_MAX, NUM_THRS>
-                <<<grid, block, SHMEM_SZ>>>(M, K, N, d_x, d_w, d_out);
+            ab_async_impl<BM, BK, BN, WM, WK, WN, MM, MK, MN, TILES_K, K_PIPE_MAX, NUM_THRS>
+                <<<grid, block, SHMEM_SZ>>>(M, K, N, alpha, beta, d_A, d_B, d_C, d_D);
         }
         
         checkCudaErrors(cudaGetLastError());
     }
 
-    void launch_kernel(size_t idx, int M, int K, int N, const half* d_x, const half* d_w, half* d_out) {
+    void launch_kernel(
+        size_t idx, 
+        int M, 
+        int K, 
+        int N, 
+        float alpha, 
+        float beta, 
+        const half* d_A, 
+        const half* d_B, 
+        const half* d_C, 
+        half* d_D
+    ) {
         switch(idx) {
-#define X(IDX) case IDX: return launch_kernel_impl<IDX>(M, K, N, d_x, d_w, d_out);
+#define X(IDX) case IDX: return launch_kernel_impl<IDX>(M, K, N, alpha, beta, d_A, d_B, d_C, d_D);
 KERNEL_CONFIG_INDICES
 #undef X
             default: throw std::runtime_error("Invalid config idx");
@@ -93,17 +114,19 @@ KERNEL_CONFIG_INDICES
 
     Result run_benchmark(const Config& config) {
         auto M = config.M, K = config.K, N = config.N;
-
-        half *d_x = nullptr, *d_w = nullptr, *d_out = nullptr;
+        auto alpha = config.alpha, beta = config.beta;
+    
+        half *d_A = nullptr, *d_B = nullptr, *d_C = nullptr, *d_D = nullptr;
         cudaEvent_t start = nullptr, stop = nullptr;
 
         try {
             checkCudaErrors(cudaEventCreate(&start));
             checkCudaErrors(cudaEventCreate(&stop));
     
-            checkCudaErrors(cudaMalloc(&d_x, M*K*sizeof(half)));
-            checkCudaErrors(cudaMalloc(&d_w, K*N*sizeof(half)));
-            checkCudaErrors(cudaMalloc(&d_out, M*N*sizeof(half)));
+            checkCudaErrors(cudaMalloc(&d_A, M*K*sizeof(half)));
+            checkCudaErrors(cudaMalloc(&d_B, K*N*sizeof(half)));
+            checkCudaErrors(cudaMalloc(&d_C, M*N*sizeof(half)));
+            checkCudaErrors(cudaMalloc(&d_D, M*N*sizeof(half)));
             
             // measure timer overhead 
             std::vector<float> overhead_samples;
@@ -129,7 +152,7 @@ KERNEL_CONFIG_INDICES
             while (true) {
                 checkCudaErrors(cudaEventRecord(start));
                 for (int i = 0; i < block_size; ++i) {
-                    launch_kernel(config.config_idx, M, K, N, d_x, d_w, d_out);
+                    launch_kernel(config.config_idx, M, K, N, alpha, beta, d_A, d_B, d_C, d_D);
                 }
                 checkCudaErrors(cudaEventRecord(stop));
                 checkCudaErrors(cudaEventSynchronize(stop));
@@ -160,7 +183,7 @@ KERNEL_CONFIG_INDICES
             while (total_time_ms < config.target_time_ms) {
                 checkCudaErrors(cudaEventRecord(start));
                 for (int i = 0; i < block_size; ++i) {
-                    launch_kernel(config.config_idx, M, K, N, d_x, d_w, d_out);
+                    launch_kernel(config.config_idx, M, K, N, alpha, beta, d_A, d_B, d_C, d_D);
                 }
                 checkCudaErrors(cudaEventRecord(stop));
                 checkCudaErrors(cudaEventSynchronize(stop));
@@ -180,13 +203,14 @@ KERNEL_CONFIG_INDICES
             double min_ms = times.front();
             double max_ms = times.back();
 
-            double flops = 2.0*M*K*N;
+            double flops = 2.0*M*K*N + 2.0*M*N;
             float tflops = (flops / (median_ms * 1e-3)) / 1e12;
 
             // clean-up
-            checkCudaErrors(cudaFree(d_x));
-            checkCudaErrors(cudaFree(d_w));
-            checkCudaErrors(cudaFree(d_out));
+            checkCudaErrors(cudaFree(d_A));
+            checkCudaErrors(cudaFree(d_B));
+            checkCudaErrors(cudaFree(d_C));
+            checkCudaErrors(cudaFree(d_D));
             checkCudaErrors(cudaEventDestroy(start));
             checkCudaErrors(cudaEventDestroy(stop));
             
@@ -200,17 +224,18 @@ KERNEL_CONFIG_INDICES
                 tflops
             };
         } catch(...) {
-            // cleanup on error
-            if (d_x) cudaFree(d_x);
-            if (d_w) cudaFree(d_w);
-            if (d_out) cudaFree(d_out);
+            // cleanup on err
+            if (d_A) cudaFree(d_A);
+            if (d_B) cudaFree(d_B);
+            if (d_C) cudaFree(d_C);
+            if (d_D) cudaFree(d_D);
             if (start) cudaEventDestroy(start);
             if (stop) cudaEventDestroy(stop);
             throw;
         }
     }
 
-    int tune_run(const std::string& mode, int job_id, size_t config_idx, size_t M, size_t K, size_t N) {
+    int tune_run(const std::string& mode, int job_id, size_t config_idx, size_t M, size_t K, size_t N, float alpha, float beta) {
         double target_time_ms = 200.0; // how long we want each case to run in total (in ms)
         double min_run_time_ms = target_time_ms / 1000.0; // min run time for one block (in ms)
 
@@ -227,7 +252,7 @@ KERNEL_CONFIG_INDICES
         }
 
         if (write_header) {
-            results_file << "M,K,N,config_idx,BM,BK,BN,WM,WK,WN,MM,MK,MN,K_PIPE_MAX,USE_SYNC,"
+            results_file << "M,K,N,alpha,beta,config_idx,BM,BK,BN,WM,WK,WN,MM,MK,MN,K_PIPE_MAX,USE_SYNC,"
                      << "median_ms,min_ms,max_ms,tflops,block_size,target_time_ms,min_time_ms\n";
             results_file.flush();
         }
@@ -236,6 +261,7 @@ KERNEL_CONFIG_INDICES
             config_idx, 
             ALL_KERNEL_CONFIGS[config_idx], 
             M, K, N, 
+            alpha, beta,
             target_time_ms, 
             min_run_time_ms
         };
@@ -245,6 +271,7 @@ KERNEL_CONFIG_INDICES
 
             auto& kc = result.config.kc;
             results_file << M << "," << K << "," << N << ","
+                         << alpha << "," << beta << ","
                          << config_idx << ","
                          << kc.BM << "," << kc.BK << "," << kc.BN << ","
                          << kc.WM << "," << kc.WK << "," << kc.WN << ","
@@ -258,10 +285,12 @@ KERNEL_CONFIG_INDICES
         } catch (const std::exception& e) {
             std::cerr << "Error at mode: " << mode << std::endl;
             std::cerr << "\tProblem size M=" << M << " K=" << K << " N=" << N << std::endl;
+            std::cerr << "\tScales alpha=" << alpha << " beta=" << beta << std::endl;
             std::cerr << "\tConfig " << config_idx << " failed: " << e.what() << std::endl;
         } catch (...) {
             std::cerr << "Error at mode: " << mode << std::endl;
             std::cerr << "\tProblem size M=" << M << " K=" << K << " N=" << N << std::endl;
+            std::cerr << "\tScales alpha=" << alpha << " beta=" << beta << std::endl;
             std::cerr << "\tConfig " << config_idx << " failed w/ unknown err" << std::endl;
         }
         results_file.close();
@@ -270,10 +299,10 @@ KERNEL_CONFIG_INDICES
 }
 
 int main(int argc, char** argv) {
-    if (argc != 7) {
-        std::cerr << "Usage: " << argv[0] << " <mode> <job_id> <config_idx> <M> <K> <N>\n";
+    if (argc != 9) {
+        std::cerr << "Usage: " << argv[0] << " <mode> <job_id> <config_idx> <M> <K> <N> <alpha> <beta>\n";
         return 1;
     }
 
-    return minfer::tuning::tune_run(argv[1], atoi(argv[2]), atoi(argv[3]), atoi(argv[4]), atoi(argv[5]), atoi(argv[6]));
+    return minfer::tuning::tune_run(argv[1], atoi(argv[2]), atoi(argv[3]), atoi(argv[4]), atoi(argv[5]), atoi(argv[6]), std::stof(argv[7]), std::stof(argv[8]));
 }
