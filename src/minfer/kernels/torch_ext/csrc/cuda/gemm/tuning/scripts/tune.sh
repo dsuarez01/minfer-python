@@ -13,8 +13,12 @@ source "$(git rev-parse --show-toplevel)/setup.sh"
 JOB_ID=$SLURM_ARRAY_TASK_ID
 NUM_JOBS=$SLURM_ARRAY_TASK_COUNT
 NUM_CONFIGS=$(grep -oP 'NUM_KERNEL_CONFIGS\s*=\s*\K[0-9]+' tune.cuh)
-ALPHA=2.0
-BETA=3.0
+if [[ -z "$NUM_CONFIGS" ]]; then
+    echo "ERROR: unable to parse NUM_KERNEL_CONFIGS from tune.cuh"
+    exit 1
+fi
+ALPHAS=("1" "2")
+BETAS=("0" "3")
 SIZES=(512 1024 2048 4096 8192 16384 32768)
 WARM_CSV="./logs/warm_tuning_results_job${JOB_ID}.csv"
 COLD_CSV="./logs/cold_tuning_results_job${JOB_ID}.csv"
@@ -25,7 +29,7 @@ mkdir -p ./logs
 declare -A warm_done
 if [[ -f "$WARM_CSV" ]]; then
     while IFS=',' read -r M K N alpha beta config_idx rest; do
-        warm_done["${M},${K},${N},${config_idx}"]=1
+        warm_done["${M},${K},${N},${alpha},${beta},${config_idx}"]=1
     done < <(tail -n +2 "$WARM_CSV")
 fi
 
@@ -33,15 +37,19 @@ combo_index=0
 for M in "${SIZES[@]}"; do
     for K in "${SIZES[@]}"; do
         for N in "${SIZES[@]}"; do
-            if (( combo_index % NUM_JOBS == JOB_ID )); then
-                for config_idx in $(seq 0 $((NUM_CONFIGS - 1))); do
-                    if [[ -z "${warm_done[${M},${K},${N},${config_idx}]}" ]]; then
-                        echo "Warm: starting M=$M K=$K N=$N config_idx=$config_idx"
-                        ./tune warm $JOB_ID $config_idx $M $K $N $ALPHA $BETA
+            for alpha in "${ALPHAS[@]}"; do
+                for beta in "${BETAS[@]}"; do
+                    if (( combo_index % NUM_JOBS == JOB_ID )); then
+                        for config_idx in $(seq 0 $((NUM_CONFIGS - 1))); do
+                            if [[ -z "${warm_done[${M},${K},${N},${alpha},${beta},${config_idx}]}" ]]; then
+                                echo "Warm: starting M=$M K=$K N=$N alpha=$alpha beta=$beta config_idx=$config_idx"
+                                ./tune warm $JOB_ID $config_idx $M $K $N $alpha $beta
+                            fi
+                        done
                     fi
+                    (( combo_index++ ))
                 done
-            fi
-            (( combo_index++ ))
+            done
         done
     done
 done
@@ -53,28 +61,28 @@ python scripts/sort.py $JOB_ID
 declare -A cold_done
 if [[ -f "$COLD_CSV" ]]; then
     while IFS=',' read -r M K N alpha beta config_idx rest; do
-        cold_done["${M},${K},${N},${config_idx}"]=1
+        cold_done["${M},${K},${N},${alpha},${beta},${config_idx}"]=1
     done < <(tail -n +2 "$COLD_CSV")
 fi
 
 while IFS=',' read -r M K N alpha beta config_idx rest; do
-    if [[ -z "${cold_done[${M},${K},${N},${config_idx}]}" ]]; then
+    if [[ -z "${cold_done[${M},${K},${N},${alpha},${beta},${config_idx}]}" ]]; then
         sleep 6
-        echo "Cold: starting M=$M K=$K N=$N alpha=$ALPHA beta=$BETA config_idx=$config_idx"
-        ./tune cold $JOB_ID $config_idx $M $K $N $ALPHA $BETA
+        echo "Cold: starting M=$M K=$K N=$N alpha=$alpha beta=$beta config_idx=$config_idx"
+        ./tune cold $JOB_ID $config_idx $M $K $N $alpha $beta
     fi
 done < <(awk -F',' '
 NR==1 { next }
 {
-    key = $1","$2","$3
+    key = $1","$2","$3","$4","$5
     count[key]++
-    lines[key][count[key]] = $0
+    lines[key,count[key]] = $0
 }
 END {
     for (k in count) {
         top = int(count[k]*0.05)
         if (top<1) top=1
-        printf "(Cold) M,K,N=%s taking top %d/%d configs\n", k, top, count[k] > "/dev/stderr"
-        for (i=1; i<=top; i++) print lines[k][i]
+        printf "(Cold) M,K,N,alpha,beta=%s taking top %d/%d configs\n", k, top, count[k] > "/dev/stderr"
+        for (i=1; i<=top; i++) print lines[k,i]
     }
 }' "$WARM_CSV")
