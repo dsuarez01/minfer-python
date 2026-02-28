@@ -27,6 +27,7 @@ def get_extensions():
     this_dir = os.path.dirname(os.path.abspath(__file__))
     extensions_dir = os.path.join("src", library_name, "kernels", "torch_ext", "csrc")
     include_path = "-I"+os.path.join(this_dir, extensions_dir)
+    cutlass_include_path = "-I" + os.path.join(this_dir, extensions_dir, "cuda", "third_party", "cutlass", "include")
 
     extra_link_args = [
         "-fopenmp",
@@ -40,6 +41,7 @@ def get_extensions():
             "-DPy_LIMITED_API=0x030c0000",  # min CPython v3.12,
             "-DTORCH_TARGET_VERSION=0x020a000000000000",
             include_path,
+            cutlass_include_path,
         ],
         "nvcc": [
             "-O3" if not debug_mode else "-O0",
@@ -49,6 +51,7 @@ def get_extensions():
             "-DUSE_CUDA",
             "--ptxas-options=-v",
             include_path,
+            cutlass_include_path,
         ],
     }
     
