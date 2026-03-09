@@ -485,14 +485,14 @@ __device__ __forceinline__ void cp_async(
 }
 
 __device__ __forceinline__ void cp_async_fence() {
-    asm volatile("cp.async.commit_group;\n" ::);
+    asm volatile("cp.async.commit_group;\n" ::: "memory");
 }
 
 template<unsigned int N>
 __device__ __forceinline__ void cp_async_wait() {
     static_assert(N <= 7);
     
-    asm volatile("cp.async.wait_group %0;\n" :: "n"(N));
+    asm volatile("cp.async.wait_group %0;\n" :: "n"(N) : "memory");
 }
 
 template <

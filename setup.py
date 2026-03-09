@@ -62,7 +62,12 @@ def get_extensions():
     else:
         extra_compile_args["nvcc"].extend(["-lineinfo", "-use_fast_math"])
 
-    sources = glob.glob(os.path.join(extensions_dir, "**", "*.cpp"), recursive=True) + [os.path.join(extensions_dir, "cuda", "reg.cu")]
+    sources = [
+        os.path.join(extensions_dir, "reg.cpp"),
+        os.path.join(extensions_dir, "quants", "op.cpp"),
+        os.path.join(extensions_dir, "quants", "impl.cpp"),
+        os.path.join(extensions_dir, "cuda", "reg.cu"),
+    ]
     
     return [
         CUDAExtension(

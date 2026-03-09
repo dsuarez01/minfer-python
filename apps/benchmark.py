@@ -155,7 +155,7 @@ def neox_rope(backend: str, which: str):
     compare.print()
 
 def gemm(backend: str, which: str):
-    """matmul against PyTorch @ op"""
+    """gemm against pytorch ref"""
     
     kerns = KernelBackend(backend)
     qtype = GGMLQuantizationType.F16

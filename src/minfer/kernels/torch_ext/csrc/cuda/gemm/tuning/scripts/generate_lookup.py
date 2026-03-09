@@ -13,7 +13,6 @@ def main():
     with open("../lookup.cuh", 'w') as f:
         f.write(f"""#pragma once
 
-#include <cfloat>
 #include <cstddef>
 #include <stdexcept>
 
@@ -21,7 +20,7 @@ namespace minfer::impl {{
 
 struct LookupEntry {{
     size_t M, K, N;
-    float alpha, beta;
+    bool is_alpha_1, is_beta_0;
     unsigned int BM, BK, BN;
     unsigned int WM, WK, WN;
     unsigned int MM, MK, MN;
@@ -37,7 +36,7 @@ constexpr LookupEntry LOOKUP_TABLE[] = {{
         for i, (idx, row) in enumerate(best_df.iterrows()):
             comma = "," if i < len(best_df) - 1 else ""
             f.write(f"\t{{{int(row['M'])}, {int(row['K'])}, {int(row['N'])}, "
-                    f"{row['alpha']:.6f}f, {row['beta']:.6f}f, "
+                    f"{'true' if row['alpha'] == 1 else 'false'}, {'true' if row['beta'] == 0 else 'false'}, "
                     f"{int(row['BM'])}, {int(row['BK'])}, {int(row['BN'])}, "
                     f"{int(row['WM'])}, {int(row['WK'])}, {int(row['WN'])}, "
                     f"{int(row['MM'])}, {int(row['MK'])}, {int(row['MN'])}, "
@@ -48,31 +47,18 @@ constexpr LookupEntry LOOKUP_TABLE[] = {{
         f.write(f"""
 }};
 
-inline size_t find_nearest_config(size_t M, size_t K, size_t N) {{
-    size_t best_idx = 0;
-    double best_dist = DBL_MAX;
-
-    for (size_t i = 0; i < LOOKUP_TABLE_SIZE; ++i) {{
+// hardcoded problem sizes for now, will refine dispatch soon
+inline int find_config(size_t M, size_t K, size_t N, float alpha, float beta) {{
+    bool is_alpha_1 = (alpha == 1.0f);
+    bool is_beta_0 = (beta == 0.0f);
+    for (int i = 0; i < LOOKUP_TABLE_SIZE; ++i) {{
         const auto& entry = LOOKUP_TABLE[i];
-
-        if (entry.M > M || entry.K > K || entry.N > N) continue;
-
-        double dm = (double)(M > entry.M ? M - entry.M : entry.M - M) / (double)entry.M;
-        double dk = (double)(K > entry.K ? K - entry.K : entry.K - K) / (double)entry.K;
-        double dn = (double)(N > entry.N ? N - entry.N : entry.N - N) / (double)entry.N;
-        double dist = dm*dm + dk*dk + dn*dn;
-
-        if (dist < best_dist) {{
-            best_dist = dist;
-            best_idx = i;
+        if (entry.M == M && entry.K == K && entry.N == N &&
+            entry.is_alpha_1 == is_alpha_1 && entry.is_beta_0 == is_beta_0) {{
+            return i;
         }}
     }}
-
-    if (best_dist == DBL_MAX) {{
-        throw std::runtime_error("No valid kernel config found: problem size too small");
-    }}
-
-    return best_idx;
+    return -1;
 }}
 
 #define LOOKUP_INDEX_CASES \\

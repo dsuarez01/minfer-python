@@ -6,12 +6,15 @@
 #include <atomic>
 #include <climits>
 #include <cmath>
+#include <cstdlib>
+#include <ctime>
 #include <exception>
 #include <iostream>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 #include "tune.cuh"
@@ -28,6 +31,14 @@ inline void checkCuda(cudaError_t err, const char* file, int line) {
 namespace minfer::tuning {
 
     using namespace minfer::impl;
+
+    // uniform over [lo, hi]
+    void rand_init(half* d_ptr, size_t n, float lo, float hi) {
+        std::vector<half> h(n);
+        for (size_t i = 0; i < n; ++i)
+            h[i] = __float2half(lo + (static_cast<float>(rand()) / static_cast<float>(RAND_MAX)) * (hi-lo));
+        checkCudaErrors(cudaMemcpy(d_ptr, h.data(), n*sizeof(half), cudaMemcpyHostToDevice));
+    }
 
     template<size_t IDX>
     void launch_kernel_impl(
@@ -128,6 +139,10 @@ KERNEL_CONFIG_INDICES
             checkCudaErrors(cudaMalloc(&d_C, M*N*sizeof(half)));
             checkCudaErrors(cudaMalloc(&d_D, M*N*sizeof(half)));
             
+            rand_init(d_A, M*K, -1.0f, 1.0f);
+            rand_init(d_B, K*N, -1.0f, 1.0f);
+            rand_init(d_C, M*N, -1.0f, 1.0f);
+
             // measure timer overhead 
             std::vector<float> overhead_samples;
             for (int i = 0; i < 5; ++i) {
@@ -252,8 +267,9 @@ KERNEL_CONFIG_INDICES
         }
 
         if (write_header) {
-            results_file << "M,K,N,alpha,beta,config_idx,BM,BK,BN,WM,WK,WN,MM,MK,MN,K_PIPE_MAX,USE_SYNC,"
-                     << "median_ms,min_ms,max_ms,tflops,block_size,target_time_ms,min_time_ms\n";
+            results_file << "M,K,N,alpha,beta,config_idx,success,"
+                         << "BM,BK,BN,WM,WK,WN,MM,MK,MN,K_PIPE_MAX,USE_SYNC,"
+                         << "median_ms,min_ms,max_ms,tflops,block_size,target_time_ms,min_time_ms\n";
             results_file.flush();
         }
 
@@ -273,6 +289,7 @@ KERNEL_CONFIG_INDICES
             results_file << M << "," << K << "," << N << ","
                          << alpha << "," << beta << ","
                          << config_idx << ","
+                         << 1 << ","
                          << kc.BM << "," << kc.BK << "," << kc.BN << ","
                          << kc.WM << "," << kc.WK << "," << kc.WN << ","
                          << kc.MM << "," << kc.MK << "," << kc.MN << ","
@@ -287,11 +304,42 @@ KERNEL_CONFIG_INDICES
             std::cerr << "\tProblem size M=" << M << " K=" << K << " N=" << N << std::endl;
             std::cerr << "\tScales alpha=" << alpha << " beta=" << beta << std::endl;
             std::cerr << "\tConfig " << config_idx << " failed: " << e.what() << std::endl;
+
+              
+            results_file << M << "," << K << "," << N << ","
+                         << alpha << "," << beta << ","
+                         << config_idx << ","
+                         << 0 << ","
+                         << -1 << "," << -1 << "," << -1 << ","  // BM, BK, BN
+                         << -1 << "," << -1 << "," << -1 << ","  // WM, WK, WN
+                         << -1 << "," << -1 << "," << -1 << ","  // MM, MK, MN
+                         << -1 << "," << -1 << ","               // K_PIPE_MAX, USE_SYNC
+                         << -1 << "," << -1 << ","               // median_ms, min_ms
+                         << -1 << "," << -1 << ","               // max_ms, tflops
+                         << -1 << ","                             // block_size
+                         << config.target_time_ms << ","
+                         << config.min_run_time_ms << "\n";
+            results_file.flush();
         } catch (...) {
             std::cerr << "Error at mode: " << mode << std::endl;
             std::cerr << "\tProblem size M=" << M << " K=" << K << " N=" << N << std::endl;
             std::cerr << "\tScales alpha=" << alpha << " beta=" << beta << std::endl;
             std::cerr << "\tConfig " << config_idx << " failed w/ unknown err" << std::endl;
+
+            results_file << M << "," << K << "," << N << ","
+                         << alpha << "," << beta << ","
+                         << config_idx << ","
+                         << 0 << ","
+                         << -1 << "," << -1 << "," << -1 << ","  // BM, BK, BN
+                         << -1 << "," << -1 << "," << -1 << ","  // WM, WK, WN
+                         << -1 << "," << -1 << "," << -1 << ","  // MM, MK, MN
+                         << -1 << "," << -1 << ","               // K_PIPE_MAX, USE_SYNC
+                         << -1 << "," << -1 << ","               // median_ms, min_ms
+                         << -1 << "," << -1 << ","               // max_ms, tflops
+                         << -1 << ","                             // block_size
+                         << config.target_time_ms << ","
+                         << config.min_run_time_ms << "\n";
+            results_file.flush();
         }
         results_file.close();
         return 0;
@@ -304,5 +352,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    srand(time(nullptr) ^ getpid());
     return minfer::tuning::tune_run(argv[1], atoi(argv[2]), atoi(argv[3]), atoi(argv[4]), atoi(argv[5]), atoi(argv[6]), std::stof(argv[7]), std::stof(argv[8]));
 }

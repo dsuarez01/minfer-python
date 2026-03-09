@@ -115,10 +115,11 @@ def test_embed(backend):
 # A: alpha * AB + beta * C
 # B: alpha * AB^T + beta * C (NOTE: not finished right now)
 SCALES = [(1.0,0.0), (1.0,1.0), (2.0,3.0), (0.5,2.0), ]
-MATMUL_SIZES = [512,1024,2048]
+MATMUL_SIZES = [512,1024,2048,4096,8192,16384,32768]
 @pytest.mark.parametrize("backend", ["torch_ext"])
 @pytest.mark.parametrize("scales", SCALES)
-@pytest.mark.parametrize("shape", product(MATMUL_SIZES,MATMUL_SIZES,MATMUL_SIZES))
+@pytest.mark.parametrize("shape", [(s, s, s) for s in MATMUL_SIZES])
+# @pytest.mark.parametrize("shape", product(MATMUL_SIZES,MATMUL_SIZES,MATMUL_SIZES))
 def test_gemm(backend, shape, scales):
 
     kerns = KernelBackend(backend)
@@ -135,10 +136,18 @@ def test_gemm(backend, shape, scales):
     actual_A = torch.zeros((1, M, N), dtype=torch.float16, device="cuda")
 
     expected_A = alpha*(input_A@weight_A) + beta*bias_A
-    kerns.gemm(qtype, qblock_size, qtype_size, alpha, beta, input_A, weight_A, bias_A, actual_A)
+    with torch.no_grad():
+        kerns.gemm(qtype, qblock_size, qtype_size, alpha, beta, input_A, weight_A, bias_A, actual_A)
     torch.cuda.synchronize()
 
-    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=2e-1), "tests for case A, matmul"
+    abs_diff = (expected_A - actual_A).abs()  # keep on GPU
+    v, i = torch.topk(abs_diff.flatten(), 20)  # on GPU
+    print(np.array(np.unravel_index(i.cpu().numpy(), abs_diff.shape)).T)
+    print(v.cpu())
+    # print(f"max abs err: {abs_diff.max()}")
+    # print(f"mean abs err: {abs_diff.mean()}")
+
+    assert torch.allclose(expected_A.cpu(), actual_A.cpu(), atol=2e-1), "tests for case A, gemm"
 
     torch.cuda.empty_cache()
 
@@ -146,7 +155,8 @@ def test_gemm(backend, shape, scales):
 
 @pytest.mark.parametrize("backend", ["torch_ext"])
 @pytest.mark.parametrize("scales", SCALES)
-@pytest.mark.parametrize("shape", product(MATMUL_SIZES,MATMUL_SIZES,MATMUL_SIZES))
+@pytest.mark.parametrize("shape", [(s, s, s) for s in MATMUL_SIZES])
+# @pytest.mark.parametrize("shape", product(MATMUL_SIZES,MATMUL_SIZES,MATMUL_SIZES))
 def test_gemm_opcheck(backend, shape, scales):
 
     M,K,N = shape

@@ -90,54 +90,47 @@ inline void launch_ab_kernel(
     );
     cudaStream_t stream = static_cast<cudaStream_t>(stream_ptr);
 
-    static bool shmem_attr_set = false;
-
-    // set attr (avoid triggering JIT recompilation)
-    if (!shmem_attr_set) {
-        if constexpr (USE_SYNC == 1u) {
-            STD_CUDA_CHECK(
-                cudaFuncSetAttribute(
-                    ab_sync_impl<
-                        DIM_BM,
-                        DIM_BK,
-                        DIM_BN,
-                        DIM_WM,
-                        DIM_WK,
-                        DIM_WN,
-                        DIM_MM,
-                        DIM_MK,
-                        DIM_MN,
-                        TILES_K,
-                        NUM_THRS
-                    >,
-                    cudaFuncAttributeMaxDynamicSharedMemorySize,
-                    SHMEM_SZ
-                )
-            );
-        } else {
-            STD_CUDA_CHECK(
-                cudaFuncSetAttribute(
-                    ab_async_impl<
-                        DIM_BM,
-                        DIM_BK,
-                        DIM_BN,
-                        DIM_WM,
-                        DIM_WK,
-                        DIM_WN,
-                        DIM_MM,
-                        DIM_MK,
-                        DIM_MN,
-                        TILES_K,
-                        K_PIPE_MAX,
-                        NUM_THRS
-                    >,
-                    cudaFuncAttributeMaxDynamicSharedMemorySize,
-                    SHMEM_SZ
-                )
-            );
-        }
-        
-        shmem_attr_set = true;
+    if constexpr (USE_SYNC == 1u) {
+        STD_CUDA_CHECK(
+            cudaFuncSetAttribute(
+                ab_sync_impl<
+                    DIM_BM,
+                    DIM_BK,
+                    DIM_BN,
+                    DIM_WM,
+                    DIM_WK,
+                    DIM_WN,
+                    DIM_MM,
+                    DIM_MK,
+                    DIM_MN,
+                    TILES_K,
+                    NUM_THRS
+                >,
+                cudaFuncAttributeMaxDynamicSharedMemorySize,
+                SHMEM_SZ
+            )
+        );
+    } else {
+        STD_CUDA_CHECK(
+            cudaFuncSetAttribute(
+                ab_async_impl<
+                    DIM_BM,
+                    DIM_BK,
+                    DIM_BN,
+                    DIM_WM,
+                    DIM_WK,
+                    DIM_WN,
+                    DIM_MM,
+                    DIM_MK,
+                    DIM_MN,
+                    TILES_K,
+                    K_PIPE_MAX,
+                    NUM_THRS
+                >,
+                cudaFuncAttributeMaxDynamicSharedMemorySize,
+                SHMEM_SZ
+            )
+        );
     }
 
     // launch
@@ -180,24 +173,18 @@ inline void dispatch_f16_ab(
         dev_props_set = true;
     }
 
-    // launch_ab_kernel<128, 64, 256, 64, 32, 64, 16, 16, 8, 2, 1>(M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr, deviceProp, device_index);
+    int idx_found = find_config(M, K, N, alpha, beta);
+    STD_TORCH_CHECK(idx_found != -1, "No matching index found in lookup table for provided M,K,N,alpha,beta");
 
-    // launch_ab_kernel<128, 64, 256, 64, 32, 64, 16, 16, 8, 2, 0>(M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr, deviceProp, device_index);
-
-    // register overflow
-    launch_ab_kernel<64, 32, 512, 64, 16, 128, 16, 16, 8, 2, 0>(M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr, deviceProp, device_index);
-
-//     const size_t best_idx = find_nearest_config(M, K, N);
-
-//     switch(best_idx) {
-// #define X(IDX) case IDX: { \
-//     constexpr auto& entry = LOOKUP_TABLE[IDX]; \
-//     launch_ab_kernel<entry.BM, entry.BK, entry.BN, entry.WM, entry.WK, entry.WN, entry.MM, entry.MK, entry.MN, entry.K_PIPE_MAX, entry.USE_SYNC>( \
-//         M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr, deviceProp, device_index); \
-//     break; }
-// LOOKUP_INDEX_CASES
-// #undef X
-//     }
+    switch(idx_found) {
+#define X(IDX) case IDX: { \
+    constexpr auto& entry = LOOKUP_TABLE[IDX]; \
+    launch_ab_kernel<entry.BM, entry.BK, entry.BN, entry.WM, entry.WK, entry.WN, entry.MM, entry.MK, entry.MN, entry.K_PIPE_MAX, entry.USE_SYNC>( \
+        M, K, N, alpha, beta, A_ptr, B_ptr, C_ptr, D_ptr, deviceProp, device_index); \
+    break; }
+LOOKUP_INDEX_CASES
+#undef X
+    }
 }
 
 // TODO: incomplete, finish

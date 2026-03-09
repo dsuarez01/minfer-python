@@ -32,7 +32,7 @@ __global__ void ab_sync_impl(
     half* __restrict__ D
 ) {
 
-    const unsigned int BLOCKS_K = (K+DIM_BK-1)/DIM_BK;
+    const unsigned int blocks_k = (K+DIM_BK-1)/DIM_BK;
 
     constexpr unsigned int MMAS_M = (DIM_WM+DIM_MM-1)/DIM_MM;
     constexpr unsigned int MMAS_K = (DIM_WK+DIM_MK-1)/DIM_MK;
@@ -55,8 +55,8 @@ __global__ void ab_sync_impl(
     half* shmem_base_A = shmem;
     half* shmem_base_B = &shmem[2*DIM_BM*DIM_BK];
 
-    uint32_t regs_A[2][MMAS_M][MMAS_K][(DIM_MM/8)*(DIM_MK/8)];
-    uint32_t regs_B[2][MMAS_K][MMAS_N][(DIM_MK/8)*(DIM_MN/8)];
+    uint32_t regs_A[TILES_K][MMAS_M][MMAS_K][(DIM_MM/8)*(DIM_MK/8)];
+    uint32_t regs_B[TILES_K][MMAS_K][MMAS_N][(DIM_MK/8)*(DIM_MN/8)];
     uint32_t regs_acc[MMAS_M][MMAS_N][(DIM_MM/8)*(DIM_MN/8)];
 
     int4 cache_regs_A[ELEMS_THR_A];
@@ -84,12 +84,9 @@ __global__ void ab_sync_impl(
 
 // i.e. do not unroll
 #pragma unroll 1
-    for (int block_k = 0; block_k < BLOCKS_K; ++block_k) {
+    for (int block_k = 0; block_k < blocks_k; ++block_k) {
 
-        const int shmem_pipe_read = block_k & 1;
-        const int shmem_pipe_write = shmem_pipe_read ^ 1;
-
-        if (block_k != BLOCKS_K-1) {
+        if (block_k != blocks_k-1) {
             const half* block_A = A + block_m * DIM_BM * stride_A + (block_k+1) * DIM_BK;
             const half* block_B = B + (block_k+1) * DIM_BK * stride_B + block_n * DIM_BN;
 
@@ -97,11 +94,13 @@ __global__ void ab_sync_impl(
             gmemToRegSync<DIM_MM, DIM_BM, DIM_BK, NUM_THRS, ELEMS_THR_A>(stride_A, block_A, cache_regs_A);
             gmemToRegSync<DIM_MK, DIM_BK, DIM_BN, NUM_THRS, ELEMS_THR_B>(stride_B, block_B, cache_regs_B);
         }
+
+        const int shmem_pipe_read = block_k & 1;
+        const int shmem_pipe_write = shmem_pipe_read ^ 1;
     
         const half* shmem_read_A = shmem_base_A + shmem_pipe_read * DIM_BM * DIM_BK;
         const half* shmem_read_B = shmem_base_B + shmem_pipe_read * DIM_BK * DIM_BN;
 
-        // write regs for the first k-tile in this block, both for x and w
         const half* warp_A = shmem_read_A + warp_m * DIM_WM * DIM_BK + 0 * DIM_WK;
         const half* warp_B = shmem_read_B + 0 * DIM_WK * DIM_BN + warp_n * DIM_WN;
 
@@ -111,23 +110,20 @@ __global__ void ab_sync_impl(
 #pragma unroll
         for (int tile_k = 0; tile_k < TILES_K; ++tile_k) {
 
-            const int tile_k_cur = tile_k & 1;
-            const int tile_k_nxt = tile_k ^ 1;
-
-            // x,w shmem -> regs for tile_k_nxt
+            // x,w shmem -> regs for tile_k+1
             if (tile_k != TILES_K-1) {
                 const half* warp_A = shmem_read_A + warp_m * DIM_WM * DIM_BK + (tile_k+1) * DIM_WK;
                 const half* warp_B = shmem_read_B + (tile_k+1) * DIM_WK * DIM_BN + warp_n * DIM_WN;
 
-                ldmatrix<false, DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_A, regs_A[tile_k_nxt]);
-                ldmatrix<true, DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_B, regs_B[tile_k_nxt]);
+                ldmatrix<false, DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_A, regs_A[tile_k+1]);
+                ldmatrix<true, DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_B, regs_B[tile_k+1]);
             }
             
-            // compute on tile_k_cur
-            mma_sync<DIM_MM, DIM_MK, DIM_MN, MMAS_M, MMAS_K, MMAS_N>(regs_A[tile_k_cur], regs_B[tile_k_cur], regs_acc);
+            // compute on tile_k
+            mma_sync<DIM_MM, DIM_MK, DIM_MN, MMAS_M, MMAS_K, MMAS_N>(regs_A[tile_k], regs_B[tile_k], regs_acc);
         }
 
-        if (block_k != BLOCKS_K-1) {
+        if (block_k != blocks_k-1) {
             half* shmem_write_A = shmem_base_A + shmem_pipe_write * DIM_BM * DIM_BK;
             half* shmem_write_B = shmem_base_B + shmem_pipe_write * DIM_BK * DIM_BN;
 
@@ -135,7 +131,7 @@ __global__ void ab_sync_impl(
             regToShmemSync<DIM_MM, DIM_BM, DIM_BK, NUM_THRS, ELEMS_THR_A>(shmem_write_A, cache_regs_A);
             regToShmemSync<DIM_MK, DIM_BK, DIM_BN, NUM_THRS, ELEMS_THR_B>(shmem_write_B, cache_regs_B);
         }
-        
+
         __syncthreads();
     }
  
@@ -176,7 +172,7 @@ __global__ void ab_async_impl(
     half* __restrict__ D
 ) {
 
-    const unsigned int BLOCKS_K = (K+DIM_BK-1)/DIM_BK;
+    const unsigned int blocks_k = (K+DIM_BK-1)/DIM_BK;
 
     constexpr unsigned int MMAS_M = (DIM_WM+DIM_MM-1)/DIM_MM;
     constexpr unsigned int MMAS_K = (DIM_WK+DIM_MK-1)/DIM_MK;
@@ -195,8 +191,8 @@ __global__ void ab_async_impl(
     half* shmem_base_A = shmem;
     half* shmem_base_B = &shmem[K_PIPE_MAX*DIM_BM*DIM_BK];
 
-    uint32_t regs_A[2][MMAS_M][MMAS_K][(DIM_MM/8)*(DIM_MK/8)];
-    uint32_t regs_B[2][MMAS_K][MMAS_N][(DIM_MK/8)*(DIM_MN/8)];
+    uint32_t regs_A[TILES_K][MMAS_M][MMAS_K][(DIM_MM/8)*(DIM_MK/8)];
+    uint32_t regs_B[TILES_K][MMAS_K][MMAS_N][(DIM_MK/8)*(DIM_MN/8)];
     uint32_t regs_acc[MMAS_M][MMAS_N][(DIM_MM/8)*(DIM_MN/8)];
 
     // load beta*C into regs_acc, use shmem_base_CD as staging area
@@ -211,7 +207,7 @@ __global__ void ab_async_impl(
     __syncthreads();
 
     // pipeline ctrl (https://research.colfax-intl.com/cutlass-tutorial-design-of-a-gemm-kernel/)
-    int k_block_count = BLOCKS_K;
+    int k_block_count = blocks_k;
     int k_block_next = 0;
 
     // prefetch first K_PIPE_MAX-1 tiles
@@ -237,45 +233,22 @@ __global__ void ab_async_impl(
     const half* shmem_read_A = shmem_base_A + shmem_pipe_read * DIM_BM * DIM_BK;
     const half* shmem_read_B = shmem_base_B + shmem_pipe_read * DIM_BK * DIM_BN;
 
-    if (TILES_K > 1) {
-        cp_async_wait<K_PIPE_MAX-2>();
-        __syncthreads();
+    // preload first frag into regs
+    cp_async_wait<K_PIPE_MAX-2>();
+    __syncthreads();
 
-        // write regs for the first k-tile, both for x and w
-        const half* warp_A = shmem_read_A + warp_m * DIM_WM * DIM_BK + 0 * DIM_WK;
-        const half* warp_B = shmem_read_B + 0 * DIM_WK * DIM_BN + warp_n * DIM_WN;
+    const half* warp_A = shmem_read_A + warp_m * DIM_WM * DIM_BK + 0 * DIM_WK;
+    const half* warp_B = shmem_read_B + 0 * DIM_WK * DIM_BN + warp_n * DIM_WN;
 
-        ldmatrix<false, DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_A, regs_A[0]);
-        ldmatrix<true, DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_B, regs_B[0]);
-    }
+    ldmatrix<false, DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_A, regs_A[0]);
+    ldmatrix<true, DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_B, regs_B[0]);
 
-    // for each K block tile (this does iterate BLOCKS_K times)
+    // for each K block tile (this iterates blocks_k times)
 #pragma unroll 1
     while (k_block_count > -((int)K_PIPE_MAX-1)) {
         
 #pragma unroll
         for (int tile_k = 0; tile_k < TILES_K; ++tile_k) {
-
-            const int tile_k_cur = tile_k & 1;
-            const int tile_k_nxt = tile_k ^ 1;
-
-            if (tile_k == TILES_K-1) {
-
-                shmem_read_A = shmem_base_A + shmem_pipe_read * DIM_BM * DIM_BK;
-                shmem_read_B = shmem_base_B + shmem_pipe_read * DIM_BK * DIM_BN;
-                
-                cp_async_wait<K_PIPE_MAX-2>();
-                __syncthreads();
-            }
-
-            const int tile_k_next = (tile_k == TILES_K-1) ? 0 : tile_k+1;
-
-            // x,w shmem -> regs for tile_k_nxt
-            const half* warp_A = shmem_read_A + warp_m * DIM_WM * DIM_BK + tile_k_next * DIM_WK;
-            const half* warp_B = shmem_read_B + tile_k_next * DIM_WK * DIM_BN + warp_n * DIM_WN;
-
-            ldmatrix<false, DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_A, regs_A[tile_k_nxt]);
-            ldmatrix<true, DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_B, regs_B[tile_k_nxt]);
 
             if (tile_k == 0) {
                 const half* block_A = A + block_m*DIM_BM*stride_A + k_block_next*DIM_BK;
@@ -294,12 +267,28 @@ __global__ void ab_async_impl(
                 shmem_pipe_read = (shmem_pipe_read == K_PIPE_MAX-1) ? 0 : shmem_pipe_read+1;
             }
 
-            // mma on regs for tile_k_cur
+            // mma on regs for tile_k
             mma_sync<DIM_MM, DIM_MK, DIM_MN, MMAS_M, MMAS_K, MMAS_N>(
-                regs_A[tile_k_cur],
-                regs_B[tile_k_cur],
+                regs_A[tile_k],
+                regs_B[tile_k],
                 regs_acc
             );
+
+            if (tile_k == TILES_K-1) {
+
+                shmem_read_A = shmem_base_A + shmem_pipe_read * DIM_BM * DIM_BK;
+                shmem_read_B = shmem_base_B + shmem_pipe_read * DIM_BK * DIM_BN;
+                
+                cp_async_wait<K_PIPE_MAX-2>();
+                __syncthreads();
+            }
+
+            // x,w shmem -> regs for tile_k_nxt
+            const int tile_k_nxt = (tile_k == TILES_K-1) ? 0 : tile_k+1;
+            const half* warp_A = shmem_read_A + warp_m * DIM_WM * DIM_BK + tile_k_nxt * DIM_WK;
+            const half* warp_B = shmem_read_B + tile_k_nxt * DIM_WK * DIM_BN + warp_n * DIM_WN;
+            ldmatrix<false, DIM_MM, DIM_MK, MMAS_M, MMAS_K, DIM_BK>(lane_idx, warp_A, regs_A[tile_k_nxt]);
+            ldmatrix<true, DIM_MK, DIM_MN, MMAS_K, MMAS_N, DIM_BN>(lane_idx, warp_B, regs_B[tile_k_nxt]);
         }
     }
 

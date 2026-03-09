@@ -40,7 +40,7 @@ for M in "${SIZES[@]}"; do
             for alpha in "${ALPHAS[@]}"; do
                 for beta in "${BETAS[@]}"; do
                     if (( combo_index % NUM_JOBS == JOB_ID )); then
-                        for config_idx in $(seq 0 $((NUM_CONFIGS - 1))); do
+                        for config_idx in $(seq 0 $((NUM_CONFIGS-1))); do
                             if [[ -z "${warm_done[${M},${K},${N},${alpha},${beta},${config_idx}]}" ]]; then
                                 echo "Warm: starting M=$M K=$K N=$N alpha=$alpha beta=$beta config_idx=$config_idx"
                                 ./tune warm $JOB_ID $config_idx $M $K $N $alpha $beta
@@ -57,7 +57,7 @@ done
 # sort each (M,K,N) group by median_ms ascending, overwrite in-place
 python scripts/sort.py $JOB_ID
 
-# cold phase (for (M,K,N) group, take top 5% of configs, benchmark each as separate process)
+# cold phase (for (M,K,N,alpha,beta) group, take top 5% of configs, benchmark each with cooldown)
 declare -A cold_done
 if [[ -f "$COLD_CSV" ]]; then
     while IFS=',' read -r M K N alpha beta config_idx rest; do
@@ -73,6 +73,7 @@ while IFS=',' read -r M K N alpha beta config_idx rest; do
     fi
 done < <(awk -F',' '
 NR==1 { next }
+$7 == 0 { next }
 {
     key = $1","$2","$3","$4","$5
     count[key]++
