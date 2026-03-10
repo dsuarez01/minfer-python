@@ -12,14 +12,18 @@ def main():
     props = torch.cuda.get_device_properties(0)
     max_threads_per_block = props.max_threads_per_block
     max_shmem_per_block = props.shared_memory_per_block_optin
-    max_regs_per_thread = 255
-    min_regs_per_thread = 140
+    max_regs_per_sm = props.regs_per_multiprocessor
+    
+    # estimated overhead in addition to register usage below...
+    sync_overhead = 30
+    async_overhead = 40
 
     BM, BK, BN = Ints("BM BK BN")
     WM, WK, WN = Ints("WM WK WN")
     MM, MK, MN = Ints("MM MK MN")
     K_PIPE_MAX = Int("K_PIPE_MAX")
     USE_SYNC = Int("USE_SYNC")
+    NUM_THRS = (BM/WM)*(BN/WN)*32
 
     s = Solver()
 
@@ -30,7 +34,7 @@ def main():
         Or([BK == 32, BK == 64]),
         Or([BN == 128, BN == 256]),
         WM >= 32,
-        WK == BK,
+        Or([WK == BK, WK == BK/2]),
         WN >= 32,
         MM == 16,
         MK == 16,
@@ -56,35 +60,35 @@ def main():
     
     # (register constrs.)
     sync_regs = (
-        2*((WM/MM)*(WK/MK)*(MM/8)*(MK/8)+(WK/MK)*(WN/MN)*(MK/8)*(MN/8)) 
+        (BK/WK)*((WM/MM)*(WK/MK)*(MM/8)*(MK/8)+(WK/MK)*(WN/MN)*(MK/8)*(MN/8)) 
         + (WM/MM)*(WN/MN)*(MM/8)*(MN/8)
-        + 4*(BM/(((BM/WM)*(BN/WN)*32)/(BK/8))) 
-        + 4*(BK/(((BM/WM)*(BN/WN)*32)/(BN/8)))
+        + 4*(BM/(NUM_THRS/(BK/8))) 
+        + 4*(BK/(NUM_THRS/(BN/8)))
     )
     async_regs = (
-        K_PIPE_MAX*((WM/MM)*(WK/MK)*(MM/8)*(MK/8)+(WK/MK)*(WN/MN)*(MK/8)*(MN/8)) 
+        (BK/WK)*((WM/MM)*(WK/MK)*(MM/8)*(MK/8)+(WK/MK)*(WN/MN)*(MK/8)*(MN/8)) 
         + (WM/MM)*(WN/MN)*(MM/8)*(MN/8)
     )
 
     s.add(
-        Implies(USE_SYNC == 1, And(min_regs_per_thread <= sync_regs, sync_regs <= max_regs_per_thread)),
-        Implies(USE_SYNC == 0, And(min_regs_per_thread <= async_regs, async_regs <= max_regs_per_thread)),
+        Implies(USE_SYNC == 1, NUM_THRS * (sync_regs + sync_overhead) <= max_regs_per_sm),
+        Implies(USE_SYNC == 0, NUM_THRS * (async_regs + async_overhead) <= max_regs_per_sm),
     )
 
     # last (truly) necessary constraints
     s.add(
-        (BM/WM)*(BN/WN)*32 <= max_threads_per_block,
+        NUM_THRS <= max_threads_per_block,
         K_PIPE_MAX*(BM*BK+BK*BN)*2 <= max_shmem_per_block,
         BM*BN*2 <= K_PIPE_MAX*(BM*BK+BK*BN)*2,  # reuse shmem for output tile
-        BM*(BK/8) >= (BM/WM)*(BN/WN)*32, # see toShmem fcns
-        BK*(BN/8) >= (BM/WM)*(BN/WN)*32, # see toShmem fcns
+        BM*(BK/8) >= NUM_THRS, # see toShmem fcns
+        BK*(BN/8) >= NUM_THRS, # see toShmem fcns
 
     )
 
     # pruning
     s.add(
         BN/WN >= 2, # more warps along N block
-        (BM/WM)*(BN/WN)*32>=128, # solns with <= 128 threads likely subopt
+        NUM_THRS>=256, # solns with <= 256 threads likely subopt
     )
 
     kcs = []

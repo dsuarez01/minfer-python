@@ -91,46 +91,55 @@ inline void launch_ab_kernel(
     cudaStream_t stream = static_cast<cudaStream_t>(stream_ptr);
 
     if constexpr (USE_SYNC == 1u) {
-        STD_CUDA_CHECK(
-            cudaFuncSetAttribute(
-                ab_sync_impl<
-                    DIM_BM,
-                    DIM_BK,
-                    DIM_BN,
-                    DIM_WM,
-                    DIM_WK,
-                    DIM_WN,
-                    DIM_MM,
-                    DIM_MK,
-                    DIM_MN,
-                    TILES_K,
-                    NUM_THRS
-                >,
-                cudaFuncAttributeMaxDynamicSharedMemorySize,
-                SHMEM_SZ
-            )
-        );
+        static bool shmem_set = false;
+        if (!shmem_set) {
+            STD_CUDA_CHECK(
+                cudaFuncSetAttribute(
+                    ab_sync_impl<
+                        DIM_BM,
+                        DIM_BK,
+                        DIM_BN,
+                        DIM_WM,
+                        DIM_WK,
+                        DIM_WN,
+                        DIM_MM,
+                        DIM_MK,
+                        DIM_MN,
+                        TILES_K,
+                        NUM_THRS
+                    >,
+                    cudaFuncAttributeMaxDynamicSharedMemorySize,
+                    SHMEM_SZ
+                )
+            );
+            shmem_set = true;
+        }
+        
     } else {
-        STD_CUDA_CHECK(
-            cudaFuncSetAttribute(
-                ab_async_impl<
-                    DIM_BM,
-                    DIM_BK,
-                    DIM_BN,
-                    DIM_WM,
-                    DIM_WK,
-                    DIM_WN,
-                    DIM_MM,
-                    DIM_MK,
-                    DIM_MN,
-                    TILES_K,
-                    K_PIPE_MAX,
-                    NUM_THRS
-                >,
-                cudaFuncAttributeMaxDynamicSharedMemorySize,
-                SHMEM_SZ
-            )
-        );
+        static bool shmem_set = false;
+        if (!shmem_set) {
+            STD_CUDA_CHECK(
+                cudaFuncSetAttribute(
+                    ab_async_impl<
+                        DIM_BM,
+                        DIM_BK,
+                        DIM_BN,
+                        DIM_WM,
+                        DIM_WK,
+                        DIM_WN,
+                        DIM_MM,
+                        DIM_MK,
+                        DIM_MN,
+                        TILES_K,
+                        K_PIPE_MAX,
+                        NUM_THRS
+                    >,
+                    cudaFuncAttributeMaxDynamicSharedMemorySize,
+                    SHMEM_SZ
+                )
+            );
+            shmem_set = true;
+        }
     }
 
     // launch

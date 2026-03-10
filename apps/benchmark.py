@@ -161,48 +161,48 @@ def gemm(backend: str, which: str):
     qtype = GGMLQuantizationType.F16
     qblock_size, qtype_size = GGML_QUANT_SIZES[qtype]
 
-    alpha, beta = 2.0, 3.0
-    sizes = [512,1024,2048,4096,8192,16384,32768]
+    scales = [(1.0,0.0),(1.0,1.0),(2.0,3.0),(0.5,2.0)]
+    sizes = [512,1024,2048,4096,8192] # larger sizes will likely require persistent kernels / stream-K to match performance
     results = []
 
     for s in sizes:
+        for alpha, beta in scales:
+            M = K = N = s
+        
+            input = torch.randn((1,M,K), dtype=torch.float16, device="cuda")
+            weight = (1/K**0.5) * torch.randn((K,N), dtype=torch.float16, device="cuda")
+            bias = torch.randn((1,M,N), dtype=torch.float16, device="cuda")
+            out = torch.zeros((1,M,N), dtype=torch.float16, device="cuda")
 
-        M = K = N = s
-    
-        input = torch.randn((1,M,K), dtype=torch.float16, device="cuda")
-        weight = (1/K**0.5) * torch.randn((K,N), dtype=torch.float16, device="cuda")
-        bias = torch.randn((1,M,N), dtype=torch.float16, device="cuda")
-        out = torch.zeros((1,M,N), dtype=torch.float16, device="cuda")
+            bias_2d = bias.squeeze(0)
+            input_2d = input.squeeze(0)
+            out_2d = out.squeeze(0)
 
-        bias_2d = bias.squeeze(0)
-        input_2d = input.squeeze(0)
-        out_2d = out.squeeze(0)
+            def my_gemm():
+                with torch.no_grad():
+                    kerns.gemm(qtype, qblock_size, qtype_size, alpha, beta, input, weight, bias, out)
 
-        def my_gemm():
-            with torch.no_grad():
-                kerns.gemm(qtype, qblock_size, qtype_size, alpha, beta, input, weight, bias, out)
+            def ref_gemm():
+                with torch.no_grad():
+                    refs.gemm(input_2d, weight, bias_2d, out_2d, alpha, beta)
 
-        def ref_gemm():
-            with torch.no_grad():
-                refs.gemm(input_2d, weight, bias_2d, out_2d, alpha, beta)
+            fn = my_gemm if which == "minfer" else ref_gemm
 
-        fn = my_gemm if which == "minfer" else ref_gemm
+            timer = Timer(
+                stmt='fn()',
+                globals={'fn': fn},
+                label=f'gemm',
+                sub_label=f'alpha={alpha}, beta={beta}, M={M}, K={K}, N={N}',
+                description=f'{which}',
+            )
 
-        timer = Timer(
-            stmt='fn()',
-            globals={'fn': fn},
-            label=f'gemm',
-            sub_label=f'alpha={alpha}, beta={beta}, M={M}, K={K}, N={N}',
-            description=f'{which}',
-        )
+            result = timer.blocked_autorange()
 
-        result = timer.blocked_autorange()
+            results.append(result)
 
-        results.append(result)
-
-        del input, weight, bias, out, input_2d, bias_2d, out_2d
-        gc.collect()
-        torch.cuda.empty_cache()
+            del input, weight, bias, out, input_2d, bias_2d, out_2d
+            gc.collect()
+            torch.cuda.empty_cache()
     
     compare = Compare(results)
     compare.print()
