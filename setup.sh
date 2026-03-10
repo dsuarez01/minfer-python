@@ -12,7 +12,7 @@ export CC=$(which gcc)
 export CXX=$(which g++)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# in case system-wide python deafult version too old
+# in case system-wide python default version too old
 # (remove as needed)
 if [ ! -d "$SCRIPT_DIR/.venv" ]; then
     uv venv --python 3.12 "$SCRIPT_DIR/.venv"

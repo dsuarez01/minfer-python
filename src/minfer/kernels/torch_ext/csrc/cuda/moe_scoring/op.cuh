@@ -12,30 +12,7 @@
 #include <cuda_fp16.h>
 
 #include "common/types.hpp"
-#include "kernel.cuh"
-
-namespace minfer::impl {
-
-template <int TILE_M, int N_EXPS>
-inline void dispatch_top_k(
-    int64_t top_k, int64_t M, int64_t K,
-    const half* x_ptr, const half* w_ptr,
-    uint8_t* act_exps_ptr, half* act_exps_scores_ptr, half* scores_ptr,
-    cudaStream_t stream
-) {
-    // dim3 grid((M+TILE_M-1)/TILE_M);
-    // dim3 block(TILE_M*N_EXPS);
-    
-    // switch (top_k) {
-    //     case 1: moe_scoring_cuda_impl<TILE_M, N_EXPS, 1><<<grid, block, 0, stream>>>(M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr); break;
-    //     case 2: moe_scoring_cuda_impl<TILE_M, N_EXPS, 2><<<grid, block, 0, stream>>>(M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr); break;
-    //     case 4: moe_scoring_cuda_impl<TILE_M, N_EXPS, 4><<<grid, block, 0, stream>>>(M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr); break;
-    //     case 8: moe_scoring_cuda_impl<TILE_M, N_EXPS, 8><<<grid, block, 0, stream>>>(M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr); break;
-    //     default: TORCH_CHECK(false, "unsupported top_k: ", top_k);
-    // }
-}
-
-}
+#include "kernels/kernel.cuh"
 
 namespace minfer {
 
@@ -85,17 +62,7 @@ void moe_scoring_cuda(
     );
     cudaStream_t stream = static_cast<cudaStream_t>(stream_ptr);
 
-    switch (n_exps) {
-        case 8:   dispatch_top_k<128, 8>(top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, stream); break;
-        case 16:  dispatch_top_k<64, 16>(top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, stream); break;
-        case 32:  dispatch_top_k<32, 32>(top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, stream); break;
-        case 64:  dispatch_top_k<16, 64>(top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, stream); break;
-        case 128: dispatch_top_k<8, 128>(top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, stream); break;
-        case 256: dispatch_top_k<4, 256>(top_k, M, K, x_ptr, w_ptr, act_exps_ptr, act_exps_scores_ptr, scores_ptr, stream); break;
-        default: STD_TORCH_CHECK(false, "unsupported n_exps: ", n_exps);
-    }
-
-    STD_CUDA_KERNEL_LAUNCH_CHECK();
+    // TO-DO: implement
 }
 
 }

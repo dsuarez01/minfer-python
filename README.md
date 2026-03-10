@@ -40,6 +40,12 @@ For more information regarding the installation, refer to `setup.py` and `setup.
 
 ### Quick Start:
 
+From the project root, source the setup script as follows (read the comments in the script and adjust as needed for your system):
+
+```bash
+source setup.sh
+```
+
 To install the package in editable mode:
 
 ```bash
@@ -116,7 +122,7 @@ Persistent kernels / Stream-K optimization will be implemented to handle wave qu
 
 All of the work here was developed on a university SLURM cluster. Thanks to MIT ORCD for access to substantial compute resources.
 
-Thanks to Pytorch for the C++/CUDA extension[^5], a tool without which it would have been difficult to incorporate work in kernel optimization into an inference engine without writing an entirely separate tensor backend from scratch.
+Thanks to Pytorch for the C++/CUDA extension[^5], a tool without which it would have been difficult to incorporate work in kernel optimization into an inference engine without writing an entirely separate tensor backend from scratch. The project makes use of the [Libtorch Stable ABI](https://docs.pytorch.org/docs/stable/notes/libtorch_stable_abi.html), which allows for compatibility of custom operators and extensions across PyTorch releases (starting from version 2.10).
 
 
 ## References
